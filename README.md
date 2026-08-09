@@ -105,7 +105,8 @@ expose for a true locked Hub mode.
   model. In the default flow, a turn closes only after VAD remains inactive for
   1.5 seconds (about two seconds of acoustic silence including Silero's 500 ms
   qualification). Selected-agent Listen Mode uses its separate one-second
-  VAD-inactive endpoint. Parakeet 0.6B is the current default; Parakeet 110M
+  VAD-inactive endpoint for each STT audio chunk while its manual session stays
+  open. Parakeet 0.6B is the current default; Parakeet 110M
   and Tiny Whisper remain available.
 - Lets Android users choose a shared device folder for Files-visible speech
   WAVs plus separate `.raw.txt`, `.corrected.txt`, and optional
@@ -162,12 +163,13 @@ expose for a true locked Hub mode.
   memo, double tap retains its higher-priority finish action.
 - Implements the fallback single-tap agent history selector with `Dismiss`
   selected first, up to five agent options, and the local Memo option last.
-  Each option begins `Agent - content` and uses a second row only when that
-  combined text overflows. The continuation row receives one extra leading
-  space after the fixed 20-pixel pointer gutter. The gutter keeps first-row
-  content at the same horizontal position while selection moves. A shared
-  measured layout fills up to nine visible rows and adaptively pages only when
-  the complete selector does not fit. Each agent preview uses its newest
+  Each option occupies exactly one row beginning `Agent - content`. Carriage
+  returns, newlines, and repeated whitespace are collapsed to spaces, and
+  pixel-width overflow is ellipsized on that row. Every row reserves the same
+  fixed 25-pixel pointer gutter, including two spaces after `>`, so content
+  remains at the same horizontal position while selection moves. The maximum
+  selector is seven rows—header, five agents, and Memo—so it remains fully
+  visible without selector paging. Each agent preview uses its newest
   durable message by timestamp, whether that message was sent or received.
   Agent detail pages rebuild the same durable newest-message-first sent and
   received list as the phone agent tab, shown as `[HH:mm] Message`. Saving the
@@ -177,33 +179,39 @@ expose for a true locked Hub mode.
   does not target audio. A second tap changes the Listen arrow from `>` to `<`
   and enables targeting. Swipe up stops Listen Mode and moves the active `<`
   control to the Flux title; tapping there returns to the selector. Swipe down
-  returns focus to Listen Mode, and subsequent down swipes page forward.
+  returns focus to Listen Mode. While it is active, the next down swipe focuses
+  Preview Correction; tap toggles it, swipe up returns to Send, and another
+  down swipe pages forward.
   Exiting Listen Mode clears its temporary
   listening overlay, restores the message page that was visible before speech,
   and immediately re-enables history paging. Memo details
   continue paging immediately. The prior page's final
   content row is repeated first on the next page. History uses a borderless
   576×288 viewport with a stable four-pixel inset on every selector and detail
-  page; long agent details retain seven body rows beneath their two fixed
-  controls, Memo details retain eight, and both show only a proportional
+  page; inactive agent details retain seven body rows beneath two fixed
+  controls, active sessions retain five beneath four fixed controls, Memo
+  details retain eight, and all show only a proportional
   right-edge scroll thumb. Detail pages are pre-paginated, keep a fixed
   scrollbar image container, and use serialized in-place updates while
-  scrolling instead of rebuilding the page on every swipe. Only speech
-  beginning while Listen Mode is selected
-  is bound directly to that configured agent and enters Gemma correction
-  without requiring a spoken `Hey` or agent name. Otherwise audio follows the
-  ordinary transcription and wake-word route. Speech changes the control row
-  to `< • Listening - Tap to send`. The VAD endpoint, or an earlier tap, exits
-  Listen Mode immediately, finalizes only that snapshotted turn for
-  correction/send, and shows `< • Sending - Tap to dismiss` with the raw
-  transcript as soon as STT completes; tapping
-  while sending dismisses the detail
-  while delivery continues. New speech after Listen Mode exit or dismissal is
-  no longer targeted to the previously selected agent. In active
-  Listen Mode, VAD keeps appending PCM to the same speech
-  turn while speech resumes. One full second with VAD inactive finalizes that
-  turn; only then does STT finish, Gemma correct once, and the selected-agent
-  command send once. Selected-agent correction enters ahead of pending normal
+  scrolling instead of rebuilding the page on every swipe. The tap that
+  activates Listen Mode snapshots that configured agent and starts a manual
+  transcript session without requiring a spoken `Hey` or agent name. Otherwise
+  audio follows the ordinary transcription and wake-word route. Speech changes
+  the control row to `< • Listening - Tap to send`. Each full second with VAD
+  inactive closes only an audio chunk and queues it in the persistent STT FIFO;
+  it never exits Listen Mode or sends. As STT chunks finish, their accumulated
+  text is shown as `Listening:` and the status row blinks while transcription
+  is pending. Later speech continues appending regardless of earlier VAD
+  endpoints. Preview Correction starts Off: the next tap stops capture, waits
+  for queued STT, corrects the complete aggregate once, and sends it. Swipe
+  down from Send focuses Preview Correction; tapping turns it On, after which
+  every completed STT append automatically refreshes one serialized correction
+  preview. Swipe up returns focus to Send. Sending with Preview On waits for and
+  reuses the current preview, so it never invokes Gemma a second time. The
+  detail shows `< • Sending - Tap to dismiss` during that work; tapping while
+  sending dismisses the detail while delivery continues. New speech after
+  Listen Mode exit or dismissal is no longer targeted to the previously
+  selected agent. Selected-agent correction enters ahead of pending normal
   corrections while any already-running Gemma inference finishes safely.
   Every indexed matching-agent socket response refreshes page 1 immediately;
   other-agent responses remain durable without interrupting the open detail.

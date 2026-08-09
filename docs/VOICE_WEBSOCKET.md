@@ -177,27 +177,37 @@ failure behavior, implementation, and physical-device acceptance flow are docume
 [`G2_AGENT_HISTORY_SELECTOR.md`](G2_AGENT_HISTORY_SELECTOR.md).
 
 Only Listen Mode explicitly activated from an agent's detail page snapshots
-that canonical configured agent at VAD speech start. Merely highlighting an
-agent row or opening its detail keeps the default wake-word flow. A Listen Mode
-transcript routes to the snapshotted agent without requiring a spoken `Hey` or
-agent name. Explicit Listen Mode selection makes the live segment
-Gemma-eligible even without the wake word; only the corrected result is offered
-to the selected agent, while correction-unavailable fallback retains the
-durable raw text.
+that canonical configured agent at the first tap. Merely highlighting an agent
+row or opening its detail keeps the default wake-word flow. While Listen Mode
+is active, each VAD-bounded STT result appends to the visible manual transcript
+and cannot invoke delivery. Preview Correction defaults Off. In that state the
+second tap flushes current audio, waits for every registered STT result, and
+makes the complete aggregate Gemma-eligible without requiring a spoken `Hey` or
+agent name. When Preview Correction is On, each STT append instead refreshes a
+serialized automatic correction preview. The second tap waits for the newest
+preview and offers that cached result to the selected agent without another LLM
+call. Only a corrected aggregate is offered to the selected agent;
+correction-unavailable fallback retains the durable raw text.
 The agent detail title carries a visible active dot; its body advances through
-`Listening…`, `Sending:`, and acknowledged `Sent:` or fallback `Saved:` for the
-latest targeted segment. This explicit gesture selection is the only
-attention-gate bypass. Dismiss, Memo, a selection removed by a configuration
+`Listening…`, an accumulating `Listening:`, `Sending:`, and acknowledged `Sent:`
+or fallback `Saved:` for the latest manual session. A fixed Status row blinks
+while STT is pending and reports preview queued, correcting, update pending,
+current, or unavailable. Swipe down from Send focuses Preview Correction; tap
+toggles it, and swipe up returns focus to Send. This explicit gesture
+selection is the only attention-gate bypass. Dismiss, Memo, a selection removed by a configuration
 change, and speech that began before the agent was selected do not bypass
-ordinary routing. The snapshot remains stable if the user swipes or closes the
-selector while STT is completing. At most 32 unfinished snapshots are retained,
-and they are never restored after process restart.
+ordinary routing. The snapshot remains stable while queued STT completes.
+Collection sessions and final routing ownership are in-memory only and are
+never restored after a process restart.
 
-Tap cannot accidentally dismiss an active targeted utterance. During
-`Listening…` it finalizes the current VAD segment for correction and delivery;
-during `Sending:` it moves the queued Gemma job ahead of other ready work. Tap
-returns to its ordinary dismiss behavior only after the detail reaches a
-terminal `Sent:` or `Saved:` state.
+Tap cannot accidentally dismiss an active targeted session. During
+`Listening…` or `Listening:` it stops capture, acknowledges the current VAD
+flush, and waits for queued STT. Preview Off then corrects and delivers the full
+transcript once. Preview On reuses the current automatic preview and never
+corrects again at Send. During `Sending:` tap dismisses the detail while that
+delivery continues.
+Tap starts a new manual session after the detail reaches terminal `Sent:` or
+`Saved:` state.
 
 Agent-detail rendering is asynchronous with respect to delivery. Full-page G2
 BLE updates retain their ordered, coalesced queue, but the app never waits for

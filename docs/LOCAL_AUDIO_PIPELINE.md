@@ -7,19 +7,37 @@ flowchart TD
     C --> D[Continuous VAD isolate + 2 s pre-roll]
     D --> E{Endpoint mode}
     E -->|Default flow| F[Require 1.5 s continuously VAD-inactive]
-    E -->|Selected-agent Listen Mode| G[Require 1.0 s continuously VAD-inactive]
+    E -->|Selected-agent manual mode| G[Require 1.0 s continuously VAD-inactive per audio chunk]
     D -->|15-17 s duration rollover| H[Atomic non-final WAV chunk]
     F --> I[Atomic final WAV chunk]
     G --> I
     H --> J[Durable FIFO transcription ledger]
     I --> J
     J --> K[Persistent STT isolate: one job at a time]
-    K --> L[Append result to conversation continuous.txt]
-    L --> M{Final VAD chunk?}
-    M -->|No| N[Keep collecting; no queued action, correction, or send]
-    M -->|Yes| O[Use full accumulated transcript exactly once]
-    O --> P[Queued UI + wake/selected-agent gate]
-    P --> Q[Gemma correction and local or WebSocket route]
+    K --> L{Capture mode for this segment}
+    L -->|Default| M[Append result to conversation continuous.txt]
+    M --> N{Final VAD chunk?}
+    N -->|No| O[Keep collecting; no queued action, correction, or send]
+    N -->|Yes| P[Use full accumulated default transcript exactly once]
+    P --> Q[Queued UI + wake-word gate]
+    Q --> R[Gemma correction and local or WebSocket route]
+    L -->|Selected agent| S[Append STT chunk to manual session]
+    S --> T[Render the full accumulated transcript while Listening]
+    T --> PC{Preview Correction On?}
+    PC -->|No| U[Keep Listen Mode active across later VAD starts]
+    PC -->|Yes| PV[Queue one serialized correction for the latest transcript revision]
+    PV --> PR[Render corrected preview plus any newer raw tail]
+    PR --> U
+    V[Second tap] --> W[Stop capture and acknowledge final VAD flush]
+    W --> X{Second tap received and every registered STT chunk complete?}
+    S --> X
+    X -->|No| Y[Keep collecting or wait for the persistent STT FIFO]
+    Y --> X
+    X -->|Yes| PM{Preview Correction On?}
+    PM -->|No| Z[Persist full session transcript and run Gemma once]
+    PM -->|Yes| PW[Wait for latest automatic preview; do not run Gemma again]
+    Z --> AA[Send once to the tap-selected agent]
+    PW --> AA
 ```
 
 The capture journal, decoder, VAD, transcription, BLE callbacks, and Flutter
@@ -113,17 +131,32 @@ The package README, patch, licenses, and SHA-256 runtime manifest are under
 - VAD saves speech only. It keeps two seconds before speech. The default flow
   requires 1,500 ms continuously VAD-inactive after Silero's 500 ms silence
   qualification, for a nominal two-second acoustic-silence boundary.
-  Selected-agent Listen Mode is a separate mode with a one-second VAD-inactive
-  endpoint. Speech resuming during either endpoint
-  cancels finalization and remains in the same WAV/STT/Gemma turn. The
+  Selected-agent Listen Mode is a separate, manually bounded mode with a
+  one-second VAD-inactive audio-chunk endpoint. Speech resuming during either
+  endpoint cancels that pending chunk boundary. In default mode it remains in
+  the same logical turn; in selected-agent mode a completed endpoint queues STT
+  but leaves the manual session active for later speech. The
   `speech_ended` marker reports the retained tail as `audio_ms`, independent of
   UI scheduling. It writes a partial WAV first and atomically renames completed
   files. When the endpoint begins, Work Bench clears earlier turn history from
   pre-roll and then retains the endpoint-tail PCM. That handoff prevents prior
   speech from leaking into the next turn without dropping the opening of a
   near-boundary next utterance.
-- Continuous speech remains one logical VAD conversation until endpoint
-  silence. At 15 seconds, the current chunk begins looking for the next short
+- In selected-agent mode, the first tap snapshots the configured agent and
+  starts one transcript accumulator. Every completed STT chunk is appended in
+  FIFO order and the full text is rendered as `Listening:` on G2; a blinking
+  status dot remains visible while STT is pending. VAD silence never sends or
+  exits Listen Mode. Preview Correction defaults Off. When it is On, every STT
+  append schedules one serialized correction of the newest complete revision;
+  an append during inference is shown as a raw tail and coalesced into the next
+  preview. The second tap is the only send boundary: it stops capture and waits
+  for the VAD flush acknowledgement and every registered STT result. Preview
+  Off then queues one prioritized correction of the aggregate. Preview On waits
+  for and reuses the latest automatic correction, with no second Gemma call at
+  Send. A failed Preview On correction keeps the raw transcript and does not
+  retry merely because Send was tapped.
+- In the default flow, continuous speech remains one logical VAD conversation
+  until endpoint silence. At 15 seconds, the current chunk begins looking for the next short
   low-energy inter-word gap as well as a VAD-low pause. Once audio or VAD
   resumes, Work Bench closes the old WAV before writing that first resumed
   speech frame and starts the next WAV without overlap. If no credible word
@@ -138,14 +171,16 @@ The package README, patch, licenses, and SHA-256 runtime manifest are under
   enter correction or delivery. The final chunk opens that boundary once and
   supplies the full accumulated transcript to the bounded glasses FIFO as one
   `Queued` item, followed by `Saved` or `Sent`.
-- Gemma correction is eligible only when a recognized chunk begins with the
-  complete word `hey`, case-insensitively. Ordinary ambient chunks and
+- In the default mode, Gemma correction is eligible only when a recognized
+  chunk begins with the complete word `hey`, case-insensitively. Ordinary ambient chunks and
   mid-sentence mentions bypass the LLM, receive a durable `no_wake_word` skip
   record so they cannot be restored into the correction queue after restart,
-  and remain available as raw text. If an agent row was selected on G2 when
-  speech began, that explicit in-memory target makes the live transcript
-  Gemma-eligible without a spoken wake/name; only the corrected result may
-  route. All other speech retains the normal attention gate.
+  and remain available as raw text. An explicitly started selected-agent
+  session makes its final manually submitted aggregate Gemma-eligible without
+  a spoken wake/name. With Preview Off, its intermediate STT chunks remain
+  collection-only and correction runs at Send. With Preview On, intermediate
+  chunks update a local correction preview, but only the final cached aggregate
+  may route. All other speech retains the normal attention gate.
 - A wearable disconnect flushes an active VAD segment before changing link
   state. Raw journals, WAV files, and completed transcripts are never deleted
   by a model restart.

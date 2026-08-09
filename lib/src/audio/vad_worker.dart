@@ -287,6 +287,8 @@ final class VadSupervisor {
   Completer<String>? _ready;
   Completer<void>? _closed;
   Timer? _restartTimer;
+  final Map<int, Completer<void>> _flushRequests = <int, Completer<void>>{};
+  int _nextFlushRequestId = 0;
   bool _disposed = false;
   bool _restarting = false;
   String? activeProvider;
@@ -311,6 +313,26 @@ final class VadSupervisor {
 
   void flush() {
     _commands?.send(<String, Object>{'type': 'flush'});
+  }
+
+  /// Flushes the current VAD segment and resolves after its segment event has
+  /// been delivered. STT may still be processing the resulting durable WAV.
+  Future<void> flushAndWait() {
+    final commands = _commands;
+    if (_disposed || commands == null) {
+      return Future<void>.value();
+    }
+    final requestId = ++_nextFlushRequestId;
+    final completion = Completer<void>();
+    _flushRequests[requestId] = completion;
+    commands.send(<String, Object>{'type': 'flush', 'requestId': requestId});
+    return completion.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        _flushRequests.remove(requestId);
+        throw TimeoutException('VAD flush acknowledgement timed out.');
+      },
+    );
   }
 
   /// Selects the product flow and its quiet interval after VAD falls inactive.
@@ -493,6 +515,12 @@ final class VadSupervisor {
           ),
         );
         return;
+      case 'flush_completed':
+        final requestId = event['requestId'];
+        if (requestId is int) {
+          _flushRequests.remove(requestId)?.complete();
+        }
+        return;
       case 'error':
         final error = StateError('${event['message']}');
         onStatus(
@@ -551,6 +579,12 @@ final class VadSupervisor {
 
   Future<void> dispose() async {
     _disposed = true;
+    for (final completion in _flushRequests.values) {
+      if (!completion.isCompleted) {
+        completion.complete();
+      }
+    }
+    _flushRequests.clear();
     _restartTimer?.cancel();
     final commands = _commands;
     final closed = _closed;
@@ -992,6 +1026,13 @@ void _vadWorker(Map<String, Object> bootstrap) {
             endReason: VadSegmentEndReason.flush,
           );
           wasDetected = false;
+          final requestId = message['requestId'];
+          if (requestId is int) {
+            events.send(<String, Object>{
+              'type': 'flush_completed',
+              'requestId': requestId,
+            });
+          }
           return;
         case 'close':
           detector.flush();

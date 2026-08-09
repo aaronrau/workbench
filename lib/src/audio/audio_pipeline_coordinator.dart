@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -29,6 +30,10 @@ typedef FinalTranscriptHandler =
     Future<void> Function(FinalTranscriptDelivery delivery);
 typedef CorrectionTermsProvider = Iterable<String> Function();
 typedef ExplicitCorrectionEligibilityProvider = bool Function(String segmentId);
+typedef TranscriptCollectionEligibilityProvider =
+    bool Function(String segmentId);
+typedef CollectedTranscriptHandler =
+    Future<void> Function(String segmentId, String transcript);
 typedef FinalizedSpeechSegmentHandler =
     void Function(String segmentId, String wavPath);
 
@@ -69,6 +74,40 @@ final class FinalTranscriptDelivery {
   final bool isCorrected;
 }
 
+final class TranscriptCorrectionPreviewResult {
+  const TranscriptCorrectionPreviewResult({
+    required this.segmentId,
+    required this.rawTranscript,
+    required this.transcript,
+    required this.isCorrected,
+    this.failureReason,
+    this.provider,
+    this.queueMs,
+    this.engineLoadMs,
+    this.inferenceMs,
+    this.correctionTotalMs,
+    this.pipelineTotalMs,
+    this.timeToFirstTokenMs,
+    this.prefillTokensPerSecond,
+    this.decodeTokensPerSecond,
+  });
+
+  final String segmentId;
+  final String rawTranscript;
+  final String transcript;
+  final bool isCorrected;
+  final String? failureReason;
+  final String? provider;
+  final int? queueMs;
+  final int? engineLoadMs;
+  final int? inferenceMs;
+  final int? correctionTotalMs;
+  final int? pipelineTotalMs;
+  final int? timeToFirstTokenMs;
+  final double? prefillTokensPerSecond;
+  final double? decodeTokensPerSecond;
+}
+
 final class AudioPipelineCoordinator {
   AudioPipelineCoordinator({
     required this.log,
@@ -81,6 +120,8 @@ final class AudioPipelineCoordinator {
     this.onVadSpeechEvent,
     this.correctionTermsProvider,
     this.explicitCorrectionEligibilityProvider,
+    this.transcriptCollectionEligibilityProvider,
+    this.onCollectedTranscript,
     ModelAssetStore? modelStore,
     GemmaModelStore? gemmaModelStore,
     TranscriptCorrectionConfigStore? correctionConfigStore,
@@ -115,6 +156,9 @@ final class AudioPipelineCoordinator {
   final CorrectionTermsProvider? correctionTermsProvider;
   final ExplicitCorrectionEligibilityProvider?
   explicitCorrectionEligibilityProvider;
+  final TranscriptCollectionEligibilityProvider?
+  transcriptCollectionEligibilityProvider;
+  final CollectedTranscriptHandler? onCollectedTranscript;
   final ModelAssetStore _modelStore;
   final GemmaModelStore _gemmaModelStore;
   final TranscriptCorrectionConfigStore _correctionConfigStore;
@@ -125,6 +169,9 @@ final class AudioPipelineCoordinator {
   final TranscriptTurnState _transcriptTurn = TranscriptTurnState();
   final Map<String, VadSpeechSegment> _speechSegments =
       <String, VadSpeechSegment>{};
+  final Map<String, Completer<TranscriptCorrectionPreviewResult>>
+  _previewCorrections =
+      <String, Completer<TranscriptCorrectionPreviewResult>>{};
 
   CaptureJournalSupervisor? _capture;
   VadSupervisor? _vad;
@@ -500,6 +547,7 @@ final class AudioPipelineCoordinator {
     final id = result.segmentId;
     lastTranscriptPath = result.transcriptPath;
     var displayedText = result.text;
+    var collectedText = result.text.trim();
     String? actionText = segment == null || segment.isConversationFinal
         ? result.text.trim()
         : null;
@@ -514,6 +562,7 @@ final class AudioPipelineCoordinator {
           deduplicateOverlap: segment.leadingOverlapMs > 0,
         );
         displayedText = assembly.text;
+        collectedText = assembly.appendedText;
         actionText = assembly.actionText;
         lastTranscriptPath = assembly.path;
         exportPaths.add(assembly.path);
@@ -545,6 +594,24 @@ final class AudioPipelineCoordinator {
         '[WorkBench][TranscriptUI] state=suppressed segment=$id '
             'latest=${_transcriptTurn.currentSegmentId ?? 'none'}',
       );
+    }
+    if (transcriptCollectionEligibilityProvider?.call(id) ?? false) {
+      final handler = onCollectedTranscript;
+      if (handler != null) {
+        await _publishTranscript(handler, id, collectedText);
+      }
+      log(
+        'Pipeline',
+        '[WorkBench][VoiceRoute] state=collected segment=$id '
+            'action=manual_send',
+      );
+      startup = StartupSnapshot(
+        phase: StartupPhase.ready,
+        message: 'Listening · transcript collected',
+        provider: activeProvider,
+      );
+      onChanged();
+      return;
     }
     if (!result.routeEligible) {
       log(
@@ -706,18 +773,48 @@ final class AudioPipelineCoordinator {
   }
 
   void _onCorrectedTranscript(CorrectedTranscriptResult result) {
-    lastCorrectedTranscript = result.correctedText;
-    lastCorrectedTranscriptPath = result.correctedPath;
     activeCorrectionProvider = result.provider;
     completedCorrections++;
-    unawaited(
-      _exportSharedFiles(
-        <String>[result.correctedPath],
-        reason: 'correction',
-        segmentId: result.segmentId,
-      ),
-    );
-    if (result.routeWhenCorrected) {
+    final previewCompleter = _previewCorrections.remove(result.segmentId);
+    final isPreview =
+        previewCompleter != null ||
+        _isCorrectionPreviewPath(result.correctedPath);
+    if (isPreview) {
+      if (previewCompleter != null && !previewCompleter.isCompleted) {
+        previewCompleter.complete(
+          TranscriptCorrectionPreviewResult(
+            segmentId: result.segmentId,
+            rawTranscript: result.originalText,
+            transcript: result.correctedText,
+            isCorrected: true,
+            provider: result.provider,
+            queueMs: result.queueMs,
+            engineLoadMs: result.engineLoadMs,
+            inferenceMs: result.inferenceMs,
+            correctionTotalMs: result.correctionTotalMs,
+            pipelineTotalMs: result.pipelineTotalMs,
+            timeToFirstTokenMs: result.timeToFirstTokenMs,
+            prefillTokensPerSecond: result.prefillTokensPerSecond,
+            decodeTokensPerSecond: result.decodeTokensPerSecond,
+          ),
+        );
+      }
+      log(
+        'Pipeline',
+        '[WorkBench][VoiceRoute] state=preview_ready '
+            'segment=${result.segmentId} provider=${result.provider}',
+      );
+      unawaited(_deleteCorrectionPreviewArtifacts(result.correctedPath));
+    } else if (result.routeWhenCorrected) {
+      lastCorrectedTranscript = result.correctedText;
+      lastCorrectedTranscriptPath = result.correctedPath;
+      unawaited(
+        _exportSharedFiles(
+          <String>[result.correctedPath],
+          reason: 'correction',
+          segmentId: result.segmentId,
+        ),
+      );
       final finalTranscriptHandler = onFinalTranscript;
       if (finalTranscriptHandler != null) {
         log(
@@ -752,6 +849,30 @@ final class AudioPipelineCoordinator {
     String transcript,
     String reason,
   ) {
+    final previewCompleter = _previewCorrections.remove(job.segmentId);
+    final isPreview =
+        previewCompleter != null || _isCorrectionPreviewPath(job.rawPath);
+    if (isPreview) {
+      if (previewCompleter != null && !previewCompleter.isCompleted) {
+        previewCompleter.complete(
+          TranscriptCorrectionPreviewResult(
+            segmentId: job.segmentId,
+            rawTranscript: transcript,
+            transcript: transcript,
+            isCorrected: false,
+            failureReason: reason,
+          ),
+        );
+      }
+      log(
+        'Pipeline',
+        '[WorkBench][VoiceRoute] state=preview_unavailable '
+            'segment=${job.segmentId} reason=$reason raw=preserved',
+        isError: true,
+      );
+      unawaited(_deleteCorrectionPreviewArtifacts(job.rawPath));
+      return;
+    }
     if (!job.routeWhenCorrected) {
       log(
         'Pipeline',
@@ -1045,6 +1166,303 @@ final class AudioPipelineCoordinator {
     _vad?.flush();
   }
 
+  Future<void> flushCurrentSpeechAndWait() =>
+      _vad?.flushAndWait() ?? Future<void>.value();
+
+  Future<bool> correctCollectedTranscript({
+    required String segmentId,
+    required String transcript,
+  }) async {
+    final normalized = transcript.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final speechPath = _speechPath;
+    if (_disposed || normalized.isEmpty || speechPath == null) {
+      return false;
+    }
+    if (!RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(segmentId) ||
+        segmentId == '.' ||
+        segmentId == '..') {
+      throw ArgumentError.value(segmentId, 'segmentId', 'Invalid segment ID.');
+    }
+    final rawPath = '$speechPath/$segmentId.raw.txt';
+    final rawFile = File(rawPath);
+    final partial = File('$rawPath.part');
+    await partial.writeAsString('$normalized\n', flush: true);
+    await partial.rename(rawFile.path);
+    lastTranscriptPath = rawPath;
+    unawaited(
+      _exportSharedFiles(
+        <String>[rawPath],
+        reason: 'transcript',
+        segmentId: segmentId,
+      ),
+    );
+
+    final queuedAt = DateTime.now().toUtc();
+    final correctionJob = TranscriptCorrectionJob(
+      segmentId: segmentId,
+      rawPath: rawPath,
+      sttModel: activeModelId ?? _selectedModel.id,
+      sttProvider: activeProvider ?? 'unknown',
+      audioMs: 0,
+      sttDecodeMs: 0,
+      sttTotalMs: 0,
+      queuedAt: queuedAt,
+      correctionTerms:
+          correctionTermsProvider?.call().toList(growable: false) ??
+          const <String>[],
+      routeWhenCorrected: true,
+      liveTranscript: normalized,
+    );
+    final correction = _correction;
+    if (correction == null) {
+      await TranscriptCorrectionSupervisor.persistSkipped(
+        correctionJob,
+        reason: 'correction_unavailable',
+      );
+      final handler = onFinalTranscript;
+      if (handler != null) {
+        await _publishFinalTranscript(
+          handler,
+          FinalTranscriptDelivery(
+            segmentId: segmentId,
+            rawTranscript: normalized,
+            transcript: normalized,
+            isCorrected: false,
+          ),
+        );
+      }
+      return true;
+    }
+    log(
+      'Pipeline',
+      '[WorkBench][VoiceRoute] state=manual_collection_queued '
+          'segment=$segmentId source=selected_agent',
+    );
+    await correction.queue(correctionJob, prioritize: true);
+    return true;
+  }
+
+  Future<TranscriptCorrectionPreviewResult> correctCollectedTranscriptPreview({
+    required String segmentId,
+    required String transcript,
+  }) async {
+    final normalized = transcript.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final speechPath = _speechPath;
+    if (_disposed || normalized.isEmpty || speechPath == null) {
+      return TranscriptCorrectionPreviewResult(
+        segmentId: segmentId,
+        rawTranscript: normalized,
+        transcript: normalized,
+        isCorrected: false,
+        failureReason: 'correction_unavailable',
+      );
+    }
+    if (!RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(segmentId) ||
+        segmentId == '.' ||
+        segmentId == '..') {
+      throw ArgumentError.value(segmentId, 'segmentId', 'Invalid segment ID.');
+    }
+    final existing = _previewCorrections[segmentId];
+    if (existing != null) {
+      return existing.future;
+    }
+    final previewDirectory = Directory('$speechPath/.preview');
+    await previewDirectory.create(recursive: true);
+    final rawPath = '${previewDirectory.path}/$segmentId.raw.txt';
+    final rawFile = File(rawPath);
+    final partial = File('$rawPath.part');
+    await partial.writeAsString('$normalized\n', flush: true);
+    await partial.rename(rawFile.path);
+    final job = TranscriptCorrectionJob(
+      segmentId: segmentId,
+      rawPath: rawPath,
+      sttModel: activeModelId ?? _selectedModel.id,
+      sttProvider: activeProvider ?? 'unknown',
+      audioMs: 0,
+      sttDecodeMs: 0,
+      sttTotalMs: 0,
+      queuedAt: DateTime.now().toUtc(),
+      correctionTerms:
+          correctionTermsProvider?.call().toList(growable: false) ??
+          const <String>[],
+      routeWhenCorrected: false,
+      liveTranscript: normalized,
+    );
+    final correction = _correction;
+    if (correction == null) {
+      await TranscriptCorrectionSupervisor.persistSkipped(
+        job,
+        reason: 'correction_unavailable',
+      );
+      await _deleteCorrectionPreviewArtifacts(rawPath);
+      return TranscriptCorrectionPreviewResult(
+        segmentId: segmentId,
+        rawTranscript: normalized,
+        transcript: normalized,
+        isCorrected: false,
+        failureReason: 'correction_unavailable',
+      );
+    }
+    final completer = Completer<TranscriptCorrectionPreviewResult>();
+    _previewCorrections[segmentId] = completer;
+    log(
+      'Pipeline',
+      '[WorkBench][VoiceRoute] state=preview_queued segment=$segmentId',
+    );
+    try {
+      await correction.queue(job, prioritize: true);
+    } on Object {
+      _previewCorrections.remove(segmentId);
+      await _deleteCorrectionPreviewArtifacts(rawPath);
+      rethrow;
+    }
+    return completer.future;
+  }
+
+  Future<bool> submitCollectedTranscriptProjection({
+    required String segmentId,
+    required String rawTranscript,
+    required String transcript,
+    required bool isCorrected,
+    TranscriptCorrectionPreviewResult? previewResult,
+  }) async {
+    final normalizedRaw = rawTranscript.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final normalizedTranscript = transcript
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final speechPath = _speechPath;
+    if (_disposed ||
+        normalizedRaw.isEmpty ||
+        normalizedTranscript.isEmpty ||
+        speechPath == null) {
+      return false;
+    }
+    if (!RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(segmentId) ||
+        segmentId == '.' ||
+        segmentId == '..') {
+      throw ArgumentError.value(segmentId, 'segmentId', 'Invalid segment ID.');
+    }
+    final rawPath = '$speechPath/$segmentId.raw.txt';
+    final rawPartial = File('$rawPath.part');
+    await rawPartial.writeAsString('$normalizedRaw\n', flush: true);
+    await rawPartial.rename(rawPath);
+    final exported = <String>[rawPath];
+    String? correctedPath;
+    if (isCorrected) {
+      correctedPath = '$speechPath/$segmentId.corrected.txt';
+      final correctedPartial = File('$correctedPath.part');
+      await correctedPartial.writeAsString(
+        '$normalizedTranscript\n',
+        flush: true,
+      );
+      await correctedPartial.rename(correctedPath);
+      exported.add(correctedPath);
+      lastCorrectedTranscript = normalizedTranscript;
+      lastCorrectedTranscriptPath = correctedPath;
+      if (previewResult != null && previewResult.isCorrected) {
+        final metadataPath = '$speechPath/$segmentId.transcript.json';
+        await _atomicWriteJson(metadataPath, <String, Object>{
+          'version': 1,
+          'segment': segmentId,
+          'stt': <String, Object>{
+            'model': activeModelId ?? _selectedModel.id,
+            'provider': activeProvider ?? 'unknown',
+            'audioMs': 0,
+            'decodeMs': 0,
+            'totalMs': 0,
+          },
+          'correction': <String, Object>{
+            'source': 'preview_cache',
+            'model': _correctionConfigStore.config.modelId,
+            'runtime': 'litertlm-0.14.0',
+            'provider': previewResult.provider ?? 'unknown',
+            'queueMs': previewResult.queueMs ?? 0,
+            'engineLoadMs': previewResult.engineLoadMs ?? 0,
+            'inferenceMs': previewResult.inferenceMs ?? 0,
+            'totalMs': previewResult.correctionTotalMs ?? 0,
+            'timeToFirstTokenMs': previewResult.timeToFirstTokenMs ?? 0,
+            'prefillTokensPerSecond': previewResult.prefillTokensPerSecond ?? 0,
+            'decodeTokensPerSecond': previewResult.decodeTokensPerSecond ?? 0,
+          },
+          'pipelineTotalMs': previewResult.pipelineTotalMs ?? 0,
+          'completedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+        exported.add(metadataPath);
+      }
+    }
+    lastTranscriptPath = rawPath;
+    unawaited(
+      _exportSharedFiles(
+        exported,
+        reason: 'transcript_projection',
+        segmentId: segmentId,
+      ),
+    );
+    log(
+      'Pipeline',
+      '[WorkBench][VoiceRoute] state=manual_collection_projection '
+          'segment=$segmentId corrected=$isCorrected llm=skipped',
+    );
+    final handler = onFinalTranscript;
+    if (handler != null) {
+      await _publishFinalTranscript(
+        handler,
+        FinalTranscriptDelivery(
+          segmentId: segmentId,
+          rawTranscript: normalizedRaw,
+          transcript: normalizedTranscript,
+          isCorrected: isCorrected,
+        ),
+      );
+    }
+    return true;
+  }
+
+  bool _isCorrectionPreviewPath(String path) {
+    final parent = File(path).parent.path;
+    return parent.endsWith('${Platform.pathSeparator}.preview');
+  }
+
+  Future<void> _deleteCorrectionPreviewArtifacts(String path) async {
+    final rawPath = path.replaceFirst(
+      RegExp(r'\.(?:corrected|transcript)\.(?:txt|json)$'),
+      '.raw.txt',
+    );
+    final candidates = <String>{
+      rawPath,
+      rawPath.replaceFirst(RegExp(r'\.raw\.txt$'), '.corrected.txt'),
+      rawPath.replaceFirst(RegExp(r'\.raw\.txt$'), '.transcript.json'),
+      rawPath.replaceFirst(RegExp(r'\.raw\.txt$'), '.correction-skipped.json'),
+    };
+    for (final candidate in candidates) {
+      try {
+        final file = File(candidate);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } on Object {
+        // Preview artifacts are transient. A later startup cleanup may retry.
+      }
+    }
+    final directory = File(rawPath).parent;
+    try {
+      if (await directory.exists() && await directory.list().isEmpty) {
+        await directory.delete();
+      }
+    } on Object {
+      // Another preview may have started while cleanup was running.
+    }
+  }
+
+  static Future<void> _atomicWriteJson(
+    String path,
+    Map<String, Object> value,
+  ) async {
+    final partial = File('$path.part');
+    await partial.writeAsString(jsonEncode(value), flush: true);
+    await partial.rename(path);
+  }
+
   void setSelectedAgentDetailVadMode(bool enabled) {
     final mode = enabled
         ? VadEndpointMode.selectedAgent
@@ -1254,6 +1672,18 @@ final class AudioPipelineCoordinator {
     await _transcription?.dispose();
     await _transcriptHandlingTail;
     await _correction?.dispose();
+    final previewDirectory = _speechPath == null
+        ? null
+        : Directory('${_speechPath!}/.preview');
+    if (previewDirectory != null) {
+      try {
+        if (await previewDirectory.exists()) {
+          await previewDirectory.delete(recursive: true);
+        }
+      } on Object {
+        // Transient preview cleanup must not block pipeline disposal.
+      }
+    }
     await _decoder.dispose();
     _capture = null;
     _vad = null;
@@ -1279,12 +1709,30 @@ final class AudioPipelineCoordinator {
 
   Future<void> dispose() async {
     _disposed = true;
+    for (final completer in _previewCorrections.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(StateError('The audio pipeline was disposed.'));
+      }
+    }
+    _previewCorrections.clear();
     await _capture?.dispose();
     await _drainDecodeQueue();
     await _vad?.dispose();
     await _transcription?.dispose();
     await _transcriptHandlingTail;
     await _correction?.dispose();
+    final previewDirectory = _speechPath == null
+        ? null
+        : Directory('${_speechPath!}/.preview');
+    if (previewDirectory != null) {
+      try {
+        if (await previewDirectory.exists()) {
+          await previewDirectory.delete(recursive: true);
+        }
+      } on Object {
+        // Transient preview cleanup must not block pipeline disposal.
+      }
+    }
     _speechSegments.clear();
     _decodeQueue.clear();
     await _decoder.dispose();

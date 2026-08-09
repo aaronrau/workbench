@@ -28,6 +28,7 @@ import 'util/hex.dart';
 import 'startup/startup_state.dart';
 import 'websocket/agent_exchange_store.dart';
 import 'websocket/g2_agent_history_state.dart';
+import 'websocket/selected_agent_transcript_session.dart';
 import 'websocket/voice_websocket_client.dart';
 import 'websocket/voice_websocket_config.dart';
 import 'websocket/websocket_message_store.dart';
@@ -40,6 +41,7 @@ enum AgentDetailSwipeAction {
   none,
   focusBack,
   focusListen,
+  focusPreviewCorrection,
   previousPage,
   nextPage,
 }
@@ -51,6 +53,7 @@ enum AgentDetailTranscriptTapAction {
   activateListenMode,
   exitListenMode,
   finishSpeech,
+  togglePreviewCorrection,
   returnToSelector,
   dismiss,
 }
@@ -208,12 +211,22 @@ AgentDetailSwipeAction resolveAgentDetailSwipeAction({
   required int gestureType,
   required bool isAgentDetail,
   required G2AgentDetailControl detailControl,
+  bool listenModeSelected = false,
 }) {
   final move = resolveAgentHistorySelectionMove(gestureType);
   if (isAgentDetail) {
     if (move == AgentHistorySelectionMove.previous &&
+        detailControl == G2AgentDetailControl.previewCorrection) {
+      return AgentDetailSwipeAction.focusListen;
+    }
+    if (move == AgentHistorySelectionMove.previous &&
         detailControl == G2AgentDetailControl.listen) {
       return AgentDetailSwipeAction.focusBack;
+    }
+    if (move == AgentHistorySelectionMove.next &&
+        detailControl == G2AgentDetailControl.listen &&
+        listenModeSelected) {
+      return AgentDetailSwipeAction.focusPreviewCorrection;
     }
     if (move == AgentHistorySelectionMove.next &&
         detailControl == G2AgentDetailControl.back) {
@@ -255,6 +268,12 @@ AgentDetailTranscriptTapAction resolveAgentDetailTranscriptTapAction({
   }
   if (!isAgentDetail) {
     return AgentDetailTranscriptTapAction.none;
+  }
+  if (detailControl == G2AgentDetailControl.previewCorrection) {
+    return listenModeSelected &&
+            speechState == G2AgentDetailSpeechState.listening
+        ? AgentDetailTranscriptTapAction.togglePreviewCorrection
+        : AgentDetailTranscriptTapAction.none;
   }
   if (detailControl == G2AgentDetailControl.back) {
     return AgentDetailTranscriptTapAction.returnToSelector;
@@ -334,6 +353,9 @@ final class WearableController extends ChangeNotifier
       ],
       explicitCorrectionEligibilityProvider: (segmentId) =>
           _selectedAgentSpeechRoutes.containsKey(segmentId),
+      transcriptCollectionEligibilityProvider: (segmentId) =>
+          _selectedAgentCollectionSegments.containsKey(segmentId),
+      onCollectedTranscript: _handleCollectedTranscript,
       sharedAudioExportStore: _sharedAudioExportStore,
     );
     g2 = G2Connection(
@@ -382,6 +404,18 @@ final class WearableController extends ChangeNotifier
   final LinkedHashMap<String, _SelectedAgentSpeechRoute>
   _selectedAgentSpeechRoutes =
       LinkedHashMap<String, _SelectedAgentSpeechRoute>();
+  final Map<String, SelectedAgentTranscriptSession>
+  _selectedAgentCollectionSegments = <String, SelectedAgentTranscriptSession>{};
+  final Map<String, Future<void>> _selectedAgentPreviewPumps =
+      <String, Future<void>>{};
+  final Map<String, TranscriptCorrectionPreviewResult>
+  _selectedAgentPreviewResults = <String, TranscriptCorrectionPreviewResult>{};
+  final Map<String, Future<void>> _selectedAgentSubmissions =
+      <String, Future<void>>{};
+  SelectedAgentTranscriptSession? _selectedAgentListenSession;
+  int _selectedAgentListenSessionRevision = 0;
+  Timer? _selectedAgentTranscriptionBlinkTimer;
+  bool _selectedAgentTranscriptionIndicatorVisible = true;
   Timer? _agentHistoryWaitTimer;
   bool _agentExchangeStoreReady = false;
   bool _agentHistoryOpening = false;
@@ -1228,40 +1262,27 @@ final class WearableController extends ChangeNotifier
   void _handleVadSpeechEvent(VadSpeechEvent event) {
     switch (event.type) {
       case VadSpeechEventType.started:
-        final selectedAgent = _agentHistory.selectedSpeechAgent;
-        if (selectedAgent != null) {
-          final detailTarget = _agentHistory.isAgentDetailSpeechTarget;
-          if (detailTarget) {
-            _agentHistory.beginTargetedSpeech(event.segmentId);
-          }
-          final source = detailTarget ? 'agent_detail' : 'agent_selector';
-          _selectedAgentSpeechRoutes[event.segmentId] =
-              _SelectedAgentSpeechRoute(agent: selectedAgent, source: source);
-          while (_selectedAgentSpeechRoutes.length >
-              _maximumSelectedAgentSpeechRoutes) {
-            _selectedAgentSpeechRoutes.remove(
-              _selectedAgentSpeechRoutes.keys.first,
-            );
-          }
-          _syncSelectedAgentVadMode();
+        final session = _selectedAgentListenSession;
+        if (session != null && session.registerSegment(event.segmentId)) {
+          _selectedAgentCollectionSegments[event.segmentId] = session;
           addLog(
             'WebSocket',
             '[WorkBench][VoiceRoute] state=speech_targeted '
-                'source=$source',
+                'source=${session.source} mode=manual_collection',
           );
-          if (detailTarget) {
-            _queueAgentHistoryDisplay();
+          if (_agentHistory.activeDetailSpeechSegmentId == session.id) {
+            _syncSelectedAgentTranscriptionStatus(session);
           }
         }
         _voiceMemo.speechStarted(event.segmentId);
       case VadSpeechEventType.ended:
         _voiceMemo.speechEnded(event.segmentId);
-        final selectedRoute = _selectedAgentSpeechRoutes[event.segmentId];
-        if (selectedRoute?.source == 'agent_detail') {
-          _finishAgentDetailSpeech(
-            event.segmentId,
-            source: 'vad_endpoint',
-            flushCurrentSpeech: false,
+        final session = _selectedAgentCollectionSegments[event.segmentId];
+        if (session != null) {
+          addLog(
+            'WebSocket',
+            '[WorkBench][VoiceRoute] state=vad_endpoint '
+                'source=${session.source} action=continue_collecting',
           );
         }
     }
@@ -1294,6 +1315,9 @@ final class WearableController extends ChangeNotifier
           case AgentDetailTranscriptTapAction.finishSpeech:
             _finishActiveAgentDetailSpeech();
             return true;
+          case AgentDetailTranscriptTapAction.togglePreviewCorrection:
+            _toggleSelectedAgentCorrectionPreview();
+            return true;
           case AgentDetailTranscriptTapAction.returnToSelector:
             _returnToAgentHistorySelector();
             return true;
@@ -1319,11 +1343,14 @@ final class WearableController extends ChangeNotifier
           gestureType: event.type,
           isAgentDetail: _agentHistory.isAgentDetail,
           detailControl: _agentHistory.detailControl,
+          listenModeSelected: _agentHistory.detailListenModeSelected,
         );
         final changed = switch (swipeAction) {
           AgentDetailSwipeAction.focusBack => _focusAgentBackControlFromSwipe(),
           AgentDetailSwipeAction.focusListen =>
             _agentHistory.focusAgentListenControl(),
+          AgentDetailSwipeAction.focusPreviewCorrection =>
+            _agentHistory.focusAgentPreviewCorrectionControl(),
           AgentDetailSwipeAction.previousPage =>
             _agentHistory.selectPreviousDetailPage(),
           AgentDetailSwipeAction.nextPage =>
@@ -1393,47 +1420,236 @@ final class WearableController extends ChangeNotifier
   }
 
   void _finishActiveAgentDetailSpeech() {
-    final segmentId = _agentHistory.activeDetailSpeechSegmentId;
-    if (segmentId == null) {
+    final session = _selectedAgentListenSession;
+    if (session == null ||
+        _agentHistory.activeDetailSpeechSegmentId != session.id) {
       return;
     }
-    _finishAgentDetailSpeech(
-      segmentId,
-      source: 'detail_tap',
-      flushCurrentSpeech: true,
-    );
+    unawaited(_finishAgentDetailSpeech(session, source: 'detail_tap'));
   }
 
-  void _finishAgentDetailSpeech(
-    String segmentId, {
+  Future<void> _finishAgentDetailSpeech(
+    SelectedAgentTranscriptSession session, {
     required String source,
-    required bool flushCurrentSpeech,
-  }) {
-    if (!_agentHistory.finishTargetedSpeechCapture(segmentId)) {
+  }) async {
+    if (!_agentHistory.finishTargetedSpeechCapture(session.id) ||
+        !session.requestFinish()) {
       return;
     }
+    _stopSelectedAgentTranscriptionBlink();
     _syncSelectedAgentVadMode();
     _queueAgentHistoryDisplay();
-    if (flushCurrentSpeech) {
-      _audioPipeline.flushCurrentSpeech();
-    }
     addLog(
       'WebSocket',
       '[WorkBench][VoiceRoute] state=detail_speech_finished '
-          'source=$source action=finish_for_send',
+          'source=$source action=flush_wait_correct_send',
     );
+    try {
+      await _audioPipeline.flushCurrentSpeechAndWait();
+    } on Object catch (error) {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceRoute] state=flush_wait_failed '
+            'source=$source error=${_oneLine(error)}',
+        isError: true,
+      );
+    }
+    await _submitSelectedAgentSessionIfReady(session);
   }
 
   void _activateAgentDetailListenMode() {
     if (!_agentHistory.selectDetailListenMode()) {
       return;
     }
+    final agent = _agentHistory.selectedSpeechAgent;
+    if (agent == null) {
+      _agentHistory.exitDetailListenMode();
+      return;
+    }
+    final revision = ++_selectedAgentListenSessionRevision;
+    final session = SelectedAgentTranscriptSession(
+      id:
+          'agent-listen-'
+          '${DateTime.now().toUtc().microsecondsSinceEpoch}-$revision',
+      agent: agent,
+      source: 'agent_detail',
+    );
+    if (!_agentHistory.beginTargetedSpeech(session.id)) {
+      _agentHistory.exitDetailListenMode();
+      return;
+    }
+    _selectedAgentListenSession = session;
     _syncSelectedAgentVadMode();
+    _syncSelectedAgentTranscriptionStatus(session);
     _queueAgentHistoryDisplay();
     addLog(
       'WebSocket',
-      '[WorkBench][AgentHistory] state=listen_mode_selected source=detail_tap',
+      '[WorkBench][AgentHistory] state=listen_mode_selected '
+          'source=detail_tap boundary=manual',
     );
+  }
+
+  void _toggleSelectedAgentCorrectionPreview() {
+    final session = _selectedAgentListenSession;
+    if (session == null ||
+        _agentHistory.activeDetailSpeechSegmentId != session.id ||
+        !session.isListening) {
+      return;
+    }
+    if (session.previewEnabled) {
+      session.disablePreview();
+    } else {
+      session.enablePreview();
+    }
+    _projectSelectedAgentSession(session);
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceRoute] state=preview_mode '
+          'enabled=${session.previewEnabled} source=${session.source}',
+    );
+    if (session.previewEnabled) {
+      unawaited(_ensureSelectedAgentPreviewCorrection(session));
+    }
+  }
+
+  void _projectSelectedAgentSession(SelectedAgentTranscriptSession session) {
+    if (_agentHistory.updateTargetedSpeechPreview(
+      segmentId: session.id,
+      transcript: session.displayTranscript,
+      previewState: session.previewState,
+    )) {
+      _queueAgentHistoryDisplay();
+    }
+  }
+
+  Future<void> _ensureSelectedAgentPreviewCorrection(
+    SelectedAgentTranscriptSession session,
+  ) async {
+    final existing = _selectedAgentPreviewPumps[session.id];
+    if (existing != null) {
+      await existing;
+      return;
+    }
+    final pump = _runSelectedAgentPreviewCorrection(session);
+    _selectedAgentPreviewPumps[session.id] = pump;
+    try {
+      await pump;
+    } finally {
+      if (identical(_selectedAgentPreviewPumps[session.id], pump)) {
+        _selectedAgentPreviewPumps.remove(session.id);
+      }
+    }
+  }
+
+  Future<void> _runSelectedAgentPreviewCorrection(
+    SelectedAgentTranscriptSession session,
+  ) async {
+    while (session.previewEnabled &&
+        !session.isCanceled &&
+        (session.isListening || session.isFinishing)) {
+      final snapshot = session.correctionSnapshot();
+      if (snapshot == null || !session.markPreviewQueued(snapshot.revision)) {
+        return;
+      }
+      _projectSelectedAgentSession(session);
+      await Future<void>.delayed(Duration.zero);
+      if (!session.markPreviewCorrecting(snapshot.revision)) {
+        continue;
+      }
+      _projectSelectedAgentSession(session);
+      TranscriptCorrectionPreviewResult result;
+      try {
+        result = await _audioPipeline.correctCollectedTranscriptPreview(
+          segmentId: '${session.id}-preview-${snapshot.revision}',
+          transcript: snapshot.transcript,
+        );
+      } on Object catch (error) {
+        session.failPreview(snapshot.revision);
+        _projectSelectedAgentSession(session);
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceRoute] state=preview_failed '
+              'source=${session.source} error=${_oneLine(error)}',
+          isError: true,
+        );
+        return;
+      }
+      if (!result.isCorrected) {
+        session.failPreview(snapshot.revision);
+        _projectSelectedAgentSession(session);
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceRoute] state=preview_failed '
+              'source=${session.source} reason=${result.failureReason ?? 'unavailable'}',
+          isError: true,
+        );
+        return;
+      }
+      if (session.acceptPreview(
+        revision: snapshot.revision,
+        correctedTranscript: result.transcript,
+      )) {
+        _selectedAgentPreviewResults[session.id] = result;
+        _projectSelectedAgentSession(session);
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceRoute] state=preview_updated '
+              'source=${session.source} revision=${snapshot.revision} '
+              'current=${session.isPreviewCurrent}',
+        );
+      }
+    }
+  }
+
+  void _syncSelectedAgentTranscriptionStatus(
+    SelectedAgentTranscriptSession session,
+  ) {
+    final pending = session.isListening && session.hasPendingSegments;
+    if (!pending) {
+      _stopSelectedAgentTranscriptionBlink();
+    }
+    final changed = _agentHistory.updateTargetedSpeechTranscription(
+      segmentId: session.id,
+      pending: pending,
+      indicatorVisible: pending
+          ? _selectedAgentTranscriptionIndicatorVisible
+          : false,
+    );
+    if (changed) {
+      _queueAgentHistoryDisplay();
+    }
+    if (!pending || _selectedAgentTranscriptionBlinkTimer != null) {
+      return;
+    }
+    _selectedAgentTranscriptionIndicatorVisible = true;
+    _selectedAgentTranscriptionBlinkTimer = Timer.periodic(
+      const Duration(milliseconds: 650),
+      (_) {
+        final active = _selectedAgentListenSession;
+        if (_disposed ||
+            !identical(active, session) ||
+            !session.isListening ||
+            !session.hasPendingSegments) {
+          _stopSelectedAgentTranscriptionBlink();
+          return;
+        }
+        _selectedAgentTranscriptionIndicatorVisible =
+            !_selectedAgentTranscriptionIndicatorVisible;
+        if (_agentHistory.updateTargetedSpeechTranscription(
+          segmentId: session.id,
+          pending: true,
+          indicatorVisible: _selectedAgentTranscriptionIndicatorVisible,
+        )) {
+          _queueAgentHistoryDisplay();
+        }
+      },
+    );
+  }
+
+  void _stopSelectedAgentTranscriptionBlink() {
+    _selectedAgentTranscriptionBlinkTimer?.cancel();
+    _selectedAgentTranscriptionBlinkTimer = null;
+    _selectedAgentTranscriptionIndicatorVisible = true;
   }
 
   bool _focusAgentBackControlFromSwipe() {
@@ -1456,13 +1672,10 @@ final class WearableController extends ChangeNotifier
   }
 
   void _returnToAgentHistorySelector() {
-    final abandonedSegmentId = _agentHistory.activeDetailSpeechSegmentId;
     if (!_agentHistory.returnToSelector()) {
       return;
     }
-    if (abandonedSegmentId != null) {
-      _selectedAgentSpeechRoutes.remove(abandonedSegmentId);
-    }
+    _cancelSelectedAgentListenSession(source: 'detail_return');
     _syncSelectedAgentVadMode();
     _queueAgentHistoryDisplay();
     addLog(
@@ -1475,13 +1688,10 @@ final class WearableController extends ChangeNotifier
     required String source,
     bool queueDisplay = true,
   }) {
-    final abandonedSegmentId = _agentHistory.activeDetailSpeechSegmentId;
     if (!_agentHistory.exitDetailListenMode()) {
       return false;
     }
-    if (abandonedSegmentId != null) {
-      _selectedAgentSpeechRoutes.remove(abandonedSegmentId);
-    }
+    _cancelSelectedAgentListenSession(source: source);
     _syncSelectedAgentVadMode();
     if (queueDisplay) {
       _queueAgentHistoryDisplay();
@@ -1491,6 +1701,176 @@ final class WearableController extends ChangeNotifier
       '[WorkBench][AgentHistory] state=listen_mode_exited source=$source',
     );
     return true;
+  }
+
+  void _cancelSelectedAgentListenSession({required String source}) {
+    final session = _selectedAgentListenSession;
+    if (session == null || !session.cancel()) {
+      return;
+    }
+    _selectedAgentPreviewResults.remove(session.id);
+    _stopSelectedAgentTranscriptionBlink();
+    unawaited(_flushCanceledSelectedAgentSession(session, source: source));
+  }
+
+  Future<void> _flushCanceledSelectedAgentSession(
+    SelectedAgentTranscriptSession session, {
+    required String source,
+  }) async {
+    try {
+      await _audioPipeline.flushCurrentSpeechAndWait();
+    } on Object catch (error) {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceRoute] state=cancel_flush_failed '
+            'source=$source error=${_oneLine(error)}',
+        isError: true,
+      );
+    }
+    if (identical(_selectedAgentListenSession, session)) {
+      _selectedAgentListenSession = null;
+    }
+    addLog(
+      'WebSocket',
+      '[WorkBench][AgentHistory] state=listen_mode_canceled source=$source',
+    );
+  }
+
+  Future<void> _handleCollectedTranscript(
+    String segmentId,
+    String transcript,
+  ) async {
+    final session = _selectedAgentCollectionSegments.remove(segmentId);
+    if (session == null || !session.completeSegment(segmentId, transcript)) {
+      return;
+    }
+    _projectSelectedAgentSession(session);
+    _syncSelectedAgentTranscriptionStatus(session);
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceRoute] state=transcript_accumulated '
+          'source=${session.source} pending=${session.hasPendingSegments}',
+    );
+    if (session.previewEnabled) {
+      unawaited(_ensureSelectedAgentPreviewCorrection(session));
+    }
+    if (session.isFinishing) {
+      await _submitSelectedAgentSessionIfReady(session);
+    } else if (session.isCanceled &&
+        !session.hasPendingSegments &&
+        identical(_selectedAgentListenSession, session)) {
+      _selectedAgentListenSession = null;
+    }
+  }
+
+  Future<void> _submitSelectedAgentSessionIfReady(
+    SelectedAgentTranscriptSession session,
+  ) {
+    final existing = _selectedAgentSubmissions[session.id];
+    if (existing != null) {
+      return existing;
+    }
+    if (!session.finishedWithoutTranscript && !session.canSubmit) {
+      return Future<void>.value();
+    }
+    final submission = _performSelectedAgentSessionSubmission(session);
+    _selectedAgentSubmissions[session.id] = submission;
+    return submission.whenComplete(() {
+      if (identical(_selectedAgentSubmissions[session.id], submission)) {
+        _selectedAgentSubmissions.remove(session.id);
+      }
+    });
+  }
+
+  Future<void> _performSelectedAgentSessionSubmission(
+    SelectedAgentTranscriptSession session,
+  ) async {
+    if (session.markFinishedWithoutTranscript()) {
+      _selectedAgentPreviewResults.remove(session.id);
+      if (identical(_selectedAgentListenSession, session)) {
+        _selectedAgentListenSession = null;
+      }
+      if (_agentHistory.completeTargetedSpeech(
+        segmentId: session.id,
+        transcript: '',
+        sent: false,
+      )) {
+        _queueAgentHistoryDisplay();
+      }
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceRoute] state=manual_collection_empty '
+            'source=${session.source} action=saved',
+      );
+      return;
+    }
+    if (session.previewEnabled) {
+      await _ensureSelectedAgentPreviewCorrection(session);
+    }
+    if (!session.markSubmitted()) {
+      return;
+    }
+    _selectedAgentSpeechRoutes[session.id] = _SelectedAgentSpeechRoute(
+      agent: session.agent,
+      source: session.source,
+    );
+    while (_selectedAgentSpeechRoutes.length >
+        _maximumSelectedAgentSpeechRoutes) {
+      _selectedAgentSpeechRoutes.remove(_selectedAgentSpeechRoutes.keys.first);
+    }
+    if (identical(_selectedAgentListenSession, session)) {
+      _selectedAgentListenSession = null;
+    }
+    try {
+      final correctionMode = session.sendCorrectionMode;
+      final previewResult = _selectedAgentPreviewResults[session.id];
+      final accepted = switch (correctionMode) {
+        SelectedAgentSendCorrectionMode.reusePreview =>
+          await _audioPipeline.submitCollectedTranscriptProjection(
+            segmentId: session.id,
+            rawTranscript: session.transcript,
+            transcript: session.previewTranscript!,
+            isCorrected: true,
+            previewResult: previewResult,
+          ),
+        SelectedAgentSendCorrectionMode.preserveRaw =>
+          await _audioPipeline.submitCollectedTranscriptProjection(
+            segmentId: session.id,
+            rawTranscript: session.transcript,
+            transcript: session.transcript,
+            isCorrected: false,
+          ),
+        SelectedAgentSendCorrectionMode.correctAtSend =>
+          await _audioPipeline.correctCollectedTranscript(
+            segmentId: session.id,
+            transcript: session.transcript,
+          ),
+      };
+      if (!accepted) {
+        throw StateError('Collected transcript was not accepted.');
+      }
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceRoute] state=manual_collection_submitted '
+            'source=${session.source} correction='
+            '${correctionMode.name}',
+      );
+    } on Object catch (error) {
+      _selectedAgentSpeechRoutes.remove(session.id);
+      await _completeTranscriptProjection(
+        segmentId: session.id,
+        transcript: session.transcript,
+        sent: false,
+      );
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceRoute] state=manual_collection_failed '
+            'source=${session.source} error=${_oneLine(error)}',
+        isError: true,
+      );
+    } finally {
+      _selectedAgentPreviewResults.remove(session.id);
+    }
   }
 
   Future<void> _commitQueuedTranscriptFromTap(
@@ -1719,6 +2099,7 @@ final class WearableController extends ChangeNotifier
     try {
       _agentHistoryWaitTimer?.cancel();
       _agentHistoryWaitTimer = null;
+      _cancelSelectedAgentListenSession(source: 'history_close');
       _agentHistory.close();
       _syncSelectedAgentVadMode();
       _historyDisplayQueue.reset();
@@ -2321,6 +2702,8 @@ final class WearableController extends ChangeNotifier
   @override
   void dispose() {
     _disposed = true;
+    _stopSelectedAgentTranscriptionBlink();
+    _selectedAgentPreviewResults.clear();
     _agentHistoryWaitTimer?.cancel();
     _agentHistoryWaitTimer = null;
     _agentHistory.close();

@@ -134,6 +134,9 @@ final class CorrectedTranscriptResult {
     required this.inferenceMs,
     required this.correctionTotalMs,
     required this.pipelineTotalMs,
+    required this.timeToFirstTokenMs,
+    required this.prefillTokensPerSecond,
+    required this.decodeTokensPerSecond,
     required this.routeWhenCorrected,
   });
 
@@ -147,6 +150,9 @@ final class CorrectedTranscriptResult {
   final int inferenceMs;
   final int correctionTotalMs;
   final int pipelineTotalMs;
+  final int timeToFirstTokenMs;
+  final double prefillTokensPerSecond;
+  final double decodeTokensPerSecond;
   final bool routeWhenCorrected;
 }
 
@@ -555,6 +561,9 @@ final class TranscriptCorrectionSupervisor {
           inferenceMs: result.inferenceMs,
           correctionTotalMs: result.totalMs,
           pipelineTotalMs: pipelineTotalMs,
+          timeToFirstTokenMs: result.timeToFirstTokenMs,
+          prefillTokensPerSecond: result.prefillTokensPerSecond,
+          decodeTokensPerSecond: result.decodeTokensPerSecond,
           routeWhenCorrected: job.routeWhenCorrected,
         ),
       );

@@ -281,6 +281,26 @@ void main() {
       ),
       AgentDetailTranscriptTapAction.returnToSelector,
     );
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.previewCorrection,
+        listenModeSelected: true,
+        speechState: G2AgentDetailSpeechState.listening,
+      ),
+      AgentDetailTranscriptTapAction.togglePreviewCorrection,
+    );
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.previewCorrection,
+        listenModeSelected: false,
+        speechState: null,
+      ),
+      AgentDetailTranscriptTapAction.none,
+    );
   });
 
   test('detail swipes move between controls before paging', () {
@@ -289,6 +309,33 @@ void main() {
         gestureType: 2,
         isAgentDetail: true,
         detailControl: G2AgentDetailControl.listen,
+      ),
+      AgentDetailSwipeAction.nextPage,
+    );
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 2,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+        listenModeSelected: true,
+      ),
+      AgentDetailSwipeAction.focusPreviewCorrection,
+    );
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 1,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.previewCorrection,
+        listenModeSelected: true,
+      ),
+      AgentDetailSwipeAction.focusListen,
+    );
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 2,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.previewCorrection,
+        listenModeSelected: true,
       ),
       AgentDetailSwipeAction.nextPage,
     );

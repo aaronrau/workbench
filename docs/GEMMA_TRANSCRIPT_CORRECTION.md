@@ -76,8 +76,9 @@ Legacy `<segment>.txt` files remain readable as original-only transcripts.
 
 Correction is attention-gated before it enters the durable Gemma queue. A live
 raw chunk is eligible when it begins with the complete word `hey`, matched
-case-insensitively, or when VAD speech start snapshotted an explicitly selected
-agent row/detail in the live process. An unselected chunk without the leading
+case-insensitively. A complete manual transcript submitted by the second tap of
+an explicitly selected agent Listen Mode session is also eligible in the live
+process. Its individual VAD/STT chunks remain collection-only. An unselected chunk without the leading
 word is saved normally and receives a durable `no_wake_word` skip record;
 startup recovery therefore cannot turn ambient speech or a mid-sentence mention
 into a later correction job. During uninterrupted speech, STT
@@ -88,11 +89,21 @@ live correction/route input remove only an exact repeated boundary-word
 sequence; every original per-chunk raw file remains independently durable.
 
 Listen Mode explicitly activated from an agent's retained-message detail page
-is routing intent, not acoustic wake evidence. Speech that begins while that
-mode is active enters the live Gemma queue even without leading `Hey` and routes
-the corrected transcript to that still-configured agent. Merely highlighting
-an agent row or opening its detail retains the ordinary wake-word path. The raw
-transcript remains independently durable.
+is routing intent, not acoustic wake evidence. Its first tap snapshots the
+agent; VAD-separated STT results accumulate visibly without entering Gemma.
+That is the Preview Correction Off behavior: the second tap waits for the final
+VAD flush and queued STT, then places the complete durable transcript in the
+live Gemma queue even without leading `Hey` and routes only its corrected result
+to that still-configured agent. With Preview Correction On, each completed STT
+append queues a serialized, transient correction of the newest aggregate. A
+new append during inference marks the displayed preview stale and schedules one
+new aggregate correction. Send waits for the current preview and persists its
+text and timing metadata without a second Gemma request. If automatic preview
+correction fails, Send does not retry it; the raw transcript is retained and is
+not routed. Merely highlighting an agent row or opening its detail retains the
+ordinary wake-word path. The final raw transcript remains independently
+durable; transient preview artifacts are kept outside durable transcript
+history and removed after each attempt.
 Restored jobs never route, and correction failure preserves the raw fallback.
 Memo and Dismiss never provide this override.
 

@@ -61,8 +61,9 @@ hold, rebuilds the pulse page, and leaves continuous audio capture running.
 Memo and retained-message agent details are host-paginated rather than relying
 on firmware text scrolling. Each page reuses the four-pixel history inset, puts
 the tap action in its fixed controls, and uses eight body rows below Memo's one
-title or seven body rows below an agent's title and Listen Mode control for
-pixel-width-wrapped content.
+title or seven body rows below an inactive agent's title and Listen Mode
+control. An active manual session adds fixed Preview Correction and Status rows,
+leaving five pixel-width-wrapped content rows.
 Swipe down advances, swipe up goes back, and neither boundary wraps. To
 preserve reading position, the final content row of one page repeats as the
 first content row of the next page.
@@ -104,15 +105,29 @@ page-replacement lifecycle events. The phone's
 top, middle, and bottom pages at two-second intervals without private history,
 then restores the Hub page automatically.
 
-Selected-agent detail speech changes the VAD endpoint before transcription.
-After VAD falls inactive, the worker retains one second of PCM. Positive VAD
-during that interval resets the endpoint and continues the same speech turn.
-Only an uninterrupted one-second inactive interval finalizes the durable turn.
-The default flow is separate and requires 1.5 seconds continuously VAD-inactive.
-In both modes the persistent STT worker may process bounded duration chunks
-while speech continues, but those results only append to the durable logical
-transcript. The final result runs Gemma correction and sends one complete
-command; there is no second post-transcription timer.
+Selected-agent detail speech is a manually bounded transcript session. Its
+first tap snapshots the selected agent and changes the VAD endpoint for audio
+chunking. After VAD falls inactive, the worker retains one second of PCM;
+positive VAD during that interval resets the chunk endpoint. A completed
+one-second endpoint atomically queues that WAV in the persistent STT FIFO, but
+does not end Listen Mode, correct text, or send. Each STT result appends to the
+session accumulator and refreshes the full `Listening:` transcript on G2. The
+Status row blinks its dot while STT is outstanding. Swipe down from the Send
+control focuses Preview Correction, tap toggles it, and swipe up returns to
+Send. When Preview Correction is On, each appended STT result queues a
+serialized correction of the newest aggregate. If speech arrives during
+inference, G2 retains the corrected prefix, appends the newer raw tail, and
+shows the queued/correcting/update-pending/current state explicitly.
+
+The second tap is the selected-agent action boundary. It stops capture, waits
+for an acknowledged VAD flush and every registered STT chunk, and persists the
+combined transcript. With Preview Correction Off, it runs Gemma once and then
+sends at most one command. With Preview Correction On, it waits for the newest
+automatic preview and sends that cached result without invoking Gemma again. A
+failed preview retains raw text and does not retry at Send. The default flow
+remains separate: 1.5 seconds continuously VAD-inactive closes its logical turn
+and allows its normal queued wake-word action. Neither mode uses a second
+post-transcription silence timer.
 
 The microphone notification format observed in MentraOS and on hardware is:
 

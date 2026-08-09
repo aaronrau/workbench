@@ -1,5 +1,6 @@
 import 'package:even_g2_r1_poc/src/websocket/agent_exchange_store.dart';
 import 'package:even_g2_r1_poc/src/websocket/g2_agent_history_state.dart';
+import 'package:even_g2_r1_poc/src/websocket/selected_agent_transcript_session.dart';
 import 'package:even_g2_r1_poc/src/protocol/g2_text_layout.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -42,17 +43,17 @@ void main() {
     expect(state.entries.last.kind, G2AgentHistoryEntryKind.memo);
     expect(
       state.render(),
-      startsWith(' > [x] - Swipe to Select\n    Pike - validate'),
+      startsWith(' >  [x] - Swipe to Select\n     Pike - validate'),
     );
     final rows = state.render().split('\n');
     expect(rows, hasLength(7));
-    expect(rows.last, '    Memo - Remember the synthetic validation result.');
+    expect(rows.last, '     Memo - Remember the synthetic validation result.');
     expect(state.render(), contains('[x] - Swipe to Select'));
 
     for (var index = 0; index < 4; index++) {
       state.selectNext();
     }
-    expect(state.render(), contains(' > Agent Four - No messages'));
+    expect(state.render(), contains(' >  Agent Four - No messages'));
     expect(
       state.render().runes.length,
       lessThanOrEqualTo(G2AgentHistoryState.maximumPageCharacters),
@@ -205,6 +206,24 @@ void main() {
         startsWith('   [Pike]\n< • Listening - Tap to send\n'),
       );
 
+      expect(
+        state.updateTargetedSpeechTranscript(
+          segmentId: 'segment-1',
+          transcript: 'pull the latest',
+        ),
+        isTrue,
+      );
+      expect(state.detailSpeechState, G2AgentDetailSpeechState.listening);
+      expect(state.render(), contains('Listening: pull the latest'));
+      expect(
+        state.updateTargetedSpeechTranscript(
+          segmentId: 'segment-1',
+          transcript: 'pull the latest changes',
+        ),
+        isTrue,
+      );
+      expect(state.render(), contains('Listening: pull the latest changes'));
+
       expect(state.finishTargetedSpeechCapture('segment-1'), isTrue);
       expect(state.detailSpeechState, G2AgentDetailSpeechState.sending);
       expect(state.detailListenModeSelected, isFalse);
@@ -215,6 +234,7 @@ void main() {
           '< • Sending - Tap to dismiss\n',
         ),
       );
+      expect(state.render(), contains('Sending: pull the latest changes'));
       expect(state.markTargetedSpeechSending('segment-1'), isFalse);
       expect(state.beginTargetedSpeech('segment-2'), isFalse);
 
@@ -453,6 +473,60 @@ void main() {
     expect(state.returnToSelector(), isFalse);
   });
 
+  test('active listening renders Preview Correction and explicit status', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showSelectedDetail()
+      ..selectDetailListenMode()
+      ..beginTargetedSpeech('manual-session');
+
+    expect(state.detailBodyLinesPerPage, 5);
+    expect(state.render(), contains('• Preview Correction · Off'));
+    expect(state.render(), contains('Status: Listening'));
+    expect(state.render().split('\n'), hasLength(9));
+
+    expect(state.focusAgentPreviewCorrectionControl(), isTrue);
+    expect(
+      state.updateTargetedSpeechPreview(
+        segmentId: 'manual-session',
+        transcript: 'first raw thought',
+        previewState: SelectedAgentCorrectionPreviewState.queued,
+      ),
+      isTrue,
+    );
+    expect(state.render(), contains('> • Preview Correction · On'));
+    expect(state.render(), contains('Status: Correction queued'));
+
+    expect(
+      state.updateTargetedSpeechTranscription(
+        segmentId: 'manual-session',
+        pending: true,
+        indicatorVisible: true,
+      ),
+      isTrue,
+    );
+    expect(state.render(), contains('Transcribing'));
+    expect(
+      state.updateTargetedSpeechTranscription(
+        segmentId: 'manual-session',
+        pending: true,
+        indicatorVisible: false,
+      ),
+      isTrue,
+    );
+    expect(state.render(), contains('Transcribing'));
+
+    expect(state.focusAgentListenControl(), isTrue);
+    expect(
+      state.render(),
+      startsWith('   [Flux]\n< • Listening - Tap to send\n'),
+    );
+  });
+
   test('a matching response refreshes page one and preserves detail state', () {
     final state = G2AgentHistoryState()
       ..open(
@@ -547,7 +621,7 @@ void main() {
     expect(state.render(), contains('live synthetic response'));
   });
 
-  test('selector flows Agent - content across at most two full-width rows', () {
+  test('selector collapses returns and ellipsizes previews on one row', () {
     final state = G2AgentHistoryState()
       ..open(
         agents: const <String>['Pike'],
@@ -556,9 +630,9 @@ void main() {
             id: 'pike-exchange',
             agent: 'Pike',
             message:
-                'first line\nsecond line with a long synthetic payload '
+                'ready for review\r\nsecond line\rthird line with a long synthetic payload '
                 'that must be safely shortened for the glasses and keeps '
-                'overflowing beyond the second permitted display row',
+                'overflowing beyond the permitted display row',
             sentAt: sentAt,
             legacy: false,
           ),
@@ -566,17 +640,15 @@ void main() {
       );
 
     final rows = state.render().split('\n');
-    expect(rows, hasLength(4));
-    expect(rows[1], startsWith('    Pike - first line second line'));
-    expect(rows[2], isNotEmpty);
-    expect(rows[2], endsWith('…'));
-    expect(rows[1].runes.length, greaterThan(48));
-    expect(rows[2], startsWith('     '));
+    expect(rows, hasLength(3));
+    expect(rows[1], startsWith('     Pike - ready for review second line'));
+    expect(rows[1], isNot(contains('\r')));
+    expect(rows[1], endsWith('…'));
     expect(
-      G2TextLayout.history.textWidth(rows[2]),
+      G2TextLayout.history.textWidth(rows[1]),
       lessThanOrEqualTo(G2TextLayout.history.wrappingWidthPixels),
     );
-    expect(rows.last, '    Memo - No saved memo');
+    expect(rows.last, '     Memo - No saved memo');
 
     const layout = G2TextLayout.history;
     final unselectedPrefix = rows[1].substring(0, rows[1].indexOf('Pike'));
@@ -593,14 +665,14 @@ void main() {
       layout.textWidth(unselectedPrefix),
       layout.textWidth(selectedPrefix),
     );
-    expect(selectedRow, startsWith(' > Pike -'));
+    expect(selectedRow, startsWith(' >  Pike -'));
     expect(
       state.render().split('\n').where((line) => line.contains('Pike -')),
       hasLength(1),
     );
   });
 
-  test('selector scrolls only when a complete selected block overflows', () {
+  test('selector keeps all maximum entries visible on one page', () {
     final longMessage = List<String>.filled(40, 'synthetic-content').join(' ');
     final state = G2AgentHistoryState()
       ..open(
@@ -626,32 +698,31 @@ void main() {
       );
 
     final firstPage = state.render().split('\n');
-    expect(firstPage.length, lessThanOrEqualTo(9));
-    expect(firstPage.first, ' > [x] - Swipe to Select');
-    expect(firstPage.any((line) => line.contains('Agent Five')), isFalse);
+    expect(firstPage, hasLength(7));
+    expect(firstPage.first, ' >  [x] - Swipe to Select');
+    expect(firstPage.any((line) => line.contains('Agent Five')), isTrue);
+    expect(firstPage, contains(startsWith('     Memo -')));
+    expect(firstPage.skip(1).every((line) => line.endsWith('…')), isTrue);
 
     for (var index = 0; index < 4; index++) {
       state.selectNext();
     }
-    final firstBoundary = state.render().split('\n');
-    expect(firstBoundary[1], startsWith('    Agent Two -'));
-    expect(firstBoundary, contains(startsWith(' > Agent Four -')));
-    expect(firstBoundary.any((line) => line.contains('Agent One -')), isFalse);
-    expect(firstBoundary.any((line) => line.contains('Agent Five -')), isTrue);
+    final selectedFourth = state.render().split('\n');
+    expect(selectedFourth[1], startsWith('     Agent One -'));
+    expect(selectedFourth, contains(startsWith(' >  Agent Four -')));
+    expect(selectedFourth.any((line) => line.contains('Agent Five -')), isTrue);
 
     state.selectNext();
-    final secondBoundary = state.render().split('\n');
-    expect(secondBoundary[1], startsWith('    Agent Three -'));
-    expect(secondBoundary, contains(startsWith(' > Agent Five -')));
-    expect(secondBoundary, contains(startsWith('    Memo -')));
-    expect(secondBoundary.length, lessThanOrEqualTo(9));
-    expect(secondBoundary.first, '    [x] - Swipe to Select');
-    expect(secondBoundary.join('\n'), isNot(contains(RegExp(r'\d+/\d+'))));
-    expect(secondBoundary.any((line) => line.contains('Agent One -')), isFalse);
-    expect(secondBoundary.any((line) => line.contains('Agent Two -')), isFalse);
+    final selectedFifth = state.render().split('\n');
+    expect(selectedFifth[1], startsWith('     Agent One -'));
+    expect(selectedFifth, contains(startsWith(' >  Agent Five -')));
+    expect(selectedFifth, contains(startsWith('     Memo -')));
+    expect(selectedFifth, hasLength(7));
+    expect(selectedFifth.first, '     [x] - Swipe to Select');
+    expect(selectedFifth.join('\n'), isNot(contains(RegExp(r'\d+/\d+'))));
   });
 
-  test('selector moves cursor while blocks fit and scrolls at the edge', () {
+  test('selector moves only the cursor while every entry stays visible', () {
     final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
     final state = G2AgentHistoryState()
       ..open(
@@ -671,50 +742,50 @@ void main() {
 
     state.selectNext();
     expect(state.selected?.label, 'Flux');
-    expect(state.render().split('\n')[1], startsWith(' > Flux -'));
+    expect(state.render().split('\n')[1], startsWith(' >  Flux -'));
 
     state.selectNext();
     expect(state.selected?.label, 'Pike');
-    expect(state.render().split('\n')[1], startsWith('    Flux -'));
-    expect(state.render(), contains(' > Pike -'));
+    expect(state.render().split('\n')[1], startsWith('     Flux -'));
+    expect(state.render(), contains(' >  Pike -'));
     expect(state.render(), contains('Vale -'));
 
     state.selectNext();
     expect(state.selected?.label, 'Vale');
-    expect(state.render().split('\n')[1], startsWith('    Flux -'));
-    expect(state.render(), contains(' > Vale -'));
+    expect(state.render().split('\n')[1], startsWith('     Flux -'));
+    expect(state.render(), contains(' >  Vale -'));
 
     state.selectNext();
     expect(state.selected?.label, 'Brock');
-    expect(state.render().split('\n')[1], startsWith('    Pike -'));
-    expect(state.render(), isNot(contains('Flux -')));
-    expect(state.render(), contains(' > Brock -'));
+    expect(state.render().split('\n')[1], startsWith('     Flux -'));
+    expect(state.render(), contains('Flux -'));
+    expect(state.render(), contains(' >  Brock -'));
     expect(state.render(), contains('Memo -'));
 
     state.selectNext();
     expect(state.selected?.label, 'Memo');
-    expect(state.render().split('\n')[1], startsWith('    Pike -'));
-    expect(state.render(), contains(' > Memo -'));
+    expect(state.render().split('\n')[1], startsWith('     Flux -'));
+    expect(state.render(), contains(' >  Memo -'));
 
     state.selectPrevious();
     expect(state.selected?.label, 'Brock');
-    expect(state.render().split('\n')[1], startsWith('    Pike -'));
-    expect(state.render(), contains(' > Brock -'));
+    expect(state.render().split('\n')[1], startsWith('     Flux -'));
+    expect(state.render(), contains(' >  Brock -'));
 
     state.selectPrevious();
     expect(state.selected?.label, 'Vale');
-    expect(state.render().split('\n')[1], startsWith('    Pike -'));
-    expect(state.render(), contains(' > Vale -'));
+    expect(state.render().split('\n')[1], startsWith('     Flux -'));
+    expect(state.render(), contains(' >  Vale -'));
 
     state.selectPrevious();
     expect(state.selected?.label, 'Pike');
-    expect(state.render().split('\n')[1], startsWith('    Flux -'));
-    expect(state.render(), contains(' > Pike -'));
+    expect(state.render().split('\n')[1], startsWith('     Flux -'));
+    expect(state.render(), contains(' >  Pike -'));
     expect(state.render(), contains('Pike -'));
     expect(state.render(), isNot(contains(RegExp(r'\d+/\d+'))));
   });
 
-  test('selector removes only the minimum mixed-height overflow block', () {
+  test('selector keeps mixed-length previews to one row each', () {
     final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
     final state = G2AgentHistoryState()
       ..open(
@@ -738,14 +809,14 @@ void main() {
       state.selectNext();
     }
     expect(state.selected?.label, 'Nova');
-    expect(state.render(), isNot(contains('Flux -')));
-    expect(state.render(), contains(' > Nova -'));
+    expect(state.render(), contains('Flux -'));
+    expect(state.render(), contains(' >  Nova -'));
     expect(state.render(), contains('Memo -'));
-    final shifted = state.render().split('\n');
-    expect(shifted, hasLength(9));
-    expect(shifted[1], startsWith('    Pike -'));
-    expect(shifted.join('\n'), isNot(contains('Flux -')));
-    expect(shifted, contains(startsWith('    Memo -')));
+    final rows = state.render().split('\n');
+    expect(rows, hasLength(7));
+    expect(rows[1], startsWith('     Flux -'));
+    expect(rows, contains(startsWith('     Memo -')));
+    expect(rows.skip(1).every((line) => line.isNotEmpty), isTrue);
   });
 
   test('long Memo detail pages forward and backward without wrapping', () {
@@ -906,7 +977,7 @@ void main() {
       )
       ..selectNext();
 
-    expect(state.render(), contains(' > Flux - inspect the synthetic build'));
+    expect(state.render(), contains(' >  Flux - inspect the synthetic build'));
     expect(state.render(), isNot(contains('Flux - Flux:')));
 
     state.showSelectedDetail();
@@ -1087,4 +1158,32 @@ void main() {
       expect(state.render().split('\n'), hasLength(9));
     },
   );
+
+  test('live transcript accumulation follows the newest visible page', () {
+    final transcript = List<String>.generate(
+      120,
+      (index) => 'live${index.toString().padLeft(3, '0')}',
+    ).join(' ');
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showSelectedDetail()
+      ..selectDetailListenMode()
+      ..beginTargetedSpeech('manual-session');
+
+    expect(
+      state.updateTargetedSpeechTranscript(
+        segmentId: 'manual-session',
+        transcript: transcript,
+      ),
+      isTrue,
+    );
+    expect(state.detailPageCount, greaterThan(1));
+    expect(state.detailPageIndex, state.detailPageCount - 1);
+    expect(state.render(), contains('live119'));
+    expect(state.detailSpeechState, G2AgentDetailSpeechState.listening);
+  });
 }

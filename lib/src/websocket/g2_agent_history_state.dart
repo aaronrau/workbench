@@ -1,5 +1,6 @@
 import 'agent_exchange_store.dart';
 import '../protocol/g2_text_layout.dart';
+import 'selected_agent_transcript_session.dart';
 
 enum G2AgentHistoryMode { closed, selector, waiting, detail }
 
@@ -7,7 +8,7 @@ enum G2AgentHistoryEntryKind { dismiss, memo, agent }
 
 enum G2AgentDetailSpeechState { listening, sending, sent, saved }
 
-enum G2AgentDetailControl { back, listen }
+enum G2AgentDetailControl { back, listen, previewCorrection }
 
 final class G2AgentHistoryEntry {
   const G2AgentHistoryEntry({
@@ -27,16 +28,19 @@ final class G2AgentHistoryEntry {
 
 final class G2AgentHistoryState {
   static const int maximumAgents = 5;
-  static const int selectorEntryMaximumLines = 2;
+  static const int selectorEntryMaximumLines = 1;
   static const int maximumPageCharacters =
       G2TextLayout.historyMaximumPageCharacters;
   static const int standardDetailBodyLinesPerPage = 8;
   static const int agentDetailBodyLinesPerPage = 7;
+  static const int activeAgentDetailBodyLinesPerPage = 5;
   static const int detailPageOverlapLines = 1;
   static const G2TextLayout _layout = G2TextLayout.history;
-  static const String _selectedPointerPrefix = ' > ';
-  static const String _emptyPointerPrefix = '    ';
-  static const String _selectorContinuationIndent = ' ';
+  // Keep the selector content at the same horizontal position when the
+  // cursor moves. The selected and empty gutters are both 25 px in the G2
+  // font, with two spaces after the cursor for visual separation.
+  static const String _selectedPointerPrefix = ' >  ';
+  static const String _emptyPointerPrefix = '     ';
 
   G2AgentHistoryMode mode = G2AgentHistoryMode.closed;
   List<G2AgentHistoryEntry> entries = const <G2AgentHistoryEntry>[];
@@ -54,6 +58,10 @@ final class G2AgentHistoryState {
   String? detailSpeechSegmentId;
   String? detailSpeechTranscript;
   G2AgentDetailSpeechState? detailSpeechState;
+  SelectedAgentCorrectionPreviewState detailCorrectionPreviewState =
+      SelectedAgentCorrectionPreviewState.off;
+  bool detailTranscriptionPending = false;
+  bool detailTranscriptionIndicatorVisible = false;
   String? _cachedDetailBody;
   int? _cachedDetailRowsPerPage;
   List<List<String>>? _cachedDetailPages;
@@ -93,8 +101,15 @@ final class G2AgentHistoryState {
 
   int get detailPageCount => _detailPages().length;
   int get detailBodyLinesPerPage => detailTitleIsAgent
-      ? agentDetailBodyLinesPerPage
+      ? _showsManualSpeechControls
+            ? activeAgentDetailBodyLinesPerPage
+            : agentDetailBodyLinesPerPage
       : standardDetailBodyLinesPerPage;
+
+  bool get _showsManualSpeechControls =>
+      detailListenModeSelected ||
+      detailSpeechState == G2AgentDetailSpeechState.listening ||
+      detailSpeechState == G2AgentDetailSpeechState.sending;
 
   void open({
     required List<String> agents,
@@ -352,6 +367,9 @@ final class G2AgentHistoryState {
     detailSpeechSegmentId = segmentId;
     detailSpeechTranscript = null;
     detailSpeechState = G2AgentDetailSpeechState.listening;
+    detailCorrectionPreviewState = SelectedAgentCorrectionPreviewState.off;
+    detailTranscriptionPending = false;
+    detailTranscriptionIndicatorVisible = false;
     detailPageIndex = 0;
     return true;
   }
@@ -381,6 +399,17 @@ final class G2AgentHistoryState {
       return false;
     }
     detailControl = G2AgentDetailControl.listen;
+    return true;
+  }
+
+  bool focusAgentPreviewCorrectionControl() {
+    if (!isAgentDetail ||
+        !detailListenModeSelected ||
+        detailSpeechState != G2AgentDetailSpeechState.listening ||
+        detailControl == G2AgentDetailControl.previewCorrection) {
+      return false;
+    }
+    detailControl = G2AgentDetailControl.previewCorrection;
     return true;
   }
 
@@ -450,10 +479,56 @@ final class G2AgentHistoryState {
     return true;
   }
 
-  /// Closes the one-utterance Listen Mode capture while retaining ownership
-  /// of [segmentId] until its raw and corrected transcript projections arrive.
-  /// This prevents a later VAD start from replacing an utterance that is
-  /// already being transcribed or sent.
+  bool updateTargetedSpeechTranscript({
+    required String segmentId,
+    required String transcript,
+  }) {
+    if (!_ownsTargetedSpeech(segmentId) ||
+        (detailSpeechState != G2AgentDetailSpeechState.listening &&
+            detailSpeechState != G2AgentDetailSpeechState.sending)) {
+      return false;
+    }
+    detailSpeechTranscript = transcript.trim();
+    detailPageIndex = detailPageCount - 1;
+    return true;
+  }
+
+  bool updateTargetedSpeechPreview({
+    required String segmentId,
+    required String transcript,
+    required SelectedAgentCorrectionPreviewState previewState,
+  }) {
+    if (!_ownsTargetedSpeech(segmentId) ||
+        detailSpeechState != G2AgentDetailSpeechState.listening) {
+      return false;
+    }
+    detailSpeechTranscript = transcript.trim();
+    detailCorrectionPreviewState = previewState;
+    detailPageIndex = detailPageCount - 1;
+    return true;
+  }
+
+  bool updateTargetedSpeechTranscription({
+    required String segmentId,
+    required bool pending,
+    bool? indicatorVisible,
+  }) {
+    if (!_ownsTargetedSpeech(segmentId) ||
+        detailSpeechState != G2AgentDetailSpeechState.listening) {
+      return false;
+    }
+    final nextIndicator = pending && (indicatorVisible ?? true);
+    if (detailTranscriptionPending == pending &&
+        detailTranscriptionIndicatorVisible == nextIndicator) {
+      return false;
+    }
+    detailTranscriptionPending = pending;
+    detailTranscriptionIndicatorVisible = nextIndicator;
+    return true;
+  }
+
+  /// Closes the manually bounded Listen Mode session while retaining ownership
+  /// of [segmentId] until its corrected transcript projection arrives.
   bool finishTargetedSpeechCapture(String segmentId) {
     if (!_ownsTargetedSpeech(segmentId) ||
         detailSpeechState != G2AgentDetailSpeechState.listening ||
@@ -462,6 +537,9 @@ final class G2AgentHistoryState {
     }
     detailSpeechState = G2AgentDetailSpeechState.sending;
     detailListenModeSelected = false;
+    detailControl = G2AgentDetailControl.listen;
+    detailTranscriptionPending = false;
+    detailTranscriptionIndicatorVisible = false;
     final pageBeforeListenMode = _detailPageIndexBeforeListenMode;
     _detailPageIndexBeforeListenMode = null;
     final lastPageIndex = detailPageCount - 1;
@@ -602,18 +680,11 @@ final class G2AgentHistoryState {
 
   List<String> _renderSelectorEntry(int index) {
     final entry = entries[index];
-    final lines = _selectorEntryContentLines(entry);
-    return <String>[
-      for (var lineIndex = 0; lineIndex < lines.length; lineIndex++)
-        if (lineIndex == 0)
-          '${index == selectedIndex ? _selectedPointerPrefix : _emptyPointerPrefix}'
-              '${lines[lineIndex]}'
-        else
-          _layout.fitLineWithLeading(
-            lines[lineIndex],
-            leading: '$_emptyPointerPrefix$_selectorContinuationIndent',
-          ),
-    ];
+    final line = _selectorEntryContentLines(entry).single;
+    final pointer = index == selectedIndex
+        ? _selectedPointerPrefix
+        : _emptyPointerPrefix;
+    return <String>['$pointer$line'];
   }
 
   List<String> _selectorEntryContentLines(G2AgentHistoryEntry entry) {
@@ -669,9 +740,17 @@ final class G2AgentHistoryState {
     final title =
         '$titlePrefix${_layout.fitLine(name.isEmpty ? 'Unknown' : name, titleWidth)}$titleSuffix';
     final listenMode = cancel ? '  · Listen Mode' : _agentListenModeLine();
+    final manualControls = !cancel && _showsManualSpeechControls
+        ? <String>[_agentPreviewCorrectionLine(), _agentSpeechStatusLine()]
+        : const <String>[];
     final pages = _detailPages();
     final pageIndex = detailPageIndex.clamp(0, pages.length - 1);
-    final lines = <String>[title, listenMode, ...pages[pageIndex]];
+    final lines = <String>[
+      title,
+      listenMode,
+      ...manualControls,
+      ...pages[pageIndex],
+    ];
     while (lines.length < _layout.maximumVisibleRows) {
       lines.add('');
     }
@@ -695,6 +774,48 @@ final class G2AgentHistoryState {
       (false, _) => 'Listen Mode - Tap to start',
     };
     return '$prefix • $label';
+  }
+
+  String _agentPreviewCorrectionLine() {
+    final focused = detailControl == G2AgentDetailControl.previewCorrection;
+    final enabled =
+        detailCorrectionPreviewState != SelectedAgentCorrectionPreviewState.off;
+    return '${focused ? '>' : ' '} • Preview Correction · ${enabled ? 'On' : 'Off'}';
+  }
+
+  String _agentSpeechStatusLine() {
+    if (detailSpeechState == G2AgentDetailSpeechState.sending) {
+      return '  Status: Sending…';
+    }
+    final dot = detailTranscriptionIndicatorVisible ? '•' : ' ';
+    if (detailTranscriptionPending) {
+      final correctionPending = switch (detailCorrectionPreviewState) {
+        SelectedAgentCorrectionPreviewState.queued ||
+        SelectedAgentCorrectionPreviewState.correcting ||
+        SelectedAgentCorrectionPreviewState.updatePending => true,
+        _ => false,
+      };
+      final value = correctionPending
+          ? '  Status: $dot Transcribing · correction pending'
+          : '  Status: $dot Transcribing…';
+      return _layout.fitLine(value, _layout.wrappingWidthPixels);
+    }
+    final value = switch (detailCorrectionPreviewState) {
+      SelectedAgentCorrectionPreviewState.off => '  Status: Listening',
+      SelectedAgentCorrectionPreviewState.waiting =>
+        '  Status: Preview on · waiting for transcript',
+      SelectedAgentCorrectionPreviewState.queued =>
+        '  Status: Correction queued',
+      SelectedAgentCorrectionPreviewState.correcting =>
+        '  Status: Correcting preview…',
+      SelectedAgentCorrectionPreviewState.updatePending =>
+        '  Status: Correction update pending',
+      SelectedAgentCorrectionPreviewState.current =>
+        '  Status: Preview current',
+      SelectedAgentCorrectionPreviewState.failed =>
+        '  Status: Correction unavailable · raw retained',
+    };
+    return _layout.fitLine(value, _layout.wrappingWidthPixels);
   }
 
   List<List<String>> _detailPages() {
@@ -730,7 +851,8 @@ final class G2AgentHistoryState {
     }
     final transcript = (detailSpeechTranscript ?? '').trim();
     return switch (speechState) {
-      G2AgentDetailSpeechState.listening => 'Listening…',
+      G2AgentDetailSpeechState.listening =>
+        transcript.isEmpty ? 'Listening…' : 'Listening: $transcript',
       G2AgentDetailSpeechState.sending =>
         transcript.isEmpty ? 'Sending…' : 'Sending: $transcript',
       G2AgentDetailSpeechState.sent =>
@@ -851,6 +973,9 @@ final class G2AgentHistoryState {
     detailSpeechSegmentId = null;
     detailSpeechTranscript = null;
     detailSpeechState = null;
+    detailCorrectionPreviewState = SelectedAgentCorrectionPreviewState.off;
+    detailTranscriptionPending = false;
+    detailTranscriptionIndicatorVisible = false;
   }
 
   bool _ownsTargetedSpeech(String segmentId) =>
