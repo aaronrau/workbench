@@ -43,16 +43,16 @@ configuration. The phone's Messages view remains the complete history.
 
 ### Selector
 
-Every option occupies exactly one rendered line. Carriage returns, newlines,
-and repeated whitespace in private content are collapsed before rendering.
-Agent and Memo rows start `Agent - content`; overflow is ellipsized on that
-same row. `[x] - Swipe to Select` remains a fixed one-line header. There is no
-page counter. Every line reserves a fixed 25-pixel pointer gutter. The selected
-gutter includes two spaces after `>`, and the empty gutter has exactly the same
-measured width, so moving the cursor cannot shift or rewrap the content. The
-maximum selector is seven rows—header, five agents, and Memo—and therefore fits
-inside the nine-row viewport without selector paging. A representative
-selector is:
+Every option occupies one or two rendered lines. Carriage returns, newlines,
+and repeated whitespace in private content are collapsed before width
+measurement, so source formatting never forces a selector line break. Agent
+and Memo rows start `Agent - content`; measured overflow continues on one
+aligned second row and is ellipsized there. `[x] - Swipe to Select` remains a
+fixed one-line header. There is no page counter. Every rendered line reserves a
+fixed 25-pixel pointer gutter. The selected gutter includes two spaces after
+`>`, and the empty and continuation gutters have exactly the same measured
+width, so moving the cursor cannot shift or rewrap the content. A representative
+short selector is:
 
 ```text
  >  [x] - Swipe to Select
@@ -64,18 +64,22 @@ selector is:
      Memo - latest saved memo
 ```
 
-When a normalized preview is too wide, it stays on one row and ends with an
-ellipsis:
+When a normalized preview is too wide, it uses one aligned continuation row
+and ends with an ellipsis:
 
 ```text
  >  [x] - Swipe to Select
-     Agent One - latest sent command that is too lo…
-     Agent Two - another command that is also too …
+     Agent One - latest sent command that continues
+     on the second measured row…
+     Agent Two - another command that continues on
+     its second measured row…
 ```
 
-Every selector entry stays visible while downward or upward swipes move only
-the `>` cursor. Selection wraps between `[x]` and Memo. The header and content
-rows never move, and selector entries never use firmware line wrapping.
+Complete one- or two-row entries are adaptively windowed inside the eight rows
+beneath the fixed header. While the next entry fits, swipes move only `>`.
+When it does not fit, the minimum number of complete entries moves offscreen so
+the selected entry and its following context remain visible. Selection wraps
+between `[x]` and Memo, and entries are never split across viewport boundaries.
 
 The marker is the only selection indicator, so the layout remains grayscale
 and does not rely on color. Wrapping uses G2 pixel advances instead of a fixed
@@ -88,7 +92,7 @@ the left display edge. Host layout uses one shared calibrated wrapping budget.
 Standalone glyph advances overestimate the physically observed firmware width,
 so the utility reserves an 18-pixel right-side safety budget and adds a 50-unit
 calibration. Selector content receives a separate 25-pixel pointer gutter and
-is limited to one row independently of selection. The physical container
+is limited to two rows independently of selection. The physical container
 remains 576 pixels wide and its inset content width is 568 pixels. A
 second startup/create command is not sufficient after the visualizer exists;
 the firmware retains the visualizer's compact 520x64 gesture slot, clipping
@@ -107,7 +111,7 @@ direction labels are omitted from the rows:
 
 ```text
    [Agent One]
-> • Listen Mode - Tap to start
+ >  • Listen Mode - Tap to start
 [14:33] <correlated completion>
 [14:32] <first correlated progress update>
 [14:31] <most recent command>
@@ -116,12 +120,13 @@ direction labels are omitted from the rows:
 
 Commands and responses may wrap because this is a detail view, not a selector
 row. An inactive agent detail reserves two fixed rows and seven message rows.
-An active manual session reserves four fixed rows—title, Send, Preview
-Correction, and Status—and five transcript/history rows. Opening it does not
+An active manual session reserves three fixed rows—title/status, Send, and
+Preview Correction—and six transcript/history rows. Opening it does not
 enable speech targeting. A second tap changes the Listen row's active
 arrow from `>` to `<` without shifting the title; only then does speech directly
-target the agent named once in the title. Speech changes that row to
-`< • Listening - Tap to send`. Swipe up stops Listen Mode and moves the active
+target the agent named once in the title. The title becomes
+`[Agent One · Listening]`, and the selected row becomes
+` <  • Send transcript - Tap`. Swipe up stops Listen Mode and moves the active
 `<` control to the agent title. Tapping that title returns to the selector;
 swipe down returns focus to Listen Mode. During an active session, swipe down
 from that Send control focuses `Preview Correction`, tap toggles it, and swipe
@@ -130,8 +135,9 @@ owns focus, another up swipe returns one page. A swipe-up
 cancel clears the transient speech overlay and restores the exact history page
 that was visible when Listen Mode started. VAD endpoints do not stop the manual
 session: each endpoint queues an audio chunk for FIFO STT, and every completed
-chunk refreshes the full accumulated `Listening:` text. A blinking status dot
-indicates pending STT. Later speech keeps appending to the same display owner.
+chunk refreshes the body with only the accumulated transcript text. Lifecycle
+and preview state appear once beside the agent name; its dot blinks while STT
+is pending. Later speech keeps appending to the same display owner.
 Preview Correction defaults Off; Send then corrects the complete aggregate once
 before routing. With Preview On, every appended STT result automatically
 refreshes a serialized correction preview and the status reports queued,
@@ -153,7 +159,7 @@ message by timestamp, regardless of sent or received direction. Detail history
 keeps every indexed durable message and never truncates to that preview bound.
 
 Every detail page begins with `[ Memo · Tap to dismiss ]` or the two agent rows
-`   [<name>]` and `> • Listen Mode - Tap to start`. Conversation rows use
+`   [<name>]` and ` >  • Listen Mode - Tap to start`. Conversation rows use
 `[HH:mm] Message`, strip
 an identical stored agent prefix first, and never repeat the agent name in the
 history body. Explicit LF, CRLF, and CR line breaks in saved Memo or message
@@ -343,7 +349,8 @@ exchange ledger and its direct message-file paths.
 
 Memo is local and is never sent to the agent WebSocket by this selector.
 
-- The Memo option occupies one `Memo - content` row and ellipsizes overflow.
+- The Memo option starts `Memo - content`, may use one aligned continuation
+  row, and ellipsizes further overflow.
 - Tapping Memo opens the bounded saved note with the action in its title.
 - An active Memo owns the display and prevents the selector from opening.
 - If Memo starts while the selector is open, Memo preempts and closes the
@@ -418,8 +425,8 @@ slot is reserved for short gesture labels.
 While the selector owns the display:
 
 - normal statuses continue their durable work but cannot overwrite the page;
-- `Listening…`, `Sending:`, and terminal detail renders enter the coalesced
-  display queue without blocking Gemma correction, WebSocket delivery, or
+- title statuses, transcript-body updates, and terminal detail renders enter
+  the coalesced display queue without blocking Gemma correction, WebSocket delivery, or
   acknowledged-message persistence;
 - a corrected transcript bound to the selected agent reuses the ready socket
   and enters the ordinary bounded FIFO/busy retry path used by spoken agent
@@ -470,7 +477,7 @@ gesture-controlled ownership.
    second. Speech detected during that endpoint resets it. A completed endpoint
    queues its durable WAV in the persistent STT FIFO without ending the manual
    session. Each STT result extends and redraws the accumulated transcript, and
-   the Status row blinks while STT is pending. Preview Correction defaults Off;
+   the title status blinks while STT is pending. Preview Correction defaults Off;
    the next Send tap flushes current audio, waits for every registered STT
    chunk, then corrects the complete aggregate and sends it once. With Preview
    On, each append automatically refreshes a serialized correction preview and
@@ -481,8 +488,8 @@ gesture-controlled ownership.
    container. Multi-page details overlay one variable-height right-edge bitmap
    with a visible 4-pixel thumb inside a valid 20-pixel container. History uses
    a borderless surface with one stable four-pixel inset; the selector uses a
-   fixed pointer gutter and keeps all seven possible rows visible. Agent
-   details reserve two fixed control rows and seven content rows; Memo details
+   fixed pointer gutter and adaptively windows complete one- or two-row entries.
+   Agent details reserve two fixed control rows and seven content rows; Memo details
    reserve one title and eight content rows.
    All use high-priority bounded writes.
 6. The latest saved Memo is read locally without routing it through WebSocket
@@ -497,9 +504,10 @@ gesture-controlled ownership.
 - opening always selects `[x]`;
 - swipe up/down wraps across `[x]`, five agent options, and the final Memo
   option;
-- every agent occupies one `Agent - content` row, collapses carriage returns,
-  newlines, and repeated whitespace, ellipsizes pixel overflow, and leaves the
-  complete selector under 2,048 characters;
+- every agent starts one `Agent - content` row, collapses carriage returns,
+  newlines, and repeated whitespace before wrapping, uses at most one aligned
+  continuation row, ellipsizes further pixel overflow, and leaves each selector
+  page under 2,048 characters;
 - selected and unselected pointer gutters have equal measured width, including
   two spaces after `>`, so cursor movement never shifts row content;
 - selector and detail rendering share the same calibrated width and row-layout
@@ -522,17 +530,19 @@ gesture-controlled ownership.
   speech can inherit the target, clears its transient overlay, restores the
   prior pageable history body, and focuses the agent back control;
 - inactive agent details render `   [Name]` and
-  `> • Listen Mode - Tap to start`; active Listen Mode renders
-  `< • Listen Mode - Tap to stop`, `• Preview Correction · Off`, and an
-  explicit Status row. The agent appears only
+  ` >  • Listen Mode - Tap to start`; active Listen Mode renders its single
+  status beside the name, ` <  • Send transcript - Tap`, and
+  `     • Preview Correction · Off`. Both selectable rows reserve the same
+  cursor gutter. The agent appears only
   in the title and is immutably snapshotted for the manual session. Transcript
   states never replace another newer session;
 - selected-agent detail speech uses a one-second VAD-inactive audio-chunk
   endpoint; every completed STT chunk appends to the visible accumulator, later
   VAD speech remains in the same manual session, and no endpoint invokes
   delivery;
-- the Status dot blinks while any registered audio chunk is awaiting STT, then
-  each result appends before the status clears;
+- the title-status dot blinks while any registered audio chunk is awaiting STT,
+  then each result appends before the status clears; the body contains only the
+  raw or corrected transcript and never repeats `Listening`;
 - a down swipe from active Send focuses Preview Correction, tap toggles it, and
   an up swipe returns to Send. Preview On queues at most one correction at a
   time, coalesces a newer STT revision, renders a corrected prefix plus any raw
@@ -596,8 +606,9 @@ representative phone:
 2. connect the physical G2/R1 pair;
 3. tap and verify `[x]` is selected first;
 4. swipe through every agent and the final Memo option, checking one
-   `Agent - content` row per option, collapsed return/newline input, same-row
-   ellipsis, stable horizontal alignment, and the borderless surface;
+   `Agent - content` first row per option, collapsed return/newline input,
+   optional measured continuation row, second-row ellipsis, stable horizontal
+   alignment, and the borderless surface;
 5. select an agent with more than five exchanges and multiple response updates,
    verify the G2 list exactly matches the phone agent tab in newest-message
    order, with every item shown as `[HH:mm] Message`, and verify that the
@@ -665,28 +676,29 @@ Correction because the harness cannot actuate the wearable controls.
   and focuses `< Name`; tap returns to the selector, while swipe down returns
   to Listen and subsequent down swipes page.
 - Inactive agent details show `   [Name]` and
-  `> • Listen Mode - Tap to start`. Active Listen Mode shows
-  `< • Listen Mode - Tap to stop`. Speech shows
-  `< • Listening - Tap to send`, a Preview Correction toggle, and a Status
-  row. Swipe down focuses Preview, tap toggles it, and swipe up restores Send.
-  A tap on Send exits the mode and shows
-  `< • Sending - Tap to dismiss`, followed by acknowledged
-  `Sent` or fallback `Saved` in the fixed control row. Stopping restores the
+  ` >  • Listen Mode - Tap to start`. Active Listen Mode shows status once in
+  `[Name · Listening]`, plus ` <  • Send transcript - Tap` and a Preview
+  Correction row. Both controls retain the same empty cursor gutter when not
+  focused. Swipe down focuses Preview, tap toggles it, and swipe up restores
+  Send. A tap on Send exits the mode and shows `[Name · Sending]` with
+  ` <  • Dismiss - Tap`, followed by acknowledged `Sent` or fallback `Saved`
+  beside the name. Stopping restores the
   exact prior history page so swipe paging resumes immediately.
 - In detail mode, one uninterrupted second with VAD inactive finalizes one
   audio chunk, not the manual session. VAD activity during that second resets
-  the chunk endpoint. Each completed STT result appends to and redraws the full
-  `Listening:` transcript; later speech continues the same session without a
-  send. The Status dot blinks while STT is pending. With Preview Off, no
+  the chunk endpoint. Each completed STT result appends to and redraws only the
+  transcript body; later speech continues the same session without a send. The
+  title-status dot blinks while STT is pending. With Preview Off, no
   correction occurs until the second tap stops capture, flushes current audio,
   waits for the persistent STT queue, and permits one correction plus one send
   of the complete transcript. With Preview On, every append refreshes one
   serialized automatic preview; Send waits for and reuses the current result
   without another correction request.
-- `[x]`, each agent, and Memo render as exactly one line inside a fixed-width
-  pointer gutter. Carriage returns, newlines, and repeated whitespace collapse
-  to spaces; pixel overflow is ellipsized. The full seven-row selector remains
-  visible, and moving `>` never shifts the content horizontally.
+- `[x]` renders on one line; each agent and Memo uses one first row and at most
+  one aligned continuation row inside a fixed-width pointer gutter. Carriage
+  returns, newlines, and repeated whitespace collapse before measured wrapping;
+  further pixel overflow is ellipsized. Moving `>` never shifts content, and
+  adaptive windowing never splits an entry.
 - Swipes select deterministically and wrap.
 - Only acknowledged commands appear as sent.
 - Every successfully indexed response for the open agent rebuilds page 1 from
@@ -699,8 +711,9 @@ Correction because the harness cannot actuate the wearable controls.
 - Every multi-page Memo or agent detail shows a right-edge page-position
   indicator that remains visible and tracks bounded swipe paging; one-page
   details do not allocate an image container. Inactive agent pages contain
-  seven body rows beneath two controls; active manual sessions contain five
-  beneath four controls. Memo pages contain eight body rows beneath one title.
+  seven body rows beneath two fixed lines; active manual sessions contain six
+  beneath three fixed lines. Memo pages contain eight body rows beneath one
+  title.
   All repeat the prior page's final body row after a forward swipe.
 - A missing response leaves the timestamped sent message visible; unrelated
   events do not become correlated responses.

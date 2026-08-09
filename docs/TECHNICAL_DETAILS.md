@@ -43,8 +43,9 @@ startup/create command is not reused because firmware accepts it only at page
 startup and otherwise retains the existing visualizer geometry. The selector
 uses a borderless container with the same four-pixel inner inset on every
 selector and detail page. Each agent begins as
-`Agent - content` and flows into at most one continuation row. A fixed 20-pixel
-pointer gutter keeps both rows aligned when selection moves.
+`Agent - content` and flows into at most one continuation row after CR/LF and
+repeated whitespace are collapsed. A fixed 25-pixel pointer gutter keeps both
+rows aligned when selection moves.
 A shared measured-text layout fills up to nine rows. Short entries therefore fit
 the complete `[x]`, five-agent, and Memo selector on one page; longer two-row
 entries use the eight rows beneath the fixed header, with complete-block
@@ -62,8 +63,9 @@ Memo and retained-message agent details are host-paginated rather than relying
 on firmware text scrolling. Each page reuses the four-pixel history inset, puts
 the tap action in its fixed controls, and uses eight body rows below Memo's one
 title or seven body rows below an inactive agent's title and Listen Mode
-control. An active manual session adds fixed Preview Correction and Status rows,
-leaving five pixel-width-wrapped content rows.
+control. An active manual session puts its only lifecycle/preview status beside
+the agent name and adds a fixed Preview Correction row, leaving six
+pixel-width-wrapped transcript rows.
 Swipe down advances, swipe up goes back, and neither boundary wraps. To
 preserve reading position, the final content row of one page repeats as the
 first content row of the next page.
@@ -111,10 +113,11 @@ chunking. After VAD falls inactive, the worker retains one second of PCM;
 positive VAD during that interval resets the chunk endpoint. A completed
 one-second endpoint atomically queues that WAV in the persistent STT FIFO, but
 does not end Listen Mode, correct text, or send. Each STT result appends to the
-session accumulator and refreshes the full `Listening:` transcript on G2. The
-Status row blinks its dot while STT is outstanding. Swipe down from the Send
-control focuses Preview Correction, tap toggles it, and swipe up returns to
-Send. When Preview Correction is On, each appended STT result queues a
+session accumulator and refreshes only the transcript body on G2. The single
+status beside the agent name blinks its dot while STT is outstanding. Swipe
+down from the Send control focuses Preview Correction, tap toggles it, and
+swipe up returns to Send. When Preview Correction is On, each appended STT
+result queues a
 serialized correction of the newest aggregate. If speech arrives during
 inference, G2 retains the corrected prefix, appends the newer raw tail, and
 shows the queued/correcting/update-pending/current state explicitly.

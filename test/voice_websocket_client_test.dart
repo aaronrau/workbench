@@ -248,8 +248,8 @@ void main() {
     expect(
       detail.render(),
       startsWith(
-        '   [Flux]\n'
-        '< • Listen Mode - Tap to stop\n',
+        '   [Flux · Listening]\n'
+        ' <  • Listen Mode - Tap to stop\n',
       ),
     );
     final selectedAgentRoute = client.routeTranscriptToSelectedAgent(
@@ -798,8 +798,8 @@ void main() {
     expect(
       detail.render(),
       startsWith(
-        '   [Flux]\n'
-        '< • Listen Mode - Tap to stop\n',
+        '   [Flux · Listening]\n'
+        ' <  • Listen Mode - Tap to stop\n',
       ),
     );
     final selectedRoute = client.routeTranscriptToSelectedAgent(

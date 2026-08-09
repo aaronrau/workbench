@@ -144,8 +144,9 @@ The package README, patch, licenses, and SHA-256 runtime manifest are under
   near-boundary next utterance.
 - In selected-agent mode, the first tap snapshots the configured agent and
   starts one transcript accumulator. Every completed STT chunk is appended in
-  FIFO order and the full text is rendered as `Listening:` on G2; a blinking
-  status dot remains visible while STT is pending. VAD silence never sends or
+  FIFO order and the body renders only the accumulated text on G2; the single
+  status beside the agent name blinks while STT is pending. VAD silence never
+  sends or
   exits Listen Mode. Preview Correction defaults Off. When it is On, every STT
   append schedules one serialized correction of the newest complete revision;
   an append during inference is shown as a raw tail and coalesced into the next

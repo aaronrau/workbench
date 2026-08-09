@@ -188,11 +188,11 @@ serialized automatic correction preview. The second tap waits for the newest
 preview and offers that cached result to the selected agent without another LLM
 call. Only a corrected aggregate is offered to the selected agent;
 correction-unavailable fallback retains the durable raw text.
-The agent detail title carries a visible active dot; its body advances through
-`Listening…`, an accumulating `Listening:`, `Sending:`, and acknowledged `Sent:`
-or fallback `Saved:` for the latest manual session. A fixed Status row blinks
-while STT is pending and reports preview queued, correcting, update pending,
-current, or unavailable. Swipe down from Send focuses Preview Correction; tap
+The agent detail title contains the single lifecycle/preview status beside the
+agent name. Its dot blinks while STT is pending and the title reports Listening,
+preview queued, correcting, update pending, current, Sending, Sent, or Saved.
+The body contains only the accumulated raw or corrected transcript, without a
+second lifecycle label. Swipe down from Send focuses Preview Correction; tap
 toggles it, and swipe up returns focus to Send. This explicit gesture
 selection is the only attention-gate bypass. Dismiss, Memo, a selection removed by a configuration
 change, and speech that began before the agent was selected do not bypass
@@ -200,8 +200,8 @@ ordinary routing. The snapshot remains stable while queued STT completes.
 Collection sessions and final routing ownership are in-memory only and are
 never restored after a process restart.
 
-Tap cannot accidentally dismiss an active targeted session. During
-`Listening…` or `Listening:` it stops capture, acknowledges the current VAD
+Tap cannot accidentally dismiss an active targeted session. While the title
+shows `Listening`, it stops capture, acknowledges the current VAD
 flush, and waits for queued STT. Preview Off then corrects and delivers the full
 transcript once. Preview On reuses the current automatic preview and never
 corrects again at Send. During `Sending:` tap dismisses the detail while that
