@@ -148,7 +148,7 @@ void main() {
     expect(state.selectedSpeechAgent, isNull);
     expect(
       state.render(),
-      startsWith('< [Pike - Tap to cancel]\n     · Listen Mode\n'),
+      startsWith('< [Pike · Waiting] - Tap to cancel\n     · Listen Mode\n'),
     );
     expect(state.render(), contains('Waiting for response'));
     expect(state.acceptResponse('different-exchange', 'Wrong response'), false);
@@ -187,7 +187,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike] - Swipe to navigate\n'
+          '   [Pike · Ready] - Tap to listen\n'
           ' >  • Listen Mode - Tap to start\n',
         ),
       );
@@ -198,7 +198,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Listening] - Swipe to navigate\n'
+          '   [Pike · Listening] - Tap to stop\n'
           ' <  • Listen Mode - Tap to stop\n',
         ),
       );
@@ -207,7 +207,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Listening] - Swipe to navigate\n'
+          '   [Pike · Listening] - Tap to send\n'
           ' <  • Send transcript - Tap\n',
         ),
       );
@@ -239,7 +239,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Sending] - Swipe to navigate\n'
+          '   [Pike · Sending] - Tap to dismiss\n'
           ' <  • Dismiss - Tap\n',
         ),
       );
@@ -398,7 +398,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike] - Swipe to navigate\n'
+          '   [Pike · Ready] - Tap to listen\n'
           ' >  • Listen Mode - Tap to start\n',
         ),
       );
@@ -459,7 +459,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Flux] - Swipe to navigate\n'
+        '   [Flux · Ready] - Tap to listen\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -468,7 +468,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Flux · Listening] - Swipe to navigate\n'
+        '   [Flux · Listening] - Tap to stop\n'
         ' <  • Listen Mode - Tap to stop\n',
       ),
     );
@@ -478,7 +478,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '< [Flux] - Swipe to navigate\n'
+        '< [Flux · History] - Tap for agents\n'
         '     • Listen Mode - Tap to start\n',
       ),
     );
@@ -489,7 +489,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Flux] - Swipe to navigate\n'
+        '   [Flux · Ready] - Tap to listen\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -501,112 +501,83 @@ void main() {
     expect(state.returnToSelector(), isFalse);
   });
 
-  test(
-    'active listening renders one title status and fixed control gutters',
-    () {
-      final state = G2AgentHistoryState()
-        ..open(
-          agents: const <String>['Flux'],
-          exchanges: const <AgentExchangeView>[],
-        )
-        ..selectNext()
-        ..showSelectedDetail()
-        ..selectDetailListenMode()
-        ..beginTargetedSpeech('manual-session');
+  test('active listening renders process and tap action in the title', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showSelectedDetail()
+      ..selectDetailListenMode()
+      ..beginTargetedSpeech('manual-session');
 
-      expect(state.detailBodyLinesPerPage, 6);
-      final initial = state.render();
-      expect(
-        initial,
-        startsWith('   [Flux · Listening] - Swipe to navigate\n'),
-      );
-      expect(initial, contains(' <  • Send transcript - Tap'));
-      expect(initial, contains('     • Preview Correction · Off'));
-      expect(RegExp('Listening').allMatches(initial), hasLength(1));
-      expect(initial, isNot(contains('Status:')));
-      expect(initial, isNot(contains('Listening…')));
-      expect(state.render().split('\n'), hasLength(9));
+    expect(state.detailBodyLinesPerPage, 7);
+    final initial = state.render();
+    expect(initial, startsWith('   [Flux · Listening] - Tap to send\n'));
+    expect(initial, contains(' <  • Send transcript - Tap'));
+    expect(initial, isNot(contains('Preview Correction')));
+    expect(
+      state.detailCorrectionPreviewState,
+      SelectedAgentCorrectionPreviewState.waiting,
+    );
+    expect(RegExp('Listening').allMatches(initial), hasLength(1));
+    expect(initial, isNot(contains('Status:')));
+    expect(initial, isNot(contains('Listening…')));
+    expect(state.render().split('\n'), hasLength(9));
 
-      const layout = G2TextLayout.history;
-      final listenSelected = initial.split('\n')[1];
-      final previewUnselected = initial.split('\n')[2];
-      final listenSelectedGutter = listenSelected.substring(
-        0,
-        listenSelected.indexOf('•'),
-      );
-      final previewUnselectedGutter = previewUnselected.substring(
-        0,
-        previewUnselected.indexOf('•'),
-      );
-      expect(
-        layout.textWidth(listenSelectedGutter),
-        layout.textWidth(previewUnselectedGutter),
-      );
+    const layout = G2TextLayout.history;
+    expect(
+      state.updateTargetedSpeechPreview(
+        segmentId: 'manual-session',
+        transcript: 'first raw thought',
+        previewState: SelectedAgentCorrectionPreviewState.queued,
+      ),
+      isTrue,
+    );
+    final queued = state.render();
+    expect(queued, startsWith('   [Flux · Correction queued] - Tap to send\n'));
+    expect(queued, isNot(contains('Preview Correction')));
+    expect(queued, isNot(contains('Status:')));
 
-      expect(state.focusAgentPreviewCorrectionControl(), isTrue);
-      expect(
-        state.updateTargetedSpeechPreview(
-          segmentId: 'manual-session',
-          transcript: 'first raw thought',
-          previewState: SelectedAgentCorrectionPreviewState.queued,
-        ),
-        isTrue,
-      );
-      final previewFocused = state.render();
-      expect(previewFocused, contains(' >  • Preview Correction · On'));
-      expect(previewFocused, contains('[Flux · Correction queued]'));
-      expect(previewFocused, isNot(contains('Status:')));
-      final listenUnselected = previewFocused.split('\n')[1];
-      final previewSelected = previewFocused.split('\n')[2];
-      expect(
-        layout.textWidth(
-          listenUnselected.substring(0, listenUnselected.indexOf('•')),
-        ),
-        layout.textWidth(
-          previewSelected.substring(0, previewSelected.indexOf('•')),
-        ),
-      );
+    expect(
+      state.updateTargetedSpeechTranscription(
+        segmentId: 'manual-session',
+        pending: true,
+        indicatorVisible: true,
+      ),
+      isTrue,
+    );
+    expect(state.render(), contains('[Flux · • Transcribing] - Tap to send'));
+    expect(
+      state
+          .render()
+          .split('\n')
+          .every(
+            (line) =>
+                layout.textWidth(line) <=
+                G2TextLayout.history.wrappingWidthPixels,
+          ),
+      isTrue,
+    );
+    expect(
+      state.updateTargetedSpeechTranscription(
+        segmentId: 'manual-session',
+        pending: true,
+        indicatorVisible: false,
+      ),
+      isTrue,
+    );
+    expect(state.render(), contains('Transcribing]'));
 
-      expect(
-        state.updateTargetedSpeechTranscription(
-          segmentId: 'manual-session',
-          pending: true,
-          indicatorVisible: true,
-        ),
-        isTrue,
-      );
-      expect(state.render(), contains('[Flux · • Transcribing]'));
-      expect(
-        state
-            .render()
-            .split('\n')
-            .every(
-              (line) =>
-                  layout.textWidth(line) <=
-                  G2TextLayout.history.wrappingWidthPixels,
-            ),
-        isTrue,
-      );
-      expect(
-        state.updateTargetedSpeechTranscription(
-          segmentId: 'manual-session',
-          pending: true,
-          indicatorVisible: false,
-        ),
-        isTrue,
-      );
-      expect(state.render(), contains('Transcribing]'));
-
-      expect(state.focusAgentListenControl(), isTrue);
-      expect(
-        state.render(),
-        startsWith(
-          '   [Flux ·   Transcribing] - Swipe to navigate\n'
-          ' <  • Send transcript - Tap\n',
-        ),
-      );
-    },
-  );
+    expect(
+      state.render(),
+      startsWith(
+        '   [Flux ·   Transcribing] - Tap to send\n'
+        ' <  • Send transcript - Tap\n',
+      ),
+    );
+  });
 
   test('a matching response refreshes page one and preserves detail state', () {
     final state = G2AgentHistoryState()
@@ -659,7 +630,7 @@ void main() {
     );
     expect(state.detailControl, G2AgentDetailControl.back);
     expect(state.detailPageIndex, 0);
-    expect(state.render(), startsWith('< [Flux] - Swipe to navigate\n'));
+    expect(state.render(), startsWith('< [Flux · History] - Tap for agents\n'));
     expect(state.render(), contains('newest synthetic response'));
     expect(
       state.render().indexOf('newest synthetic response'),
@@ -969,7 +940,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Pike] - Swipe to navigate\n'
+        '   [Pike · Ready] - Tap to listen\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -977,7 +948,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Pike] - Swipe to navigate\n'
+        '   [Pike · Ready] - Tap to listen\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -1011,7 +982,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Listening] - Swipe to navigate\n'
+          '   [Pike · Listening] - Tap to stop\n'
           ' <  • Listen Mode - Tap to stop\n',
         ),
       );
@@ -1051,7 +1022,7 @@ void main() {
     expect(
       state.render(),
       contains(
-        '   [Pike] - Swipe to navigate\n'
+        '   [Pike · Ready] - Tap to listen\n'
         ' >  • Listen Mode - Tap to start\n${stamp(sentAt)} '
         'report synthetic progress\n${stamp(sentAt)} First result\n'
         'Second result\nThird result\n\n'
@@ -1074,17 +1045,21 @@ void main() {
             legacy: false,
           ),
         ],
+        now: sentAt,
       )
       ..selectNext();
 
-    expect(state.render(), contains(' >  [Flux] inspect the synthetic build'));
+    expect(
+      state.render(),
+      contains(' >  [Flux] 0sec inspect the synthetic build'),
+    );
     expect(state.render(), isNot(contains('[Flux] Flux:')));
 
     state.showSelectedDetail();
     expect(
       state.render(),
       startsWith(
-        '   [Flux] - Swipe to navigate\n'
+        '   [Flux · Ready] - Tap to listen\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -1288,5 +1263,190 @@ void main() {
     expect(state.detailPageIndex, state.detailPageCount - 1);
     expect(state.render(), contains('live119'));
     expect(state.detailSpeechState, G2AgentDetailSpeechState.listening);
+  });
+
+  test('sorts agents by newest received message and shows its age', () {
+    final now = DateTime.utc(2026, 2, 1, 12);
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['No Reply', 'Pike', 'Vale', 'Flux'],
+        exchanges: const <AgentExchangeView>[],
+        messages: <AgentMessageView>[
+          AgentMessageView(
+            id: 'no-reply-sent',
+            agent: 'No Reply',
+            direction: AgentMessageDirection.sent,
+            message: 'newest sent-only command',
+            updatedAt: now.subtract(const Duration(seconds: 1)),
+          ),
+          AgentMessageView(
+            id: 'pike-sent',
+            agent: 'Pike',
+            direction: AgentMessageDirection.sent,
+            message: 'newer sent preview',
+            updatedAt: now.subtract(const Duration(seconds: 2)),
+          ),
+          AgentMessageView(
+            id: 'pike-received',
+            agent: 'Pike',
+            direction: AgentMessageDirection.received,
+            message: 'older received update',
+            updatedAt: now.subtract(const Duration(minutes: 4)),
+          ),
+          AgentMessageView(
+            id: 'vale-received',
+            agent: 'Vale',
+            direction: AgentMessageDirection.received,
+            message: 'most recent received update',
+            updatedAt: now.subtract(const Duration(seconds: 15)),
+          ),
+          AgentMessageView(
+            id: 'flux-received',
+            agent: 'Flux',
+            direction: AgentMessageDirection.received,
+            message: 'older received update',
+            updatedAt: now.subtract(const Duration(hours: 1)),
+          ),
+        ],
+        now: now,
+      );
+
+    expect(state.entries.map((entry) => entry.label), <String>[
+      '[x]',
+      'Vale',
+      'Pike',
+      'Flux',
+      'No Reply',
+      'Memo',
+    ]);
+    final rendered = state.render();
+    expect(rendered, contains('[Vale] 15sec most recent received update'));
+    expect(rendered, contains('[Pike] 4min newer sent preview'));
+    expect(rendered, contains('[Flux] 1hr older received update'));
+    expect(rendered, contains('[No Reply] newest sent-only command'));
+    expect(rendered, isNot(contains('[No Reply ')));
+  });
+
+  test(
+    'uses exchange responses when the durable message list is unavailable',
+    () {
+      final now = DateTime.utc(2026, 2, 1, 12);
+      final state = G2AgentHistoryState()
+        ..open(
+          agents: const <String>['Pike', 'Vale'],
+          exchanges: <AgentExchangeView>[
+            AgentExchangeView(
+              id: 'pike-exchange',
+              agent: 'Pike',
+              message: 'request Pike update',
+              response: 'Pike update ready',
+              responseAt: now.subtract(const Duration(minutes: 4)),
+              sentAt: now.subtract(const Duration(minutes: 5)),
+              legacy: false,
+            ),
+            AgentExchangeView(
+              id: 'vale-exchange',
+              agent: 'Vale',
+              message: 'request Vale update',
+              response: 'Vale update ready',
+              responseAt: now.subtract(const Duration(seconds: 15)),
+              sentAt: now.subtract(const Duration(minutes: 1)),
+              legacy: false,
+            ),
+          ],
+          now: now,
+        );
+
+      expect(state.entries.map((entry) => entry.label), <String>[
+        '[x]',
+        'Vale',
+        'Pike',
+        'Memo',
+      ]);
+      expect(state.render(), contains('[Vale] 15sec Vale update ready'));
+      expect(state.render(), contains('[Pike] 4min Pike update ready'));
+    },
+  );
+
+  test('keeps configured order for equal and missing received timestamps', () {
+    final now = DateTime.utc(2026, 2, 1, 12);
+    final receivedAt = now.subtract(const Duration(minutes: 4));
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Alpha', 'Beta', 'Gamma', 'Delta'],
+        exchanges: const <AgentExchangeView>[],
+        messages: <AgentMessageView>[
+          AgentMessageView(
+            id: 'alpha-received',
+            agent: 'Alpha',
+            direction: AgentMessageDirection.received,
+            message: 'alpha update',
+            updatedAt: receivedAt,
+          ),
+          AgentMessageView(
+            id: 'beta-received',
+            agent: 'Beta',
+            direction: AgentMessageDirection.received,
+            message: 'beta update',
+            updatedAt: receivedAt,
+          ),
+        ],
+        now: now,
+      );
+
+    expect(state.entries.map((entry) => entry.label), <String>[
+      '[x]',
+      'Alpha',
+      'Beta',
+      'Gamma',
+      'Delta',
+      'Memo',
+    ]);
+  });
+
+  test('renders one compact elapsed unit at every boundary', () {
+    final now = DateTime.utc(2026, 2, 1, 12);
+    final cases = <(Duration, String)>[
+      (const Duration(seconds: -5), '0sec'),
+      (const Duration(seconds: 15), '15sec'),
+      (const Duration(seconds: 59), '59sec'),
+      (const Duration(minutes: 1), '1min'),
+      (const Duration(minutes: 59), '59min'),
+      (const Duration(hours: 1), '1hr'),
+      (const Duration(hours: 23), '23hr'),
+      (const Duration(days: 1), '1day'),
+      (const Duration(days: 29), '29day'),
+      (const Duration(days: 30), '1mon'),
+      (const Duration(days: 60), '2mon'),
+    ];
+
+    for (final (elapsed, expected) in cases) {
+      final state = G2AgentHistoryState()
+        ..open(
+          agents: const <String>['Pike'],
+          exchanges: const <AgentExchangeView>[],
+          messages: <AgentMessageView>[
+            AgentMessageView(
+              id: 'pike-$expected',
+              agent: 'Pike',
+              direction: AgentMessageDirection.received,
+              message: 'synthetic update',
+              updatedAt: now.subtract(elapsed),
+            ),
+          ],
+          now: now,
+        );
+
+      expect(
+        state.render(),
+        contains('[Pike] $expected synthetic update'),
+        reason: 'Expected $expected for $elapsed.',
+      );
+      expect(
+        state.render().runes.length,
+        lessThanOrEqualTo(G2AgentHistoryState.maximumPageCharacters),
+      );
+      expect(state.render().split('\n').length, lessThanOrEqualTo(9));
+    }
   });
 }

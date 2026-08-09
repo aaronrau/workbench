@@ -95,7 +95,7 @@ void main() {
   test('preview correction becomes current for the complete raw revision', () {
     final session = createSession();
 
-    expect(session.enablePreview(), isTrue);
+    expect(session.previewEnabled, isTrue);
     expect(session.previewState, SelectedAgentCorrectionPreviewState.waiting);
     session
       ..registerSegment('segment-1')
@@ -123,7 +123,6 @@ void main() {
     'speech appended during correction automatically makes preview stale',
     () {
       final session = createSession()
-        ..enablePreview()
         ..registerSegment('segment-1')
         ..completeSegment('segment-1', 'first raw thought');
       final first = session.correctionSnapshot()!;
@@ -165,7 +164,6 @@ void main() {
 
   test('a current preview remains reusable when send is requested', () {
     final session = createSession()
-      ..enablePreview()
       ..registerSegment('segment-1')
       ..completeSegment('segment-1', 'raw command');
     final snapshot = session.correctionSnapshot()!;
@@ -187,38 +185,24 @@ void main() {
     );
   });
 
-  test(
-    'Preview Off corrects at Send while failed Preview On preserves raw',
-    () {
-      final previewOff = createSession()
-        ..registerSegment('segment-1')
-        ..completeSegment('segment-1', 'raw command')
-        ..requestFinish();
-      expect(
-        previewOff.sendCorrectionMode,
-        SelectedAgentSendCorrectionMode.correctAtSend,
-      );
-
-      final previewOn = createSession()
-        ..enablePreview()
-        ..registerSegment('segment-1')
-        ..completeSegment('segment-1', 'raw command');
-      final snapshot = previewOn.correctionSnapshot()!;
-      previewOn
-        ..markPreviewQueued(snapshot.revision)
-        ..markPreviewCorrecting(snapshot.revision)
-        ..failPreview(snapshot.revision)
-        ..requestFinish();
-      expect(
-        previewOn.sendCorrectionMode,
-        SelectedAgentSendCorrectionMode.preserveRaw,
-      );
-    },
-  );
+  test('a failed default preview preserves raw at Send', () {
+    final session = createSession()
+      ..registerSegment('segment-1')
+      ..completeSegment('segment-1', 'raw command');
+    final snapshot = session.correctionSnapshot()!;
+    session
+      ..markPreviewQueued(snapshot.revision)
+      ..markPreviewCorrecting(snapshot.revision)
+      ..failPreview(snapshot.revision)
+      ..requestFinish();
+    expect(
+      session.sendCorrectionMode,
+      SelectedAgentSendCorrectionMode.preserveRaw,
+    );
+  });
 
   test('failed preview waits for new STT before auto-correcting again', () {
     final session = createSession()
-      ..enablePreview()
       ..registerSegment('segment-1')
       ..completeSegment('segment-1', 'first raw thought');
     final first = session.correctionSnapshot()!;
@@ -238,7 +222,6 @@ void main() {
 
   test('cancel rejects an in-flight preview result', () {
     final session = createSession()
-      ..enablePreview()
       ..registerSegment('segment-1')
       ..completeSegment('segment-1', 'raw command');
     final snapshot = session.correctionSnapshot()!;

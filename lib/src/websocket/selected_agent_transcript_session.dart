@@ -52,7 +52,7 @@ final class SelectedAgentTranscriptSession {
   SelectedAgentTranscriptSessionState state =
       SelectedAgentTranscriptSessionState.listening;
   SelectedAgentCorrectionPreviewState previewState =
-      SelectedAgentCorrectionPreviewState.off;
+      SelectedAgentCorrectionPreviewState.waiting;
   int _transcriptRevision = 0;
   int? _previewRevision;
   String? _previewTranscript;
@@ -157,31 +157,6 @@ final class SelectedAgentTranscriptSession {
           ? SelectedAgentCorrectionPreviewState.queued
           : SelectedAgentCorrectionPreviewState.updatePending;
     }
-    return true;
-  }
-
-  bool enablePreview() {
-    if (previewEnabled ||
-        state != SelectedAgentTranscriptSessionState.listening) {
-      return false;
-    }
-    previewState = transcript.isEmpty
-        ? SelectedAgentCorrectionPreviewState.waiting
-        : _previewRevision == _transcriptRevision &&
-              (_previewTranscript?.trim().isNotEmpty ?? false)
-        ? SelectedAgentCorrectionPreviewState.current
-        : SelectedAgentCorrectionPreviewState.queued;
-    return true;
-  }
-
-  bool disablePreview() {
-    if (!previewEnabled ||
-        state != SelectedAgentTranscriptSessionState.listening) {
-      return false;
-    }
-    previewState = SelectedAgentCorrectionPreviewState.off;
-    _previewRequestRevision = null;
-    _previewFailureRevision = null;
     return true;
   }
 

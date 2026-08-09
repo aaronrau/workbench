@@ -41,7 +41,6 @@ enum AgentDetailSwipeAction {
   none,
   focusBack,
   focusListen,
-  focusPreviewCorrection,
   previousPage,
   nextPage,
 }
@@ -53,7 +52,6 @@ enum AgentDetailTranscriptTapAction {
   activateListenMode,
   exitListenMode,
   finishSpeech,
-  togglePreviewCorrection,
   returnToSelector,
   dismiss,
 }
@@ -211,22 +209,12 @@ AgentDetailSwipeAction resolveAgentDetailSwipeAction({
   required int gestureType,
   required bool isAgentDetail,
   required G2AgentDetailControl detailControl,
-  bool listenModeSelected = false,
 }) {
   final move = resolveAgentHistorySelectionMove(gestureType);
   if (isAgentDetail) {
     if (move == AgentHistorySelectionMove.previous &&
-        detailControl == G2AgentDetailControl.previewCorrection) {
-      return AgentDetailSwipeAction.focusListen;
-    }
-    if (move == AgentHistorySelectionMove.previous &&
         detailControl == G2AgentDetailControl.listen) {
       return AgentDetailSwipeAction.focusBack;
-    }
-    if (move == AgentHistorySelectionMove.next &&
-        detailControl == G2AgentDetailControl.listen &&
-        listenModeSelected) {
-      return AgentDetailSwipeAction.focusPreviewCorrection;
     }
     if (move == AgentHistorySelectionMove.next &&
         detailControl == G2AgentDetailControl.back) {
@@ -268,12 +256,6 @@ AgentDetailTranscriptTapAction resolveAgentDetailTranscriptTapAction({
   }
   if (!isAgentDetail) {
     return AgentDetailTranscriptTapAction.none;
-  }
-  if (detailControl == G2AgentDetailControl.previewCorrection) {
-    return listenModeSelected &&
-            speechState == G2AgentDetailSpeechState.listening
-        ? AgentDetailTranscriptTapAction.togglePreviewCorrection
-        : AgentDetailTranscriptTapAction.none;
   }
   if (detailControl == G2AgentDetailControl.back) {
     return AgentDetailTranscriptTapAction.returnToSelector;
@@ -1315,9 +1297,6 @@ final class WearableController extends ChangeNotifier
           case AgentDetailTranscriptTapAction.finishSpeech:
             _finishActiveAgentDetailSpeech();
             return true;
-          case AgentDetailTranscriptTapAction.togglePreviewCorrection:
-            _toggleSelectedAgentCorrectionPreview();
-            return true;
           case AgentDetailTranscriptTapAction.returnToSelector:
             _returnToAgentHistorySelector();
             return true;
@@ -1343,14 +1322,11 @@ final class WearableController extends ChangeNotifier
           gestureType: event.type,
           isAgentDetail: _agentHistory.isAgentDetail,
           detailControl: _agentHistory.detailControl,
-          listenModeSelected: _agentHistory.detailListenModeSelected,
         );
         final changed = switch (swipeAction) {
           AgentDetailSwipeAction.focusBack => _focusAgentBackControlFromSwipe(),
           AgentDetailSwipeAction.focusListen =>
             _agentHistory.focusAgentListenControl(),
-          AgentDetailSwipeAction.focusPreviewCorrection =>
-            _agentHistory.focusAgentPreviewCorrectionControl(),
           AgentDetailSwipeAction.previousPage =>
             _agentHistory.selectPreviousDetailPage(),
           AgentDetailSwipeAction.nextPage =>
@@ -1487,29 +1463,6 @@ final class WearableController extends ChangeNotifier
       '[WorkBench][AgentHistory] state=listen_mode_selected '
           'source=detail_tap boundary=manual',
     );
-  }
-
-  void _toggleSelectedAgentCorrectionPreview() {
-    final session = _selectedAgentListenSession;
-    if (session == null ||
-        _agentHistory.activeDetailSpeechSegmentId != session.id ||
-        !session.isListening) {
-      return;
-    }
-    if (session.previewEnabled) {
-      session.disablePreview();
-    } else {
-      session.enablePreview();
-    }
-    _projectSelectedAgentSession(session);
-    addLog(
-      'WebSocket',
-      '[WorkBench][VoiceRoute] state=preview_mode '
-          'enabled=${session.previewEnabled} source=${session.source}',
-    );
-    if (session.previewEnabled) {
-      unawaited(_ensureSelectedAgentPreviewCorrection(session));
-    }
   }
 
   void _projectSelectedAgentSession(SelectedAgentTranscriptSession session) {

@@ -176,14 +176,13 @@ expose for a true locked Hub mode.
   received list as the phone agent tab, shown as `[HH:mm] Message`. Saving the
   socket configuration does not clear this history, and startup reindexes its
   durable message files if the performance index is missing. Agent details
-  open with `   [Flux] - Swipe to navigate` and
+  open with `   [Flux · Ready] - Tap to listen` and
   ` >  • Listen Mode - Tap to start`; opening the agent
   does not target audio. A second tap changes the Listen arrow from `>` to `<`
   and enables targeting. Swipe up stops Listen Mode and moves the active `<`
   control to the Flux title; tapping there returns to the selector. Swipe down
-  returns focus to Listen Mode. While it is active, the next down swipe focuses
-  Preview Correction; tap toggles it, swipe up returns to Send, and another
-  down swipe pages forward.
+  returns focus to Listen Mode. While it is active, a down swipe pages the
+  transcript directly.
   Exiting Listen Mode clears its temporary
   listening overlay, restores the message page that was visible before speech,
   and immediately re-enables history paging. Memo details
@@ -191,7 +190,7 @@ expose for a true locked Hub mode.
   content row is repeated first on the next page. History uses a borderless
   576×288 viewport with a stable four-pixel inset on every selector and detail
   page; inactive agent details retain seven body rows beneath two fixed
-  lines, active sessions retain six beneath three fixed lines, Memo
+  lines, active sessions also retain seven beneath two fixed lines, Memo
   details retain eight, and all show only a proportional
   right-edge scroll thumb. Detail pages are pre-paginated, keep a fixed
   scrollbar image container, and use serialized in-place updates while
@@ -199,21 +198,19 @@ expose for a true locked Hub mode.
   activates Listen Mode snapshots that configured agent and starts a manual
   transcript session without requiring a spoken `Hey` or agent name. Otherwise
   audio follows the ordinary transcription and wake-word route. The title
-  changes to `[Flux · Listening] - Swipe to navigate`, while the selected
-  control becomes ` <  • Send transcript - Tap`. Both it and Preview Correction reserve the
-  same cursor gutter, so focus never shifts their content. Each full second
+  changes to `[Flux · Listening] - Tap to send`, while the selected control
+  becomes ` <  • Send transcript - Tap`. Preview Correction is always enabled
+  and has no selectable row or toggle. Each full second
   with VAD inactive closes only an audio chunk and queues it in the persistent STT FIFO;
   it never exits Listen Mode or sends. As STT chunks finish, only their
   accumulated transcript text appears in the body. The single status beside
   the agent name changes state and blinks its dot while transcription is
   pending. Later speech continues appending regardless of earlier VAD
-  endpoints. Preview Correction starts Off: the next tap stops capture, waits
-  for queued STT, corrects the complete aggregate once, and sends it. Swipe
-  down from Send focuses Preview Correction; tapping turns it On, after which
-  every completed STT append automatically refreshes one serialized correction
-  preview. Swipe up returns focus to Send. Sending with Preview On waits for and
-  reuses the current preview, so it never invokes Gemma a second time. The
-  detail shows `[Flux · Sending] - Swipe to navigate` and
+  endpoints. Every completed STT append automatically refreshes one serialized
+  correction preview. The title reports the current phase and available tap
+  action. Sending waits for and reuses the current preview, so it never invokes
+  Gemma a second time. The detail shows
+  `[Flux · Sending] - Tap to dismiss` and
   ` <  • Dismiss - Tap` during that work;
   tapping while sending dismisses the detail while delivery continues. New speech after
   Listen Mode exit or dismissal is no longer targeted to the previously
