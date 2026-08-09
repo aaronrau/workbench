@@ -20,10 +20,11 @@ This flow extends, rather than replaces, the existing behavior:
 
 ## Product interpretation
 
-The selector renders every agent option as one `Agent - content` row. Carriage
-returns, newlines, and repeated whitespace are collapsed to spaces before the
-row is measured; pixel-width overflow is ellipsized. Opening the option loads
-every exchange retained in the bounded agent ledger for only that agent. The
+The selector renders every agent option with a `[Agent] - content` first row.
+Carriage returns, newlines, and repeated whitespace are collapsed to spaces
+before the row is measured; overflow after the second measured row is
+ellipsized. Opening the option loads every exchange retained in the bounded
+agent ledger for only that agent. The
 target glasses layout contains:
 
 1. `[x]`
@@ -46,8 +47,9 @@ configuration. The phone's Messages view remains the complete history.
 Every option occupies one or two rendered lines. Carriage returns, newlines,
 and repeated whitespace in private content are collapsed before width
 measurement, so source formatting never forces a selector line break. Agent
-and Memo rows start `Agent - content`; measured overflow continues on one
-aligned second row and is ellipsized there. `[x] - Swipe to Select` remains a
+rows start `[Agent] - content`, while Memo starts `Memo - content`; measured
+overflow continues on one aligned second row and is ellipsized there.
+`[x] - Swipe to Select` remains a
 fixed one-line header. There is no page counter. Every rendered line reserves a
 fixed 25-pixel pointer gutter. The selected gutter includes two spaces after
 `>`, and the empty and continuation gutters have exactly the same measured
@@ -56,11 +58,11 @@ short selector is:
 
 ```text
  >  [x] - Swipe to Select
-     Agent One - latest sent command
-     Agent Two - No messages
-     Agent Three - latest sent command
-     Agent Four - No messages
-     Agent Five - latest sent command
+     [Agent One] - latest sent command
+     [Agent Two] - No messages
+     [Agent Three] - latest sent command
+     [Agent Four] - No messages
+     [Agent Five] - latest sent command
      Memo - latest saved memo
 ```
 
@@ -69,9 +71,9 @@ and ends with an ellipsis:
 
 ```text
  >  [x] - Swipe to Select
-     Agent One - latest sent command that continues
+     [Agent One] - latest sent command that continues
      on the second measured row…
-     Agent Two - another command that continues on
+     [Agent Two] - another command that continues on
      its second measured row…
 ```
 
@@ -196,7 +198,7 @@ Memo - No saved memo
 An agent with no positively acknowledged command is also retained:
 
 ```text
-Agent Two - No messages
+[Agent Two] - No messages
 ```
 
 Tapping either empty option shows the same state below a title containing
@@ -504,7 +506,7 @@ gesture-controlled ownership.
 - opening always selects `[x]`;
 - swipe up/down wraps across `[x]`, five agent options, and the final Memo
   option;
-- every agent starts one `Agent - content` row, collapses carriage returns,
+- every agent starts one `[Agent] - content` row, collapses carriage returns,
   newlines, and repeated whitespace before wrapping, uses at most one aligned
   continuation row, ellipsizes further pixel overflow, and leaves each selector
   page under 2,048 characters;
@@ -606,7 +608,7 @@ representative phone:
 2. connect the physical G2/R1 pair;
 3. tap and verify `[x]` is selected first;
 4. swipe through every agent and the final Memo option, checking one
-   `Agent - content` first row per option, collapsed return/newline input,
+   `[Agent] - content` first row per option, collapsed return/newline input,
    optional measured continuation row, second-row ellipsis, stable horizontal
    alignment, and the borderless surface;
 5. select an agent with more than five exchanges and multiple response updates,

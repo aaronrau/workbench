@@ -691,9 +691,13 @@ final class G2AgentHistoryState {
   }
 
   List<String> _selectorEntryContentLines(G2AgentHistoryEntry entry) {
+    final normalizedLabel = _oneLine(entry.label);
+    final label = entry.kind == G2AgentHistoryEntryKind.agent
+        ? '[$normalizedLabel]'
+        : normalizedLabel;
     final content = entry.preview.isEmpty
-        ? _oneLine(entry.label)
-        : '${_oneLine(entry.label)} - ${_oneLine(entry.preview)}';
+        ? label
+        : '$label - ${_oneLine(entry.preview)}';
     final pointerGutterWidth = _layout.textWidth(_selectedPointerPrefix);
     return _layout.limitLines(
       content,
