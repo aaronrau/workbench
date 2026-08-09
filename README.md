@@ -163,7 +163,7 @@ expose for a true locked Hub mode.
   memo, double tap retains its higher-priority finish action.
 - Implements the fallback single-tap agent history selector with `Dismiss`
   selected first, up to five agent options, and the local Memo option last.
-  Each agent option begins `[Agent] - content` and may use one measured
+  Each agent option begins `[Agent] content` and may use one measured
   continuation row. Carriage returns, newlines, and repeated whitespace are
   collapsed to spaces before width wrapping, so source formatting never forces a new row;
   overflow after the second row is ellipsized. Every rendered row reserves the

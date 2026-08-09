@@ -695,9 +695,10 @@ final class G2AgentHistoryState {
     final label = entry.kind == G2AgentHistoryEntryKind.agent
         ? '[$normalizedLabel]'
         : normalizedLabel;
+    final separator = entry.kind == G2AgentHistoryEntryKind.agent ? ' ' : ' - ';
     final content = entry.preview.isEmpty
         ? label
-        : '$label - ${_oneLine(entry.preview)}';
+        : '$label$separator${_oneLine(entry.preview)}';
     final pointerGutterWidth = _layout.textWidth(_selectedPointerPrefix);
     return _layout.limitLines(
       content,

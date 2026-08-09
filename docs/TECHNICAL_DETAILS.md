@@ -43,7 +43,7 @@ startup/create command is not reused because firmware accepts it only at page
 startup and otherwise retains the existing visualizer geometry. The selector
 uses a borderless container with the same four-pixel inner inset on every
 selector and detail page. Each agent begins as
-`[Agent] - content` and flows into at most one continuation row after CR/LF and
+`[Agent] content` and flows into at most one continuation row after CR/LF and
 repeated whitespace are collapsed. A fixed 25-pixel pointer gutter keeps both
 rows aligned when selection moves.
 A shared measured-text layout fills up to nine rows. Short entries therefore fit

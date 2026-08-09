@@ -43,7 +43,7 @@ void main() {
     expect(state.entries.last.kind, G2AgentHistoryEntryKind.memo);
     expect(
       state.render(),
-      startsWith(' >  [x] - Swipe to Select\n     [Pike] - validate'),
+      startsWith(' >  [x] - Swipe to Select\n     [Pike] validate'),
     );
     final rows = state.render().split('\n');
     expect(rows, hasLength(7));
@@ -53,7 +53,7 @@ void main() {
     for (var index = 0; index < 4; index++) {
       state.selectNext();
     }
-    expect(state.render(), contains(' >  [Agent Four] - No messages'));
+    expect(state.render(), contains(' >  [Agent Four] No messages'));
     expect(
       state.render().runes.length,
       lessThanOrEqualTo(G2AgentHistoryState.maximumPageCharacters),
@@ -707,7 +707,7 @@ void main() {
     expect(rows, hasLength(4));
     expect(
       rows[1],
-      startsWith('     [Pike] - ready for review second line third line'),
+      startsWith('     [Pike] ready for review second line third line'),
     );
     expect(state.render(), isNot(contains('\r')));
     expect(rows[2], startsWith('     '));
@@ -724,7 +724,7 @@ void main() {
     final selectedRow = state
         .render()
         .split('\n')
-        .firstWhere((line) => line.contains('[Pike] -'));
+        .firstWhere((line) => line.contains('[Pike] '));
     final selectedPrefix = selectedRow.substring(
       0,
       selectedRow.indexOf('Pike'),
@@ -733,9 +733,9 @@ void main() {
       layout.textWidth(unselectedPrefix),
       layout.textWidth(selectedPrefix),
     );
-    expect(selectedRow, startsWith(' >  [Pike] -'));
+    expect(selectedRow, startsWith(' >  [Pike] '));
     expect(
-      state.render().split('\n').where((line) => line.contains('[Pike] -')),
+      state.render().split('\n').where((line) => line.contains('[Pike] ')),
       hasLength(1),
     );
   });
@@ -774,31 +774,25 @@ void main() {
       state.selectNext();
     }
     final firstBoundary = state.render().split('\n');
-    expect(firstBoundary[1], startsWith('     [Agent Two] -'));
-    expect(firstBoundary, contains(startsWith(' >  [Agent Four] -')));
-    expect(
-      firstBoundary.any((line) => line.contains('[Agent One] -')),
-      isFalse,
-    );
-    expect(
-      firstBoundary.any((line) => line.contains('[Agent Five] -')),
-      isTrue,
-    );
+    expect(firstBoundary[1], startsWith('     [Agent Two] '));
+    expect(firstBoundary, contains(startsWith(' >  [Agent Four] ')));
+    expect(firstBoundary.any((line) => line.contains('[Agent One] ')), isFalse);
+    expect(firstBoundary.any((line) => line.contains('[Agent Five] ')), isTrue);
 
     state.selectNext();
     final secondBoundary = state.render().split('\n');
-    expect(secondBoundary[1], startsWith('     [Agent Three] -'));
-    expect(secondBoundary, contains(startsWith(' >  [Agent Five] -')));
+    expect(secondBoundary[1], startsWith('     [Agent Three] '));
+    expect(secondBoundary, contains(startsWith(' >  [Agent Five] ')));
     expect(secondBoundary, contains(startsWith('     Memo -')));
     expect(secondBoundary.length, lessThanOrEqualTo(9));
     expect(secondBoundary.first, '     [x] - Swipe to Select');
     expect(secondBoundary.join('\n'), isNot(contains(RegExp(r'\d+/\d+'))));
     expect(
-      secondBoundary.any((line) => line.contains('[Agent One] -')),
+      secondBoundary.any((line) => line.contains('[Agent One] ')),
       isFalse,
     );
     expect(
-      secondBoundary.any((line) => line.contains('[Agent Two] -')),
+      secondBoundary.any((line) => line.contains('[Agent Two] ')),
       isFalse,
     );
   });
@@ -823,46 +817,46 @@ void main() {
 
     state.selectNext();
     expect(state.selected?.label, 'Flux');
-    expect(state.render().split('\n')[1], startsWith(' >  [Flux] -'));
+    expect(state.render().split('\n')[1], startsWith(' >  [Flux] '));
 
     state.selectNext();
     expect(state.selected?.label, 'Pike');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] -'));
-    expect(state.render(), contains(' >  [Pike] -'));
-    expect(state.render(), contains('[Vale] -'));
+    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
+    expect(state.render(), contains(' >  [Pike] '));
+    expect(state.render(), contains('[Vale] '));
 
     state.selectNext();
     expect(state.selected?.label, 'Vale');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] -'));
-    expect(state.render(), contains(' >  [Vale] -'));
+    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
+    expect(state.render(), contains(' >  [Vale] '));
 
     state.selectNext();
     expect(state.selected?.label, 'Brock');
-    expect(state.render().split('\n')[1], startsWith('     [Pike] -'));
-    expect(state.render(), isNot(contains('[Flux] -')));
-    expect(state.render(), contains(' >  [Brock] -'));
+    expect(state.render().split('\n')[1], startsWith('     [Pike] '));
+    expect(state.render(), isNot(contains('[Flux] ')));
+    expect(state.render(), contains(' >  [Brock] '));
     expect(state.render(), contains('Memo -'));
 
     state.selectNext();
     expect(state.selected?.label, 'Memo');
-    expect(state.render().split('\n')[1], startsWith('     [Pike] -'));
+    expect(state.render().split('\n')[1], startsWith('     [Pike] '));
     expect(state.render(), contains(' >  Memo -'));
 
     state.selectPrevious();
     expect(state.selected?.label, 'Brock');
-    expect(state.render().split('\n')[1], startsWith('     [Pike] -'));
-    expect(state.render(), contains(' >  [Brock] -'));
+    expect(state.render().split('\n')[1], startsWith('     [Pike] '));
+    expect(state.render(), contains(' >  [Brock] '));
 
     state.selectPrevious();
     expect(state.selected?.label, 'Vale');
-    expect(state.render().split('\n')[1], startsWith('     [Pike] -'));
-    expect(state.render(), contains(' >  [Vale] -'));
+    expect(state.render().split('\n')[1], startsWith('     [Pike] '));
+    expect(state.render(), contains(' >  [Vale] '));
 
     state.selectPrevious();
     expect(state.selected?.label, 'Pike');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] -'));
-    expect(state.render(), contains(' >  [Pike] -'));
-    expect(state.render(), contains('[Pike] -'));
+    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
+    expect(state.render(), contains(' >  [Pike] '));
+    expect(state.render(), contains('[Pike] '));
     expect(state.render(), isNot(contains(RegExp(r'\d+/\d+'))));
   });
 
@@ -890,13 +884,13 @@ void main() {
       state.selectNext();
     }
     expect(state.selected?.label, 'Nova');
-    expect(state.render(), isNot(contains('[Flux] -')));
-    expect(state.render(), contains(' >  [Nova] -'));
+    expect(state.render(), isNot(contains('[Flux] ')));
+    expect(state.render(), contains(' >  [Nova] '));
     expect(state.render(), contains('Memo -'));
     final shifted = state.render().split('\n');
     expect(shifted, hasLength(9));
-    expect(shifted[1], startsWith('     [Pike] -'));
-    expect(shifted.join('\n'), isNot(contains('[Flux] -')));
+    expect(shifted[1], startsWith('     [Pike] '));
+    expect(shifted.join('\n'), isNot(contains('[Flux] ')));
     expect(shifted, contains(startsWith('     Memo -')));
   });
 
@@ -1058,11 +1052,8 @@ void main() {
       )
       ..selectNext();
 
-    expect(
-      state.render(),
-      contains(' >  [Flux] - inspect the synthetic build'),
-    );
-    expect(state.render(), isNot(contains('[Flux] - Flux:')));
+    expect(state.render(), contains(' >  [Flux] inspect the synthetic build'));
+    expect(state.render(), isNot(contains('[Flux] Flux:')));
 
     state.showSelectedDetail();
     expect(
