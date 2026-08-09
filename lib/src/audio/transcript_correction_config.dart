@@ -266,6 +266,7 @@ final class TranscriptCorrectionConfigStore extends ChangeNotifier {
     SharedCorrectionInstructionsAvailable? sharedInstructionsAvailable,
     SharedCorrectionInstructionsReader? sharedInstructionsReader,
     SharedCorrectionInstructionsWriter? sharedInstructionsWriter,
+    this.sharedInstructionsTimeout = const Duration(seconds: 5),
   }) : _supportDirectory = supportDirectory,
        _sharedInstructionsAvailable = sharedInstructionsAvailable,
        _sharedInstructionsReader = sharedInstructionsReader,
@@ -275,6 +276,7 @@ final class TranscriptCorrectionConfigStore extends ChangeNotifier {
   final SharedCorrectionInstructionsAvailable? _sharedInstructionsAvailable;
   final SharedCorrectionInstructionsReader? _sharedInstructionsReader;
   final SharedCorrectionInstructionsWriter? _sharedInstructionsWriter;
+  final Duration sharedInstructionsTimeout;
   File? _file;
   Future<void> _operationTail = Future<void>.value();
 
@@ -342,7 +344,9 @@ final class TranscriptCorrectionConfigStore extends ChangeNotifier {
     );
     final updated = config.copyWith(instructions: validated);
     if (_hasSharedInstructions) {
-      await _sharedInstructionsWriter!(validated);
+      await _sharedInstructionsWriter!(
+        validated,
+      ).timeout(sharedInstructionsTimeout);
     }
     await _write(updated);
     config = updated;
@@ -371,15 +375,21 @@ final class TranscriptCorrectionConfigStore extends ChangeNotifier {
       return;
     }
     try {
-      final shared = await _sharedInstructionsReader!();
+      final shared = await _sharedInstructionsReader!().timeout(
+        sharedInstructionsTimeout,
+      );
       if (shared == null) {
-        await _sharedInstructionsWriter!(config.instructions);
+        await _sharedInstructionsWriter!(
+          config.instructions,
+        ).timeout(sharedInstructionsTimeout);
         return;
       }
       var validated = TranscriptCorrectionConfig.validateInstructions(shared);
       if (_isLegacyTranscriptCorrectionInstructions(validated)) {
         validated = defaultTranscriptCorrectionInstructions;
-        await _sharedInstructionsWriter!(validated);
+        await _sharedInstructionsWriter!(
+          validated,
+        ).timeout(sharedInstructionsTimeout);
       }
       final updated = config.copyWith(instructions: validated);
       if (updated != config) {

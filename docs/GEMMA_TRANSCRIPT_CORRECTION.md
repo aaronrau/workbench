@@ -43,6 +43,14 @@ an explicit release, a model reload, service shutdown, or process death may
 still release it. The next live correction safely reloads the engine if that
 happens.
 
+After the raw transcript and correction ledger are durable, ready work enters
+the serial correction pump immediately in the same Dart event turn. A
+zero-duration timer is not the handoff boundary. Timers are reserved for real
+retry backoff, and a pump request that arrives while another job is finishing
+is latched and serviced before the supervisor can return idle. This prevents a
+ready live job from remaining queued until unrelated later activity wakes the
+process.
+
 ## Storage contract
 
 App-private speech storage contains:
@@ -111,6 +119,11 @@ external shared-file edit therefore affects the next segment without
 restarting the Flutter app, native service, or engine. A missing shared prompt
 is recreated from the private fallback. An invalid or unreadable external edit
 does not replace the last valid snapshot.
+Shared prompt reads and writes have a five-second bound. A document-provider
+read timeout records a validation error and immediately continues correction
+with the private last-known-good prompt, so external storage cannot pin the
+live correction FIFO. A timed-out shared save fails without replacing the
+private fallback.
 
 Validation requires:
 

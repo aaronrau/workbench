@@ -1842,6 +1842,9 @@ final class WearableController extends ChangeNotifier
       );
       return;
     }
+    if (selectedRoute == null) {
+      await _glassesStatusQueue.markTranscriptSending(segmentId: segmentId);
+    }
     final sendResult = await _voiceWebSocket.sendAgentMessageWithResult(
       agent: route.agent,
       message: route.message,

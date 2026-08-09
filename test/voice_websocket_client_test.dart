@@ -20,6 +20,7 @@ void main() {
   late int modernRouteCount;
   late Map<String, Map<String, Object?>> acceptedByRequestId;
   late Map<String, int> busyResponsesRemaining;
+  late Map<String, int> ignoredResponsesRemaining;
   late Set<String> alwaysBusyMessages;
   late Set<String> negativeAcknowledgementBusyMessages;
 
@@ -36,6 +37,7 @@ void main() {
     modernRouteCount = 0;
     acceptedByRequestId = <String, Map<String, Object?>>{};
     busyResponsesRemaining = <String, int>{};
+    ignoredResponsesRemaining = <String, int>{};
     alwaysBusyMessages = <String>{};
     negativeAcknowledgementBusyMessages = <String>{};
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -73,6 +75,13 @@ void main() {
                     : _busyPayload(payload),
               ),
             );
+            return;
+          }
+          final remainingIgnoredResponses =
+              ignoredResponsesRemaining[message] ?? 0;
+          if (remainingIgnoredResponses > 0) {
+            modernRouteCount++;
+            ignoredResponsesRemaining[message] = remainingIgnoredResponses - 1;
             return;
           }
           if (closeFirstModernRequestBeforeAcknowledgement &&
@@ -688,6 +697,41 @@ void main() {
     },
   );
 
+  test('keeps a timed-out queued delivery and reuses its request id', () async {
+    const message = 'run the acknowledgement retry fixture';
+    ignoredResponsesRemaining[message] = 2;
+    final client = await _configuredClient(
+      temp: temp,
+      serverPort: server.port,
+      acknowledgementTimeout: const Duration(milliseconds: 30),
+      busyRetryDelays: const <Duration>[Duration(milliseconds: 20)],
+      maximumBusyQueueAge: const Duration(seconds: 2),
+    );
+    addTearDown(client.close);
+
+    final resultFuture = client.sendAgentMessageWithResult(
+      agent: 'Agent One',
+      message: message,
+    );
+    final result = await resultFuture.timeout(const Duration(seconds: 2));
+    final sends = received
+        .where(
+          (payload) =>
+              payload['type'] == 'message.send' &&
+              payload['message'] == message,
+        )
+        .toList(growable: false);
+
+    expect(result.sent, isTrue);
+    expect(sends, hasLength(3));
+    expect(
+      sends.map((payload) => payload['request_id']).toSet(),
+      hasLength(1),
+      reason: 'An ambiguous retry must remain idempotent.',
+    );
+    expect(client.queuedMessageCount, 0);
+  });
+
   test('queues busy commands and preserves FIFO order', () async {
     const firstMessage = 'run the first queued fixture';
     const secondMessage = 'run the second queued fixture';
@@ -1018,6 +1062,7 @@ Future<VoiceWebSocketClient> _configuredClient({
   required int serverPort,
   int maximumQueuedMessages = 32,
   Duration maximumBusyQueueAge = const Duration(minutes: 5),
+  Duration acknowledgementTimeout = const Duration(seconds: 1),
   List<Duration> busyRetryDelays = const <Duration>[Duration(milliseconds: 10)],
   List<String> agentNames = const <String>['Agent One'],
 }) async {
@@ -1026,7 +1071,7 @@ Future<VoiceWebSocketClient> _configuredClient({
     configStore: store,
     reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
     readyTimeout: const Duration(seconds: 1),
-    acknowledgementTimeout: const Duration(seconds: 1),
+    acknowledgementTimeout: acknowledgementTimeout,
     maximumQueuedMessages: maximumQueuedMessages,
     maximumBusyQueueAge: maximumBusyQueueAge,
     busyRetryDelays: busyRetryDelays,

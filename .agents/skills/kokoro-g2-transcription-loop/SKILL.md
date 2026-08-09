@@ -12,6 +12,19 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
 → durable capture → VAD → STT → structured Android log → score
 ```
 
+## Host/device boundary (non-negotiable)
+
+- Run the Kokoro Python environment, model, synthesis, padding, and playback on
+  the computer only.
+- Play the generated fixture through the computer's physical speaker only.
+- Never install or run Kokoro on Android. Never push the Kokoro model or a
+  generated WAV to Android, and never use the phone speaker or Work Bench app
+  for fixture playback.
+- Use Android only to run Work Bench, receive the G2 microphone stream, and
+  expose the structured logs and app-private artifacts needed for validation.
+- If computer-speaker playback is unavailable or inaudible near the glasses,
+  stop at that failed boundary; do not substitute Android playback.
+
 ## Run the loop
 
 1. Read [references/workbench-log-contract.md](references/workbench-log-contract.md).

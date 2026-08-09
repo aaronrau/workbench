@@ -79,6 +79,44 @@ void main() {
     expect(client.preparedModelPaths, isEmpty);
   });
 
+  test('starts ready correction without a zero-duration timer', () async {
+    final completed = Completer<CorrectedTranscriptResult>();
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: completed.complete,
+      onUncorrected: (_, _, _) {},
+      onStatus: (_, {isError = false}) {},
+    );
+    addTearDown(supervisor.dispose);
+
+    await runZoned(
+      () async {
+        await supervisor.start();
+        await _queue(
+          supervisor,
+          speech,
+          'immediate-pump',
+          'Hey Flux run the timer-independent fixture',
+        );
+      },
+      zoneSpecification: ZoneSpecification(
+        createTimer: (self, parent, zone, duration, callback) {
+          if (duration == Duration.zero) {
+            return _InactiveTimer();
+          }
+          return parent.createTimer(zone, duration, callback);
+        },
+      ),
+    );
+
+    final result = await completed.future.timeout(const Duration(seconds: 5));
+    expect(result.segmentId, 'immediate-pump');
+    expect(supervisor.pendingCount, 0);
+  });
+
   test('explicit agent selection makes a non-Hey transcript correctable', () {
     expect(
       isLiveTranscriptCorrectionEligible(
@@ -855,6 +893,17 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
 
   @override
   Future<void> releaseEngine() async {}
+}
+
+final class _InactiveTimer implements Timer {
+  @override
+  bool get isActive => false;
+
+  @override
+  int get tick => 0;
+
+  @override
+  void cancel() {}
 }
 
 final class _BlockingGemmaClient implements GemmaCorrectionClient {

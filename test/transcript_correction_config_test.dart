@@ -288,6 +288,30 @@ void main() {
     },
   );
 
+  test('bounds a stalled shared prompt read and keeps the fallback', () async {
+    var stallRead = false;
+    final stalled = Completer<String?>();
+    final store = TranscriptCorrectionConfigStore(
+      supportDirectory: () async => temp,
+      sharedInstructionsAvailable: () => true,
+      sharedInstructionsReader: () async =>
+          stallRead ? stalled.future : defaultTranscriptCorrectionInstructions,
+      sharedInstructionsWriter: (_) async {},
+      sharedInstructionsTimeout: const Duration(milliseconds: 20),
+    );
+    addTearDown(store.dispose);
+    await store.initialize();
+    stallRead = true;
+
+    final loaded = await store.reloadForNextTranscript().timeout(
+      const Duration(seconds: 1),
+    );
+
+    expect(loaded.instructions, defaultTranscriptCorrectionInstructions);
+    expect(store.validationError, contains('Shared correction prompt'));
+    expect(store.validationError, contains('TimeoutException'));
+  });
+
   test('a failed shared save cannot replace the private fallback', () async {
     var sharedPrompt = 'Original shared instruction.';
     var failWrites = false;

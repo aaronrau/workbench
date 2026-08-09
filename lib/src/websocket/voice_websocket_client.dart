@@ -135,7 +135,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   StreamSubscription<dynamic>? _subscription;
   Timer? _readyTimer;
   Timer? _reconnectTimer;
-  Timer? _busyRetryTimer;
+  Timer? _outboundRetryTimer;
   Completer<void>? _readyCompleter;
   bool _initialized = false;
   bool _disposed = false;
@@ -147,6 +147,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   String? _lastSentAgent;
   Future<void> _inboundTail = Future<void>.value();
   bool _pumpingOutboundQueue = false;
+  bool _outboundPumpRequested = false;
 
   VoiceWebSocketStatus status = VoiceWebSocketStatus.unconfigured;
   String statusText = 'Not configured';
@@ -438,7 +439,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       );
       _outboundQueue.addLast(queued);
       _publishQueueStatus();
-      unawaited(_pumpOutboundQueue());
+      _requestOutboundPump();
       return queued.completer.future;
     }
 
@@ -599,13 +600,14 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     _QueuedAgentMessage queued, {
     int maximumAttempts = 2,
   }) async {
-    final requestId = _newRequestId();
+    final requestId = queued.requestId ??= _newRequestId();
+    var reconnectBeforeAttempt = false;
     for (var attempt = 0; attempt < maximumAttempts; attempt++) {
-      if (attempt > 0 ||
+      if (reconnectBeforeAttempt ||
           _socket == null ||
           _socket!.readyState != WebSocket.open ||
           !isReady) {
-        if (attempt > 0 || _socket != null) {
+        if (_socket != null) {
           await _closeSocket(reconnect: false);
         }
         try {
@@ -657,6 +659,8 @@ final class VoiceWebSocketClient extends ChangeNotifier {
           outcome == _AcknowledgementOutcome.agentBusy) {
         return _ModernSendAttempt(outcome: outcome, requestId: requestId);
       }
+      reconnectBeforeAttempt =
+          outcome == _AcknowledgementOutcome.connectionLost;
     }
     return _ModernSendAttempt(
       outcome: _AcknowledgementOutcome.timedOut,
@@ -665,14 +669,14 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   }
 
   Future<void> _pumpOutboundQueue() async {
-    if (_pumpingOutboundQueue || _busyRetryTimer != null || _disposed) {
+    if (_pumpingOutboundQueue || _outboundRetryTimer != null || _disposed) {
       return;
     }
     _pumpingOutboundQueue = true;
     try {
       while (_outboundQueue.isNotEmpty && !_disposed) {
         final queued = _outboundQueue.first;
-        if (_busyQueueAgeExpired(queued)) {
+        if (_queueAgeExpired(queued)) {
           _completeQueuedMessage(queued, sent: false);
           continue;
         }
@@ -691,8 +695,21 @@ final class VoiceWebSocketClient extends ChangeNotifier {
           continue;
         }
         if (attempt.outcome == _AcknowledgementOutcome.agentBusy) {
-          queued.busyAttempts++;
-          if (_scheduleBusyRetry(queued)) {
+          queued
+            ..requestId = null
+            ..retryAttempts += 1
+            ..retryReason = _QueuedRetryReason.agentBusy;
+          if (_scheduleQueuedRetry(queued)) {
+            break;
+          }
+          continue;
+        }
+        if (attempt.outcome == _AcknowledgementOutcome.connectionLost ||
+            attempt.outcome == _AcknowledgementOutcome.timedOut) {
+          queued
+            ..retryAttempts += 1
+            ..retryReason = _QueuedRetryReason.delivery;
+          if (_scheduleQueuedRetry(queued)) {
             break;
           }
           continue;
@@ -701,17 +718,32 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       }
     } finally {
       _pumpingOutboundQueue = false;
+      if (_outboundPumpRequested && !_disposed) {
+        _outboundPumpRequested = false;
+        _requestOutboundPump();
+      }
     }
   }
 
-  bool _busyQueueAgeExpired(_QueuedAgentMessage queued) {
+  void _requestOutboundPump() {
+    if (_disposed || _outboundQueue.isEmpty) {
+      return;
+    }
+    if (_pumpingOutboundQueue) {
+      _outboundPumpRequested = true;
+      return;
+    }
+    unawaited(_pumpOutboundQueue());
+  }
+
+  bool _queueAgeExpired(_QueuedAgentMessage queued) {
     if (_maximumBusyQueueAge <= Duration.zero) {
       return true;
     }
     return DateTime.now().difference(queued.enqueuedAt) >= _maximumBusyQueueAge;
   }
 
-  bool _scheduleBusyRetry(_QueuedAgentMessage queued) {
+  bool _scheduleQueuedRetry(_QueuedAgentMessage queued) {
     if (_disposed ||
         _outboundQueue.isEmpty ||
         !identical(_outboundQueue.first, queued)) {
@@ -725,23 +757,27 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
     final configuredDelay = _busyRetryDelays.isEmpty
         ? const Duration(seconds: 2)
-        : _busyRetryDelays[(queued.busyAttempts - 1).clamp(
+        : _busyRetryDelays[(queued.retryAttempts - 1).clamp(
             0,
             _busyRetryDelays.length - 1,
           )];
     final delay = configuredDelay < remaining ? configuredDelay : remaining;
-    _busyRetryTimer?.cancel();
-    _busyRetryTimer = Timer(delay, () {
-      _busyRetryTimer = null;
+    _outboundRetryTimer?.cancel();
+    _outboundRetryTimer = Timer(delay, () {
+      _outboundRetryTimer = null;
+      queued.retryReason = null;
       _publishQueueStatus();
-      unawaited(_pumpOutboundQueue());
+      _requestOutboundPump();
     });
     _publishQueueStatus();
     return true;
   }
 
   void _wakeBusyQueueFor(Map<String, dynamic> payload) {
-    if (_busyRetryTimer == null || _outboundQueue.isEmpty || _disposed) {
+    if (_outboundRetryTimer == null ||
+        _outboundQueue.isEmpty ||
+        _outboundQueue.first.retryReason != _QueuedRetryReason.agentBusy ||
+        _disposed) {
       return;
     }
     final completedAgent = _extractEventAgent(payload);
@@ -750,10 +786,11 @@ final class VoiceWebSocketClient extends ChangeNotifier {
             _outboundQueue.first.agent.toLowerCase()) {
       return;
     }
-    _busyRetryTimer?.cancel();
-    _busyRetryTimer = null;
+    _outboundRetryTimer?.cancel();
+    _outboundRetryTimer = null;
+    _outboundQueue.first.retryReason = null;
     _publishQueueStatus();
-    unawaited(_pumpOutboundQueue());
+    _requestOutboundPump();
   }
 
   static String? _extractEventAgent(
@@ -807,8 +844,9 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   }
 
   void _cancelOutboundQueue() {
-    _busyRetryTimer?.cancel();
-    _busyRetryTimer = null;
+    _outboundRetryTimer?.cancel();
+    _outboundRetryTimer = null;
+    _outboundPumpRequested = false;
     for (final queued in _outboundQueue) {
       if (!queued.completer.isCompleted) {
         queued.completer.complete(
@@ -1227,7 +1265,13 @@ final class VoiceWebSocketClient extends ChangeNotifier {
 
   String get _connectedStatusText {
     if (_outboundQueue.isNotEmpty) {
-      final waiting = _busyRetryTimer == null ? '' : ' · agent busy';
+      final waiting = _outboundRetryTimer == null
+          ? ''
+          : switch (_outboundQueue.first.retryReason) {
+              _QueuedRetryReason.agentBusy => ' · agent busy',
+              _QueuedRetryReason.delivery => ' · retrying delivery',
+              null => '',
+            };
       return 'Connected · ${_outboundQueue.length} queued$waiting';
     }
     return serverAgents.isEmpty
@@ -1336,8 +1380,12 @@ final class _QueuedAgentMessage {
   final DateTime enqueuedAt;
   final Completer<VoiceWebSocketSendResult> completer =
       Completer<VoiceWebSocketSendResult>();
-  int busyAttempts = 0;
+  String? requestId;
+  int retryAttempts = 0;
+  _QueuedRetryReason? retryReason;
 }
+
+enum _QueuedRetryReason { agentBusy, delivery }
 
 final class _ModernSendAttempt {
   const _ModernSendAttempt({required this.outcome, required this.requestId});

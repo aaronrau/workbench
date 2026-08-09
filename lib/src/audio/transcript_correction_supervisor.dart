@@ -180,6 +180,7 @@ final class TranscriptCorrectionSupervisor {
   Timer? _pumpTimer;
   Future<void> _ledgerWriteTail = Future<void>.value();
   bool _pumping = false;
+  bool _pumpRequested = false;
   bool _disposed = false;
   String? activeProvider;
   String state = 'idle';
@@ -202,7 +203,7 @@ final class TranscriptCorrectionSupervisor {
     if (shouldPrepare) {
       unawaited(_prepareEngine(modelPath));
     }
-    _schedulePump(Duration.zero);
+    _requestPump();
   }
 
   Future<void> _prepareEngine(String modelPath) async {
@@ -259,7 +260,7 @@ final class TranscriptCorrectionSupervisor {
       'pending=${_pending.length} stt_decode_ms=${job.sttDecodeMs} '
       'stt_total_ms=${job.sttTotalMs}',
     );
-    _schedulePump(Duration.zero);
+    _requestPump();
   }
 
   /// Moves a live queued job ahead of other ready correction work.
@@ -287,7 +288,7 @@ final class TranscriptCorrectionSupervisor {
       '[WorkBench][Correction] state=prioritized segment=$segmentId '
       'pending=${_pending.length}',
     );
-    _schedulePump(Duration.zero);
+    _requestPump();
     return true;
   }
 
@@ -326,11 +327,28 @@ final class TranscriptCorrectionSupervisor {
     if (_disposed) {
       return;
     }
+    if (delay <= Duration.zero) {
+      _requestPump();
+      return;
+    }
     _pumpTimer?.cancel();
     _pumpTimer = Timer(delay, () {
       _pumpTimer = null;
-      unawaited(_pump());
+      _requestPump();
     });
+  }
+
+  void _requestPump() {
+    if (_disposed || _pending.isEmpty) {
+      return;
+    }
+    _pumpTimer?.cancel();
+    _pumpTimer = null;
+    if (_pumping) {
+      _pumpRequested = true;
+      return;
+    }
+    unawaited(_pump());
   }
 
   Future<void> _pump() async {
@@ -359,6 +377,10 @@ final class TranscriptCorrectionSupervisor {
       }
     } finally {
       _pumping = false;
+      if (_pumpRequested && !_disposed) {
+        _pumpRequested = false;
+        _requestPump();
+      }
     }
   }
 
@@ -411,7 +433,16 @@ final class TranscriptCorrectionSupervisor {
       return;
     }
 
+    onStatus(
+      '[WorkBench][Correction] state=preparing segment=${job.segmentId} '
+      'stage=config_reload pending=${_pending.length}',
+    );
     final config = await configStore.reloadForNextTranscript();
+    onStatus(
+      '[WorkBench][Correction] state=preparing segment=${job.segmentId} '
+      'stage=model_check config_fallback='
+      '${configStore.validationError != null}',
+    );
     if (!config.enabled) {
       await _finishWithoutCorrection(
         job,
@@ -852,6 +883,7 @@ final class TranscriptCorrectionSupervisor {
 
   Future<void> dispose() async {
     _disposed = true;
+    _pumpRequested = false;
     _pumpTimer?.cancel();
     _pumpTimer = null;
     await _ledgerWriteTail;

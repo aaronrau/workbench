@@ -16,7 +16,7 @@ G2 audio → durable capture → VAD → final raw transcript
                                              authenticated WebSocket
                                                         ↓
                                   ┌─ message.accepted → G2 "Sent: …"
-                                  └─ no acknowledgement → G2 "Saved: …"
+                                  └─ retry window expires → G2 "Saved: …"
                                                            ↓ 2 seconds
                                                         clear display
 
@@ -76,9 +76,11 @@ The modern message envelope is:
 ```
 
 `Sent:` is displayed only after a matching version-1 `message.accepted` with
-`ok: true` and no negative `result.sent`. A rejection, timeout, closed socket,
-missing agent match, or unavailable server resolves the queued display to
-`Saved:`.
+`ok: true` and no negative `result.sent`. An explicit non-busy rejection,
+missing agent match, unavailable configuration, canceled queue, or exhausted
+retry window resolves the queued display to `Saved:`. A corrected default-flow
+route changes from `Queued:` to `Sending:` before it waits for the
+acknowledgement.
 
 For a live Gemma-corrected command, the durable raw STT transcript must begin
 with the complete word `Hey`. Gemma may then recover the canonical configured
@@ -86,22 +88,24 @@ agent from a mispronounced or poorly recognized following word. A bare agent
 alias, a mid-sentence `hey`, or a larger word such as `heyday` is never
 activation evidence and resolves to `Saved:` without a WebSocket send.
 
-If the connection closes or the acknowledgement times out, Work Bench
-reconnects once and resends the modern request with the exact same
-`request_id`. Servers must treat repeated request IDs idempotently: return the
-prior acknowledgement without delivering the agent command twice. An explicit
-non-busy `message.error` or negative acknowledgement is not retried. The
-legacy shape has no acknowledgement contract and therefore is not
-automatically retried.
+If the connection closes, Work Bench reconnects and resends the modern request
+with the exact same `request_id`. An acknowledgement timeout resends on the
+still-ready socket first. If either outcome remains ambiguous after the
+in-call attempts, the command stays at the head of the bounded outbound FIFO
+and retries with the same ID. Servers must treat repeated request IDs
+idempotently: return the prior acknowledgement without delivering the agent
+command twice. An explicit non-busy `message.error` or negative
+acknowledgement is not retried. The legacy shape has no acknowledgement
+contract and therefore is not automatically retried.
 
-An `agent_busy` error or negative acknowledgement keeps the command in a
-32-item, app-process-only FIFO. The head retries after a matching server
-completion wakes the queue or after bounded 2, 4, 8, 15, then 30-second
-backoff. Later commands cannot pass the busy head, preserving spoken order.
-Each explicit busy rejection starts a new request ID, while a reconnect for an
-unknown acknowledgement still reuses the original request ID. A command
-expires after five minutes and resolves to `Saved:` so the queue cannot remain
-stuck forever. Changing configuration, disconnecting, closing the client, or
+An `agent_busy` error, acknowledgement timeout, or connection loss keeps the
+command in a 32-item, app-process-only FIFO. The head retries after bounded 2,
+4, 8, 15, then 30-second backoff; a matching server completion may wake an
+`agent_busy` head early. Later commands cannot pass the head, preserving spoken
+order. Each explicit busy rejection starts a new request ID, while a retry for
+an unknown acknowledgement reuses the original request ID. A command expires
+after five minutes and resolves to `Saved:` so the queue cannot remain stuck
+forever. Changing configuration, disconnecting, closing the client, or
 restarting the app cancels the queue; queued commands are never restored or
 surprisingly delivered in a later process.
 
@@ -172,12 +176,14 @@ agent from replacing a saved result. The complete state machine, data model,
 failure behavior, implementation, and physical-device acceptance flow are documented in
 [`G2_AGENT_HISTORY_SELECTOR.md`](G2_AGENT_HISTORY_SELECTOR.md).
 
-While the selector is open on an agent row, or that agent's detail page
-is open, each VAD speech start snapshots that canonical configured agent. The
-resulting live transcript routes to that agent without requiring a spoken `Hey`
-or agent name. Explicit selection makes the live segment Gemma-eligible even
-without the wake word; only the corrected result is offered to the selected
-agent, while correction-unavailable fallback retains the durable raw text.
+Only Listen Mode explicitly activated from an agent's detail page snapshots
+that canonical configured agent at VAD speech start. Merely highlighting an
+agent row or opening its detail keeps the default wake-word flow. A Listen Mode
+transcript routes to the snapshotted agent without requiring a spoken `Hey` or
+agent name. Explicit Listen Mode selection makes the live segment
+Gemma-eligible even without the wake word; only the corrected result is offered
+to the selected agent, while correction-unavailable fallback retains the
+durable raw text.
 The agent detail title carries a visible active dot; its body advances through
 `Listening…`, `Sending:`, and acknowledged `Sent:` or fallback `Saved:` for the
 latest targeted segment. This explicit gesture selection is the only
@@ -198,13 +204,14 @@ BLE updates retain their ordered, coalesced queue, but the app never waits for
 `Sending:` or terminal text to finish rendering before queuing Gemma, sending
 the corrected command, or saving an acknowledged message.
 
-After selected-agent Gemma correction completes, the modern client writes that
-command directly to the ready WebSocket with its own correlated request ID. It
-does not enter, wait behind, or retry through the ordinary outbound FIFO or its
-`agent_busy` backoff. The selected detail still changes to `Sent:` only after
-the matching positive `message.accepted` response; rejection, busy, timeout, or
-connection loss resolves it to `Saved:`. Wake-word and other unselected routes
-retain the bounded FIFO, reconnect retry, and busy backoff behavior.
+After selected-agent Gemma correction completes, the modern client places that
+command in the same bounded outbound FIFO with its own correlated request ID.
+The selected detail changes to `Sent:` only after the matching positive
+`message.accepted` response and remains `Sending:` through bounded busy,
+timeout, or connection-loss retries. An explicit rejection, queue expiry, or
+cancellation resolves it to `Saved:`. Wake-word and other unselected routes use
+the same acknowledgement-safe FIFO while deriving their target from the
+corrected spoken invocation instead of the Listen Mode snapshot.
 
 The client tracks the latest non-negative top-level `event_id`. After an
 unexpected disconnect, it reconnects with bounded backoff, waits for the next

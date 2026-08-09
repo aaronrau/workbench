@@ -116,6 +116,14 @@ Use the checked-in
 audio validation. The repository copy is the source of truth; keep any locally
 installed copy synchronized with it.
 
+Kokoro generation and playback are host-computer operations only. Run the
+Kokoro Python environment and model on the computer, and play every fixture
+through the computer's physical speaker. Never install or run Kokoro on the
+Android device, never copy a Kokoro model or generated fixture to it, and never
+use the phone speaker or Work Bench app for fixture playback. During these
+tests, Android is only the Work Bench runtime, structured-log source, and relay
+for audio captured by the G2 microphones.
+
 Every acoustic run uses Kokoro `af_maple`, 90% computer volume, one second of
 digital leading silence, and 500 ms of trailing silence. The runner must restore
 the original speaker volume even after failure. Every run must contain explicit
@@ -272,6 +280,11 @@ STT, correction, file export, or access to the original transcript.
   transcript prefix from `Saved:` to `Sent:`. Legacy messages have no
   acknowledgement contract and may report sent only after a successful socket
   write.
+- Keep an acknowledgement timeout or connection loss in the bounded live FIFO
+  and reuse its request ID across ambiguous retries. Only a positive
+  acknowledgement, explicit non-busy rejection, queue expiry, configuration
+  change, or disposal is terminal. An explicit `agent_busy` retry uses a fresh
+  request ID.
 - Track event IDs in memory and send `connection.resume` only after a
   previously ready connection reconnects to the same saved configuration.
 - Keep reconnect timers, ready timers, acknowledgement timers, subscriptions,
