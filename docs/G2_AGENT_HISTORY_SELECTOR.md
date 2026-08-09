@@ -112,7 +112,7 @@ newest-first and listed using their local 24-hour timestamp. Agent and
 direction labels are omitted from the rows:
 
 ```text
-   [Agent One]
+   [Agent One] - Swipe to navigate
  >  • Listen Mode - Tap to start
 [14:33] <correlated completion>
 [14:32] <first correlated progress update>
@@ -127,7 +127,7 @@ Preview Correction—and six transcript/history rows. Opening it does not
 enable speech targeting. A second tap changes the Listen row's active
 arrow from `>` to `<` without shifting the title; only then does speech directly
 target the agent named once in the title. The title becomes
-`[Agent One · Listening]`, and the selected row becomes
+`[Agent One · Listening] - Swipe to navigate`, and the selected row becomes
 ` <  • Send transcript - Tap`. Swipe up stops Listen Mode and moves the active
 `<` control to the agent title. Tapping that title returns to the selector;
 swipe down returns focus to Listen Mode. During an active session, swipe down
@@ -161,7 +161,8 @@ message by timestamp, regardless of sent or received direction. Detail history
 keeps every indexed durable message and never truncates to that preview bound.
 
 Every detail page begins with `[ Memo · Tap to dismiss ]` or the two agent rows
-`   [<name>]` and ` >  • Listen Mode - Tap to start`. Conversation rows use
+`   [<name>] - Swipe to navigate` and
+` >  • Listen Mode - Tap to start`. Conversation rows use
 `[HH:mm] Message`, strip
 an identical stored agent prefix first, and never repeat the agent name in the
 history body. Explicit LF, CRLF, and CR line breaks in saved Memo or message
@@ -531,7 +532,7 @@ gesture-controlled ownership.
   a second tap enables the target, and an upward swipe exits before any later
   speech can inherit the target, clears its transient overlay, restores the
   prior pageable history body, and focuses the agent back control;
-- inactive agent details render `   [Name]` and
+- inactive agent details render `   [Name] - Swipe to navigate` and
   ` >  • Listen Mode - Tap to start`; active Listen Mode renders its single
   status beside the name, ` <  • Send transcript - Tap`, and
   `     • Preview Correction · Off`. Both selectable rows reserve the same
@@ -677,12 +678,14 @@ Correction because the harness cannot actuate the wearable controls.
   title without requiring `Hey` or the agent name. Swipe up stops Listen Mode
   and focuses `< Name`; tap returns to the selector, while swipe down returns
   to Listen and subsequent down swipes page.
-- Inactive agent details show `   [Name]` and
+- Inactive agent details show `   [Name] - Swipe to navigate` and
   ` >  • Listen Mode - Tap to start`. Active Listen Mode shows status once in
-  `[Name · Listening]`, plus ` <  • Send transcript - Tap` and a Preview
+  `[Name · Listening] - Swipe to navigate`, plus
+  ` <  • Send transcript - Tap` and a Preview
   Correction row. Both controls retain the same empty cursor gutter when not
   focused. Swipe down focuses Preview, tap toggles it, and swipe up restores
-  Send. A tap on Send exits the mode and shows `[Name · Sending]` with
+  Send. A tap on Send exits the mode and shows
+  `[Name · Sending] - Swipe to navigate` with
   ` <  • Dismiss - Tap`, followed by acknowledged `Sent` or fallback `Saved`
   beside the name. Stopping restores the
   exact prior history page so swipe paging resumes immediately.

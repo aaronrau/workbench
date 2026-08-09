@@ -730,6 +730,7 @@ final class G2AgentHistoryState {
   }
 
   String _renderAgentDetail({required bool cancel}) {
+    const navigationHint = ' - Swipe to navigate';
     final titlePrefix = cancel || detailControl == G2AgentDetailControl.back
         ? '< ['
         : '   [';
@@ -737,10 +738,12 @@ final class G2AgentHistoryState {
     final titleSuffix = cancel
         ? ' - Tap to cancel]'
         : titleStatus == null
-        ? ']'
-        : ' · $titleStatus]';
+        ? ']$navigationHint'
+        : ' · $titleStatus]$navigationHint';
     final titleSuffixWidth = _layout.textWidth(titleSuffix);
-    final activeStatusWidth = _layout.textWidth(' · Correction queued]');
+    final activeStatusWidth = _layout.textWidth(
+      ' · Correction queued]$navigationHint',
+    );
     final reservedTitleSuffixWidth = titleStatus == null
         ? titleSuffixWidth
         : titleSuffixWidth > activeStatusWidth

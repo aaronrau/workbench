@@ -188,9 +188,10 @@ serialized automatic correction preview. The second tap waits for the newest
 preview and offers that cached result to the selected agent without another LLM
 call. Only a corrected aggregate is offered to the selected agent;
 correction-unavailable fallback retains the durable raw text.
-The agent detail title contains the single lifecycle/preview status beside the
-agent name. Its dot blinks while STT is pending and the title reports Listening,
-preview queued, correcting, update pending, current, Sending, Sent, or Saved.
+The agent detail title ends `- Swipe to navigate` and contains the single
+lifecycle/preview status beside the agent name. Its dot blinks while STT is
+pending and the title reports Listening, preview queued, correcting, update
+pending, current, Sending, Sent, or Saved.
 The body contains only the accumulated raw or corrected transcript, without a
 second lifecycle label. Swipe down from Send focuses Preview Correction; tap
 toggles it, and swipe up returns focus to Send. This explicit gesture

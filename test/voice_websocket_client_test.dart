@@ -248,7 +248,7 @@ void main() {
     expect(
       detail.render(),
       startsWith(
-        '   [Flux · Listening]\n'
+        '   [Flux · Listening] - Swipe to navigate\n'
         ' <  • Listen Mode - Tap to stop\n',
       ),
     );
@@ -798,7 +798,7 @@ void main() {
     expect(
       detail.render(),
       startsWith(
-        '   [Flux · Listening]\n'
+        '   [Flux · Listening] - Swipe to navigate\n'
         ' <  • Listen Mode - Tap to stop\n',
       ),
     );

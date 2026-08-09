@@ -63,8 +63,9 @@ Memo and retained-message agent details are host-paginated rather than relying
 on firmware text scrolling. Each page reuses the four-pixel history inset, puts
 the tap action in its fixed controls, and uses eight body rows below Memo's one
 title or seven body rows below an inactive agent's title and Listen Mode
-control. An active manual session puts its only lifecycle/preview status beside
-the agent name and adds a fixed Preview Correction row, leaving six
+control. Every agent title ends `- Swipe to navigate`. An active manual session
+puts its only lifecycle/preview status beside the agent name and adds a fixed
+Preview Correction row, leaving six
 pixel-width-wrapped transcript rows.
 Swipe down advances, swipe up goes back, and neither boundary wraps. To
 preserve reading position, the final content row of one page repeats as the

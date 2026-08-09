@@ -176,7 +176,8 @@ expose for a true locked Hub mode.
   received list as the phone agent tab, shown as `[HH:mm] Message`. Saving the
   socket configuration does not clear this history, and startup reindexes its
   durable message files if the performance index is missing. Agent details
-  open with `   [Flux]` and ` >  • Listen Mode - Tap to start`; opening the agent
+  open with `   [Flux] - Swipe to navigate` and
+  ` >  • Listen Mode - Tap to start`; opening the agent
   does not target audio. A second tap changes the Listen arrow from `>` to `<`
   and enables targeting. Swipe up stops Listen Mode and moves the active `<`
   control to the Flux title; tapping there returns to the selector. Swipe down
@@ -198,8 +199,8 @@ expose for a true locked Hub mode.
   activates Listen Mode snapshots that configured agent and starts a manual
   transcript session without requiring a spoken `Hey` or agent name. Otherwise
   audio follows the ordinary transcription and wake-word route. The title
-  changes to `[Flux · Listening]`, while the selected control becomes
-  ` <  • Send transcript - Tap`. Both it and Preview Correction reserve the
+  changes to `[Flux · Listening] - Swipe to navigate`, while the selected
+  control becomes ` <  • Send transcript - Tap`. Both it and Preview Correction reserve the
   same cursor gutter, so focus never shifts their content. Each full second
   with VAD inactive closes only an audio chunk and queues it in the persistent STT FIFO;
   it never exits Listen Mode or sends. As STT chunks finish, only their
@@ -212,7 +213,8 @@ expose for a true locked Hub mode.
   every completed STT append automatically refreshes one serialized correction
   preview. Swipe up returns focus to Send. Sending with Preview On waits for and
   reuses the current preview, so it never invokes Gemma a second time. The
-  detail shows `[Flux · Sending]` and ` <  • Dismiss - Tap` during that work;
+  detail shows `[Flux · Sending] - Swipe to navigate` and
+  ` <  • Dismiss - Tap` during that work;
   tapping while sending dismisses the detail while delivery continues. New speech after
   Listen Mode exit or dismissal is no longer targeted to the previously
   selected agent. Selected-agent correction enters ahead of pending normal
