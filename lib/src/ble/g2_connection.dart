@@ -26,6 +26,9 @@ final class G2PairingException implements Exception {
 final class G2Connection {
   static const Duration _pulseRefreshInterval = Duration(milliseconds: 350);
   static const Duration _gestureDisplayHoldoff = Duration(milliseconds: 500);
+  static const Duration _pageReplacementSettleInterval = Duration(
+    milliseconds: 750,
+  );
   static const MethodChannel _bondChannel = MethodChannel(
     'dev.opensourceglasses/r1_bond',
   );
@@ -114,6 +117,7 @@ final class G2Connection {
   bool _awaitingNativeMenuOpenConfirm = false;
   int _generation = 0;
   int _batteryHeartbeatCount = 0;
+  int _controlledPageRendersInFlight = 0;
 
   LinkState state = LinkState.disconnected;
   bool audioEnabled = false;
@@ -613,72 +617,89 @@ final class G2Connection {
     _visibleGestureTimer?.cancel();
     _visibleGestureTimer = null;
     _visibleGesturePageLabel = null;
-    final wasFullPageTextActive = _fullPageTextActive;
-    final previousIndicatorActive = _fullPageTextIndicatorActive;
-    final previousBorderWidth = _fullPageTextBorderWidth;
-    final previousBorderColor = _fullPageTextBorderColor;
-    final previousPaddingLength = _fullPageTextPaddingLength;
-    _fullPageTextPageCount = pageCount < 1 ? 1 : pageCount;
-    _fullPageTextPageIndex = pageIndex.clamp(0, _fullPageTextPageCount - 1);
-    _fullPageTextBorderWidth = borderWidth.clamp(0, 32);
-    _fullPageTextBorderColor = borderColor.clamp(0, 15);
-    _fullPageTextPaddingLength = paddingLength.clamp(0, 32);
-    // A single page does not scroll, and its 288 px full-height thumb would
-    // exceed the G2 image-container maximum height of 144 px.
-    _fullPageTextIndicatorActive =
-        showPageIndicator && _fullPageTextPageCount > 1;
-    final canUpgradeInPlace =
-        wasFullPageTextActive &&
-        _pageCreated &&
-        previousIndicatorActive == _fullPageTextIndicatorActive &&
-        previousBorderWidth == _fullPageTextBorderWidth &&
-        previousBorderColor == _fullPageTextBorderColor &&
-        previousPaddingLength == _fullPageTextPaddingLength;
-    if (!wasFullPageTextActive || !_pageCreated) {
-      _fullPageTextActive = true;
-      await _createFullPageText(content);
-    } else if (canUpgradeInPlace) {
-      // Detail pages are pre-paginated on the phone. Keep the page and its
-      // event-capture/image containers stable, then upgrade only the bounded
-      // text and thumb bitmap. Rebuilding here can race the firmware's page
-      // lifecycle during a physical swipe and drop the G2 link.
-      await _sendPayload(
-        G2Ids.serviceEvenHub,
-        _protocol.updateText(content),
-        reserveFlag: true,
-        priority: AsyncWritePriority.high,
-      );
-      _lastPageContent = content;
-      if (await _sendFullPageTextIndicator(settleAfterRebuild: false)) {
-        _finishControlledPageRebuild('full-page text upgraded');
+    _controlledPageRendersInFlight++;
+    var completed = false;
+    try {
+      final wasFullPageTextActive = _fullPageTextActive;
+      final previousIndicatorActive = _fullPageTextIndicatorActive;
+      final previousBorderWidth = _fullPageTextBorderWidth;
+      final previousBorderColor = _fullPageTextBorderColor;
+      final previousPaddingLength = _fullPageTextPaddingLength;
+      _fullPageTextPageCount = pageCount < 1 ? 1 : pageCount;
+      _fullPageTextPageIndex = pageIndex.clamp(0, _fullPageTextPageCount - 1);
+      _fullPageTextBorderWidth = borderWidth.clamp(0, 32);
+      _fullPageTextBorderColor = borderColor.clamp(0, 15);
+      _fullPageTextPaddingLength = paddingLength.clamp(0, 32);
+      // A single page does not scroll, and its 288 px full-height thumb would
+      // exceed the G2 image-container maximum height of 144 px.
+      _fullPageTextIndicatorActive =
+          showPageIndicator && _fullPageTextPageCount > 1;
+      final canUpgradeInPlace =
+          wasFullPageTextActive &&
+          _pageCreated &&
+          previousIndicatorActive == _fullPageTextIndicatorActive &&
+          previousBorderWidth == _fullPageTextBorderWidth &&
+          previousBorderColor == _fullPageTextBorderColor &&
+          previousPaddingLength == _fullPageTextPaddingLength;
+      if (!wasFullPageTextActive || !_pageCreated) {
+        _fullPageTextActive = true;
+        await _createFullPageText(content);
+        completed = _pageCreated;
+      } else if (canUpgradeInPlace) {
+        // Detail pages are pre-paginated on the phone. Keep the page and its
+        // event-capture/image containers stable, then upgrade only the bounded
+        // text and thumb bitmap. Rebuilding here can race the firmware's page
+        // lifecycle during a physical swipe and drop the G2 link.
+        await _sendPayload(
+          G2Ids.serviceEvenHub,
+          _protocol.updateText(content),
+          reserveFlag: true,
+          priority: AsyncWritePriority.high,
+        );
+        _lastPageContent = content;
+        if (await _sendFullPageTextIndicator(settleAfterRebuild: false)) {
+          _finishControlledPageRebuild('full-page text upgraded');
+          completed = true;
+        }
+      } else {
+        // Rebuild only when the page structure changes, such as adding or
+        // removing the detail-thumb image container.
+        await _sendPayload(
+          G2Ids.serviceEvenHub,
+          _protocol.rebuildTextPage(
+            content,
+            showPageIndicator: _fullPageTextIndicatorActive,
+            pageIndex: _fullPageTextPageIndex,
+            pageCount: _fullPageTextPageCount,
+            borderWidth: _fullPageTextBorderWidth,
+            borderColor: _fullPageTextBorderColor,
+            paddingLength: _fullPageTextPaddingLength,
+          ),
+          reserveFlag: true,
+          priority: AsyncWritePriority.high,
+        );
+        _lastPageContent = content;
+        if (await _sendFullPageTextIndicator(settleAfterRebuild: true)) {
+          _finishControlledPageRebuild('full-page text updated');
+          completed = true;
+        }
       }
-    } else {
-      // Rebuild only when the page structure changes, such as adding or
-      // removing the detail-thumb image container.
-      await _sendPayload(
-        G2Ids.serviceEvenHub,
-        _protocol.rebuildTextPage(
-          content,
-          showPageIndicator: _fullPageTextIndicatorActive,
-          pageIndex: _fullPageTextPageIndex,
-          pageCount: _fullPageTextPageCount,
-          borderWidth: _fullPageTextBorderWidth,
-          borderColor: _fullPageTextBorderColor,
-          paddingLength: _fullPageTextPaddingLength,
-        ),
-        reserveFlag: true,
-        priority: AsyncWritePriority.high,
+      _log(
+        'G2 TX',
+        'Full-page text sent (${content.runes.length} characters; content private; '
+            'page_indicator=${_fullPageTextIndicatorActive ? '${_fullPageTextPageIndex + 1}/$_fullPageTextPageCount' : 'hidden'})',
       );
-      _lastPageContent = content;
-      if (await _sendFullPageTextIndicator(settleAfterRebuild: true)) {
-        _finishControlledPageRebuild('full-page text updated');
+    } finally {
+      _controlledPageRendersInFlight--;
+      if (!completed &&
+          _controlledPageRendersInFlight == 0 &&
+          isConnected &&
+          keepPageActive &&
+          !_pageCreated &&
+          !_nativeMenuOpen) {
+        _schedulePageRestore('incomplete controlled full-page render');
       }
     }
-    _log(
-      'G2 TX',
-      'Full-page text sent (${content.runes.length} characters; content private; '
-          'page_indicator=${_fullPageTextIndicatorActive ? '${_fullPageTextPageIndex + 1}/$_fullPageTextPageCount' : 'hidden'})',
-    );
   }
 
   Future<void> exitFullPageText() async {
@@ -749,10 +770,10 @@ final class G2Connection {
     final pageIndex = _fullPageTextPageIndex;
     final pageCount = _fullPageTextPageCount;
     // A full-page rebuild can emit abnormal_exit/system_exit while firmware
-    // replaces its prior container. Give that transition the same settle time
-    // as the proven drawing path before uploading the separate thumb bitmap.
+    // replaces its prior container. Give that transition a conservative settle
+    // interval before uploading the separately validated thumb bitmap.
     if (settleAfterRebuild) {
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await Future<void>.delayed(_pageReplacementSettleInterval);
     }
     if (!isConnected ||
         !_fullPageTextActive ||
@@ -765,20 +786,21 @@ final class G2Connection {
       pageIndex: pageIndex,
       pageCount: pageCount,
     );
+    final bitmap = G2Protocol.detailPageIndicatorBitmap(
+      pageIndex: pageIndex,
+      pageCount: pageCount,
+    );
+    final bitmapMetadata = G2Protocol.validateDetailPageIndicatorBitmap(bitmap);
     await _sendPayload(
       G2Ids.serviceEvenHub,
-      _protocol.updateImage(
-        G2Protocol.detailPageIndicatorBitmap(
-          pageIndex: pageIndex,
-          pageCount: pageCount,
-        ),
-      ),
+      _protocol.updateDetailPageIndicatorImage(bitmap),
       reserveFlag: true,
       priority: AsyncWritePriority.high,
     );
     _log(
       'G2 TX',
       'Detail page thumb sent (${pageIndex + 1}/$pageCount; '
+          'bitmap=${bitmapMetadata.wireSignature}; '
           'thumb_y=${geometry.y}; thumb_height=${geometry.height}; '
           'container_y=${G2Protocol.fullPageIndicatorY}; '
           'container_height=${G2Protocol.fullPageIndicatorHeight})',
@@ -1824,7 +1846,18 @@ final class G2Connection {
           '${event.name}: the POC left the foreground and input routing may '
               'fall back to the built-in G2 dashboard/menu',
         );
-        if (_hasRecentR1Activity(receivedAt)) {
+        if (_controlledPageRendersInFlight > 0) {
+          // Rebuilds can emit lifecycle exits while firmware replaces its
+          // container. Do not misclassify that expected transition as a ring
+          // hold or interleave an automatic rebuild with the bitmap upload.
+          pageSessionStatus =
+              '${event.name} received during controlled page replacement';
+          _onChanged();
+          _log(
+            'G2 page session',
+            'Deferring recovery until the validated page replacement finishes',
+          );
+        } else if (_hasRecentR1Activity(receivedAt)) {
           _recognizeR1MenuLongPress(receivedAt, event.name);
         } else if (isNativeMenuExitSequence) {
           _recognizeR1MenuLongPress(
@@ -2520,6 +2553,14 @@ final class G2Connection {
     if (_manualDisconnect) {
       return;
     }
+    // Stop timers immediately. Otherwise they continue queuing writes against
+    // characteristics that Android has already invalidated and can obscure
+    // the first disconnect cause with repetitive heartbeat failures.
+    _stopHeartbeats();
+    _pageRestoreTimer?.cancel();
+    _pageRestoreTimer = null;
+    _pulseTimer?.cancel();
+    _pulseTimer = null;
     _log('G2', '$side link dropped', isError: true);
     _onUnexpectedDisconnect(side);
     state = LinkState.reconnecting;

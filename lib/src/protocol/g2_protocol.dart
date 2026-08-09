@@ -73,8 +73,37 @@ int g2Crc16(List<int> data) {
   return crc & 0xffff;
 }
 
-/// Encodes the 4-bit grayscale BMP format accepted by G2 image containers.
+/// Parsed properties of a validated G2 bitmap.
+final class G2BitmapMetadata {
+  G2BitmapMetadata({
+    required this.width,
+    required this.height,
+    required this.fileBytes,
+    required Iterable<int> paletteIndices,
+  }) : paletteIndices = List<int>.unmodifiable(
+         paletteIndices.toList(growable: false)..sort(),
+       );
+
+  final int width;
+  final int height;
+  final int fileBytes;
+  final List<int> paletteIndices;
+
+  /// A content-free description that can be logged before the image is sent.
+  String get wireSignature =>
+      'BM ${width}x$height 4bpp values=${paletteIndices.join(',')} '
+      'bytes=$fileBytes';
+}
+
+/// Encodes and validates the 4-bit grayscale BMP format accepted by G2 image
+/// containers.
 abstract final class G2Bitmap {
+  static const int minimumG2ImageWidth = 20;
+  static const int maximumG2ImageWidth = 288;
+  static const int minimumG2ImageHeight = 20;
+  static const int maximumG2ImageHeight = 144;
+  static const int _headerBytes = 14 + 40 + 64;
+
   static Uint8List build4Bit({
     required int width,
     required int height,
@@ -89,19 +118,28 @@ abstract final class G2Bitmap {
         'received ${grayscale.length}.',
       );
     }
+    for (var index = 0; index < grayscale.length; index++) {
+      final value = grayscale[index];
+      if (value < 0 || value > 0xff) {
+        throw ArgumentError.value(
+          value,
+          'grayscale[$index]',
+          'Grayscale values must be in the inclusive 0..255 range.',
+        );
+      }
+    }
 
     final packedRowBytes = (width + 1) ~/ 2;
     final paddedRowBytes = (packedRowBytes + 3) & ~3;
     final pixelBytes = paddedRowBytes * height;
-    const headerBytes = 14 + 40 + 64;
-    final output = Uint8List(headerBytes + pixelBytes);
+    final output = Uint8List(_headerBytes + pixelBytes);
     final header = ByteData.sublistView(output);
 
     output[0] = 0x42;
     output[1] = 0x4d;
     header
       ..setUint32(2, output.length, Endian.little)
-      ..setUint32(10, headerBytes, Endian.little)
+      ..setUint32(10, _headerBytes, Endian.little)
       ..setUint32(14, 40, Endian.little)
       ..setInt32(18, width, Endian.little)
       ..setInt32(22, height, Endian.little)
@@ -122,9 +160,9 @@ abstract final class G2Bitmap {
 
     for (var bitmapRow = 0; bitmapRow < height; bitmapRow++) {
       final sourceY = height - 1 - bitmapRow;
-      final destination = headerBytes + bitmapRow * paddedRowBytes;
+      final destination = _headerBytes + bitmapRow * paddedRowBytes;
       for (var x = 0; x < width; x++) {
-        final shade = (grayscale[sourceY * width + x] & 0xff) >> 4;
+        final shade = grayscale[sourceY * width + x] >> 4;
         final byteIndex = destination + x ~/ 2;
         if (x.isEven) {
           output[byteIndex] = shade << 4;
@@ -136,6 +174,124 @@ abstract final class G2Bitmap {
     return output;
   }
 
+  /// Validates the complete BMP immediately before it crosses the G2 protocol
+  /// boundary. This rejects malformed headers, dimensions outside the image
+  /// container contract, noncanonical palettes, and nonzero padding.
+  static G2BitmapMetadata validateG2Image(
+    Uint8List bitmap, {
+    Set<int>? allowedPaletteIndices,
+  }) {
+    if (allowedPaletteIndices != null &&
+        allowedPaletteIndices.any((value) => value < 0 || value > 15)) {
+      throw ArgumentError.value(
+        allowedPaletteIndices,
+        'allowedPaletteIndices',
+        '4-bit palette indices must be in the inclusive 0..15 range.',
+      );
+    }
+    if (bitmap.length < _headerBytes) {
+      throw ArgumentError('G2 bitmap is shorter than its 118-byte header.');
+    }
+    if (bitmap[0] != 0x42 || bitmap[1] != 0x4d) {
+      throw ArgumentError('G2 bitmap must have the BM file signature.');
+    }
+
+    final header = ByteData.sublistView(bitmap);
+    final fileBytes = header.getUint32(2, Endian.little);
+    final dataOffset = header.getUint32(10, Endian.little);
+    final dibBytes = header.getUint32(14, Endian.little);
+    final width = header.getInt32(18, Endian.little);
+    final height = header.getInt32(22, Endian.little);
+    final planes = header.getUint16(26, Endian.little);
+    final bitsPerPixel = header.getUint16(28, Endian.little);
+    final compression = header.getUint32(30, Endian.little);
+    final declaredPixelBytes = header.getUint32(34, Endian.little);
+    final paletteEntries = header.getUint32(46, Endian.little);
+
+    if (fileBytes != bitmap.length ||
+        dataOffset != _headerBytes ||
+        dibBytes != 40 ||
+        planes != 1 ||
+        bitsPerPixel != 4 ||
+        compression != 0 ||
+        paletteEntries != 16) {
+      throw ArgumentError(
+        'G2 bitmap header does not match the 4-bit contract.',
+      );
+    }
+    if (width < minimumG2ImageWidth || width > maximumG2ImageWidth) {
+      throw ArgumentError.value(
+        width,
+        'bitmap width',
+        'G2 image width must be in the inclusive '
+            '$minimumG2ImageWidth..$maximumG2ImageWidth range.',
+      );
+    }
+    if (height < minimumG2ImageHeight || height > maximumG2ImageHeight) {
+      throw ArgumentError.value(
+        height,
+        'bitmap height',
+        'G2 image height must be in the inclusive '
+            '$minimumG2ImageHeight..$maximumG2ImageHeight range.',
+      );
+    }
+
+    for (var index = 0; index < 16; index++) {
+      final expected = index * 17;
+      final offset = 54 + index * 4;
+      if (bitmap[offset] != expected ||
+          bitmap[offset + 1] != expected ||
+          bitmap[offset + 2] != expected ||
+          bitmap[offset + 3] != 0) {
+        throw ArgumentError(
+          'G2 bitmap must use the canonical grayscale palette.',
+        );
+      }
+    }
+
+    final packedRowBytes = (width + 1) ~/ 2;
+    final paddedRowBytes = (packedRowBytes + 3) & ~3;
+    final pixelBytes = paddedRowBytes * height;
+    if (declaredPixelBytes != pixelBytes ||
+        dataOffset + pixelBytes != bitmap.length) {
+      throw ArgumentError('G2 bitmap pixel length does not match its header.');
+    }
+
+    final usedPaletteIndices = <int>{};
+    for (var row = 0; row < height; row++) {
+      final rowOffset = dataOffset + row * paddedRowBytes;
+      for (var x = 0; x < width; x++) {
+        final packed = bitmap[rowOffset + x ~/ 2];
+        final paletteIndex = x.isEven ? packed >> 4 : packed & 0x0f;
+        if (allowedPaletteIndices != null &&
+            !allowedPaletteIndices.contains(paletteIndex)) {
+          throw ArgumentError.value(
+            paletteIndex,
+            'bitmap palette index',
+            'This G2 bitmap permits only '
+                '${allowedPaletteIndices.toList()..sort()}.',
+          );
+        }
+        usedPaletteIndices.add(paletteIndex);
+      }
+      if (width.isOdd && (bitmap[rowOffset + packedRowBytes - 1] & 0x0f) != 0) {
+        throw ArgumentError('G2 bitmap has a nonzero unused pixel nibble.');
+      }
+      for (var byte = packedRowBytes; byte < paddedRowBytes; byte++) {
+        if (bitmap[rowOffset + byte] != 0) {
+          throw ArgumentError('G2 bitmap has nonzero row padding.');
+        }
+      }
+    }
+
+    return G2BitmapMetadata(
+      width: width,
+      height: height,
+      fileBytes: fileBytes,
+      paletteIndices: usedPaletteIndices,
+    );
+  }
+
   /// A single solid rectangle with no background or segmented text glyphs.
   static Uint8List solid({
     required int width,
@@ -145,7 +301,7 @@ abstract final class G2Bitmap {
     return build4Bit(
       width: width,
       height: height,
-      grayscale: List<int>.filled(width * height, grayscale & 0xff),
+      grayscale: List<int>.filled(width * height, grayscale),
     );
   }
 
@@ -584,8 +740,12 @@ final class G2Protocol {
   // Leave black pixels after the thumb so the uploaded image masks the native
   // right-edge scroll artifact instead of drawing a second line beside it.
   static const int fullPageIndicatorTrailingClearance = 2;
-  static const int fullPageIndicatorMinimumHeight = 20;
-  static const int fullPageIndicatorMaximumHeight = 144;
+  static const int fullPageIndicatorMinimumWidth = G2Bitmap.minimumG2ImageWidth;
+  static const int fullPageIndicatorMaximumWidth = G2Bitmap.maximumG2ImageWidth;
+  static const int fullPageIndicatorMinimumHeight =
+      G2Bitmap.minimumG2ImageHeight;
+  static const int fullPageIndicatorMaximumHeight =
+      G2Bitmap.maximumG2ImageHeight;
   static const int fullPageIndicatorHeight = fullPageIndicatorMaximumHeight;
   static const int fullPageIndicatorY =
       (fullPageTextHeight - fullPageIndicatorHeight) ~/ 2;
@@ -946,6 +1106,7 @@ final class G2Protocol {
     required int pageIndex,
     required int pageCount,
   }) {
+    _validateDetailPageIndicatorContract();
     final count = pageCount < 1 ? 1 : pageCount;
     final index = pageIndex.clamp(0, count - 1);
     final height = (fullPageIndicatorHeight / count).ceil().clamp(
@@ -969,7 +1130,7 @@ final class G2Protocol {
     );
     final pixels = List<int>.filled(
       fullPageIndicatorWidth * fullPageIndicatorHeight,
-      0,
+      0x00,
     );
     final barStart =
         fullPageIndicatorWidth -
@@ -985,11 +1146,61 @@ final class G2Protocol {
         0xff,
       );
     }
-    return G2Bitmap.build4Bit(
+    final bitmap = G2Bitmap.build4Bit(
       width: fullPageIndicatorWidth,
       height: fullPageIndicatorHeight,
       grayscale: pixels,
     );
+    validateDetailPageIndicatorBitmap(bitmap);
+    return bitmap;
+  }
+
+  /// Revalidates the final wire bytes for the detail scrollbar. The scroll
+  /// bitmap is binary by design: only palette index 0 (black) and 15 (full
+  /// white) may occur, so a half-gray or corrupt nibble cannot reach G2.
+  static G2BitmapMetadata validateDetailPageIndicatorBitmap(Uint8List bitmap) {
+    _validateDetailPageIndicatorContract();
+    final metadata = G2Bitmap.validateG2Image(
+      bitmap,
+      allowedPaletteIndices: const <int>{0, 15},
+    );
+    if (metadata.width != fullPageIndicatorWidth ||
+        metadata.height != fullPageIndicatorHeight) {
+      throw ArgumentError(
+        'Detail page indicator bitmap must be '
+        '${fullPageIndicatorWidth}x$fullPageIndicatorHeight.',
+      );
+    }
+    if (metadata.paletteIndices.length != 2 ||
+        metadata.paletteIndices[0] != 0 ||
+        metadata.paletteIndices[1] != 15) {
+      throw ArgumentError(
+        'Detail page indicator bitmap must contain full black and full white.',
+      );
+    }
+    return metadata;
+  }
+
+  static void _validateDetailPageIndicatorContract() {
+    final barStart =
+        fullPageIndicatorWidth -
+        fullPageIndicatorTrailingClearance -
+        fullPageIndicatorBarWidth;
+    if (fullPageIndicatorWidth < fullPageIndicatorMinimumWidth ||
+        fullPageIndicatorWidth > fullPageIndicatorMaximumWidth ||
+        fullPageIndicatorHeight < fullPageIndicatorMinimumHeight ||
+        fullPageIndicatorHeight > fullPageIndicatorMaximumHeight ||
+        fullPageIndicatorX < 0 ||
+        fullPageIndicatorY < 0 ||
+        fullPageIndicatorX + fullPageIndicatorWidth > fullPageTextWidth ||
+        fullPageIndicatorY + fullPageIndicatorHeight > fullPageTextHeight ||
+        fullPageIndicatorBarWidth < 1 ||
+        fullPageIndicatorTrailingClearance < 0 ||
+        barStart < 0 ||
+        fullPageIndicatorMinimumThumbHeight < 1 ||
+        fullPageIndicatorMinimumThumbHeight > fullPageIndicatorHeight) {
+      throw StateError('Detail page indicator geometry is outside G2 limits.');
+    }
   }
 
   Uint8List createMemoPage(String note, {required String status}) {
@@ -1183,6 +1394,7 @@ final class G2Protocol {
   /// so it uses one image fragment. The outer 0xAA transport still fragments
   /// it across the negotiated BLE MTU.
   Uint8List updateImage(Uint8List bmp) {
+    G2Bitmap.validateG2Image(bmp);
     _imageSession = (_imageSession + 1) & 0xff;
     final update = ProtoWriter()
       ..writeInt32(1, 10)
@@ -1198,6 +1410,12 @@ final class G2Protocol {
       subField: 5,
       subMessage: update.takeBytes(),
     );
+  }
+
+  /// Wraps a binary detail scrollbar after applying its stricter contract.
+  Uint8List updateDetailPageIndicatorImage(Uint8List bitmap) {
+    validateDetailPageIndicatorBitmap(bitmap);
+    return updateImage(bitmap);
   }
 
   Uint8List audioControl(bool enabled) {

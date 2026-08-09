@@ -186,7 +186,11 @@ one-page detail does not need an indicator and therefore does not create the
 image container. The image overlays the edge of the full 576-pixel text
 surface. Its black mask ends at the right display edge while the visible thumb
 stops two pixels before it. There is no outline or background track.
-Selector pages do not create the image container.
+Selector pages do not create the image container. The generated BMP and its
+wire header are validated again before upload. Its dimensions must remain in
+the firmware's inclusive 20–288 by 20–144 image range, and every decoded thumb
+pixel must be palette index 0 or 15—full black or full white, never a partial
+gray value.
 
 ### Empty Memo or agent row
 

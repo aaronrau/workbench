@@ -163,10 +163,27 @@ void main() {
         pageIndex: 1,
         pageCount: 4,
       );
+      final metadata = G2Protocol.validateDetailPageIndicatorBitmap(bitmap);
       final header = ByteData.sublistView(bitmap);
 
       expect(G2Protocol.fullPageIndicatorBarWidth, 4);
       expect(G2Protocol.fullPageIndicatorTrailingClearance, 2);
+      expect(
+        G2Protocol.fullPageIndicatorWidth,
+        inInclusiveRange(
+          G2Protocol.fullPageIndicatorMinimumWidth,
+          G2Protocol.fullPageIndicatorMaximumWidth,
+        ),
+      );
+      expect(
+        G2Protocol.fullPageIndicatorHeight,
+        inInclusiveRange(
+          G2Protocol.fullPageIndicatorMinimumHeight,
+          G2Protocol.fullPageIndicatorMaximumHeight,
+        ),
+      );
+      expect(metadata.paletteIndices, orderedEquals(<int>[0, 15]));
+      expect(metadata.wireSignature, 'BM 20x144 4bpp values=0,15 bytes=1846');
       expect(page[1], 3);
       expect(
         body[3],
@@ -241,6 +258,37 @@ void main() {
       }
     });
 
+    test('rejects half-value or malformed detail thumb wire bytes', () {
+      final valid = G2Protocol.detailPageIndicatorBitmap(
+        pageIndex: 1,
+        pageCount: 3,
+      );
+      final halfValue = Uint8List.fromList(valid);
+      final dataOffset = ByteData.sublistView(
+        halfValue,
+      ).getUint32(10, Endian.little);
+      halfValue[dataOffset] = 0x88;
+      final invalidSignature = Uint8List.fromList(valid)..[0] = 0;
+      final protocol = G2Protocol();
+
+      expect(
+        () => G2Protocol.validateDetailPageIndicatorBitmap(halfValue),
+        throwsArgumentError,
+      );
+      expect(
+        () => protocol.updateDetailPageIndicatorImage(halfValue),
+        throwsArgumentError,
+      );
+      expect(
+        () => G2Protocol.validateDetailPageIndicatorBitmap(invalidSignature),
+        throwsArgumentError,
+      );
+      expect(
+        protocol.updateDetailPageIndicatorImage(valid),
+        containsAllInOrder(valid),
+      );
+    });
+
     test('positions one continuous thumb at top, middle, and bottom', () {
       final top = G2Protocol.detailPageIndicatorGeometry(
         pageIndex: 0,
@@ -300,8 +348,8 @@ void main() {
       ], orderedEquals(<int>[72, 120, 168]));
     });
 
-    test('keeps every multi-page thumb inside G2 image limits', () {
-      for (var pageCount = 2; pageCount <= 100; pageCount++) {
+    test('keeps every retained-history thumb inside G2 image limits', () {
+      for (var pageCount = 2; pageCount <= 200; pageCount++) {
         for (var pageIndex = 0; pageIndex < pageCount; pageIndex++) {
           final geometry = G2Protocol.detailPageIndicatorGeometry(
             pageIndex: pageIndex,
@@ -563,17 +611,65 @@ void main() {
 
     test('builds and sends a firmware-compatible test drawing', () {
       final protocol = G2Protocol();
-      final bitmap = G2Bitmap.testPattern(width: 8, height: 4);
+      final bitmap = G2Bitmap.testPattern(width: 20, height: 20);
       final header = ByteData.sublistView(bitmap);
       final rebuild = protocol.rebuildPageWithImage(content: 'drawing');
       final update = protocol.updateImage(bitmap);
 
       expect(bitmap.take(2), <int>[0x42, 0x4d]);
-      expect(header.getInt32(18, Endian.little), 8);
-      expect(header.getInt32(22, Endian.little), 4);
+      expect(header.getInt32(18, Endian.little), 20);
+      expect(header.getInt32(22, Endian.little), 20);
       expect(header.getUint16(28, Endian.little), 4);
       expect(rebuild, containsAllInOrder(utf8.encode('img-10')));
       expect(update, containsAllInOrder(bitmap));
+    });
+
+    test('rejects invalid source values and out-of-range G2 dimensions', () {
+      expect(
+        () => G2Bitmap.build4Bit(
+          width: 20,
+          height: 20,
+          grayscale: <int>[-1, ...List<int>.filled(399, 0)],
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => G2Bitmap.solid(width: 20, height: 20, grayscale: 256),
+        throwsArgumentError,
+      );
+
+      for (final dimensions in <({int width, int height})>[
+        (width: 20, height: 20),
+        (width: 288, height: 144),
+      ]) {
+        final metadata = G2Bitmap.validateG2Image(
+          G2Bitmap.solid(width: dimensions.width, height: dimensions.height),
+        );
+        expect(metadata.width, dimensions.width);
+        expect(metadata.height, dimensions.height);
+      }
+
+      for (final dimensions in <({int width, int height})>[
+        (width: 19, height: 20),
+        (width: 289, height: 20),
+        (width: 20, height: 19),
+        (width: 20, height: 145),
+      ]) {
+        final bitmap = G2Bitmap.solid(
+          width: dimensions.width,
+          height: dimensions.height,
+        );
+        expect(
+          () => G2Bitmap.validateG2Image(bitmap),
+          throwsArgumentError,
+          reason: '${dimensions.width}x${dimensions.height}',
+        );
+        expect(
+          () => G2Protocol().updateImage(bitmap),
+          throwsArgumentError,
+          reason: '${dimensions.width}x${dimensions.height}',
+        );
+      }
     });
 
     test('builds the blank visualizer page with text right of the pulse', () {
