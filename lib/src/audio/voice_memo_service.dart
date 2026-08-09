@@ -20,7 +20,7 @@ final class VoiceMemoService {
     Future<String?> Function()? modelPathProvider,
     DateTime Function() clock = DateTime.now,
     this.totalSilenceDuration = const Duration(seconds: 5),
-    this.closedTurnSilenceDuration = vadTotalSilenceDuration,
+    this.closedTurnSilenceDuration = defaultVadTotalSilenceDuration,
     this.finalizationTimeout = const Duration(seconds: 45),
   }) : _store = store ?? VoiceMemoStore(),
        _client = client ?? PlatformGemmaCorrectionClient(),

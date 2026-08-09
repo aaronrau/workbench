@@ -6,6 +6,7 @@ import io
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPTS = Path(__file__).parent
@@ -31,7 +32,7 @@ class TurnSuiteTest(unittest.TestCase):
         self.assertEqual(cases["long_continuous"].expected_turns, 1)
         self.assertEqual(cases["short_continuation"].silence_seconds, 0.4)
         self.assertEqual(cases["short_continuation"].expected_turns, 1)
-        self.assertEqual(cases["separated_questions"].silence_seconds, 2.0)
+        self.assertEqual(cases["separated_questions"].silence_seconds, 2.2)
         self.assertEqual(cases["separated_questions"].expected_turns, 3)
 
     def test_suite_uses_the_validated_playback_fixture_defaults(self) -> None:
@@ -52,6 +53,36 @@ class TurnSuiteTest(unittest.TestCase):
                         "--phone-speaker",
                     ]
                 )
+
+    def test_suite_enables_and_restores_required_android_log_tags(self) -> None:
+        adb_prefix = ["adb", "-s", "device"]
+        previous_values = ["", "W", "I"]
+        with mock.patch.object(
+            MODULE.loop,
+            "get_android_property",
+            side_effect=previous_values,
+        ), mock.patch.object(
+            MODULE.loop,
+            "set_android_property",
+        ) as set_property:
+            previous = MODULE._enable_android_log_tags(adb_prefix)
+            MODULE._restore_android_log_tags(adb_prefix, previous)
+
+        expected_enable_calls = [
+            mock.call(adb_prefix, tag, "V")
+            for tag in MODULE.REQUIRED_ANDROID_LOG_TAGS
+        ]
+        expected_restore_calls = [
+            mock.call(adb_prefix, tag, value)
+            for tag, value in zip(
+                MODULE.REQUIRED_ANDROID_LOG_TAGS,
+                previous_values,
+            )
+        ]
+        self.assertEqual(
+            set_property.call_args_list,
+            expected_enable_calls + expected_restore_calls,
+        )
 
     def test_duration_and_boundary_profiles_cover_extremes(self) -> None:
         durations = {case.name: case for case in MODULE.DURATION_CASES}
@@ -74,15 +105,15 @@ class TurnSuiteTest(unittest.TestCase):
         self.assertEqual(durations["duration_sixty_seconds"].minimum_chunks, 3)
         self.assertEqual(boundaries["gap_1200ms_merge"].expected_turns, 1)
         self.assertIsNone(
-            boundaries["gap_1450ms_characterize"].expected_turns
+            boundaries["gap_1900ms_characterize"].expected_turns
         )
         self.assertIsNone(
-            boundaries["gap_1500ms_characterize"].expected_turns
+            boundaries["gap_2000ms_characterize"].expected_turns
         )
         self.assertIsNone(
-            boundaries["gap_1750ms_characterize"].expected_turns
+            boundaries["gap_2050ms_characterize"].expected_turns
         )
-        self.assertEqual(boundaries["gap_1800ms_split"].expected_turns, 2)
+        self.assertEqual(boundaries["gap_2100ms_split"].expected_turns, 2)
 
     def test_center_clip_has_exact_requested_length(self) -> None:
         pcm = bytes(range(100))
@@ -134,35 +165,35 @@ class TurnSuiteTest(unittest.TestCase):
                 line(
                     3.0,
                     "[WorkBench][VAD] state=speech_ending "
-                    f"segment={segment} delay_ms=1250",
+                    f"segment={segment} delay_ms=1500",
                 ),
                 line(
-                    4.25,
+                    4.5,
                     "[WorkBench][VAD] state=buffer_cleared "
                     f"segment={segment} bytes=64000 next=ready",
                 ),
                 line(
-                    4.25,
+                    4.5,
                     "[WorkBench][VAD] state=speech_ended "
-                    f"segment={segment} audio_ms=1250",
+                    f"segment={segment} audio_ms=1500",
                 ),
                 line(
-                    4.25,
+                    4.5,
                     "[WorkBench][Transcription] state=queued "
                     f"segment={segment} pending=1",
                 ),
                 line(
-                    4.35,
+                    4.6,
                     "[WorkBench][Transcription] state=processing "
                     f"segment={segment}",
                 ),
                 line(
-                    4.45,
+                    4.7,
                     "[WorkBench][Transcript][FINAL] "
                     f"segment={segment} text=Where is my red book",
                 ),
                 line(
-                    4.46,
+                    4.71,
                     "[WorkBench][Transcription] state=completed "
                     f"segment={segment} model=test provider=cpu "
                     "audio_ms=5000 decode_ms=200 windows=1 total_ms=210",
@@ -181,8 +212,8 @@ class TurnSuiteTest(unittest.TestCase):
         )
         self.assertTrue(result.passed)
         self.assertTrue(result.checks["playback_boundary"])
-        self.assertAlmostEqual(result.turns[0].endpoint_seconds, 1.25)
-        self.assertEqual(result.turns[0].endpoint_audio_ms, 1250)
+        self.assertAlmostEqual(result.turns[0].endpoint_seconds, 1.5)
+        self.assertEqual(result.turns[0].endpoint_audio_ms, 1500)
         self.assertAlmostEqual(
             result.turns[0].queue_to_final_seconds,
             0.2,
@@ -254,40 +285,46 @@ class TurnSuiteTest(unittest.TestCase):
                     f"segment={root} model=test provider=cpu "
                     "audio_ms=17000 decode_ms=200 windows=1 total_ms=210",
                 ),
+                line(
+                    17.32,
+                    "[WorkBench][VoiceRoute] state=collecting "
+                    f"segment={root} reason=conversation_continues "
+                    "action=deferred",
+                ),
                 line(31.0, end),
                 line(
                     31.1,
                     "[WorkBench][VAD] state=speech_ending "
-                    f"segment={continuation} delay_ms=1250",
+                    f"segment={continuation} delay_ms=1500",
                 ),
                 line(
-                    32.35,
+                    32.6,
                     "[WorkBench][VAD] state=buffer_cleared "
                     f"segment={continuation} bytes=64000 next=ready",
                 ),
                 line(
-                    32.35,
+                    32.6,
                     "[WorkBench][VAD] state=speech_ended "
-                    f"segment={continuation} audio_ms=1250",
+                    f"segment={continuation} audio_ms=1500",
                 ),
                 line(
-                    32.35,
+                    32.6,
                     "[WorkBench][Transcription] state=queued "
                     f"segment={continuation} pending=1",
                 ),
                 line(
-                    32.45,
+                    32.7,
                     "[WorkBench][Transcription] state=processing "
                     f"segment={continuation}",
                 ),
                 line(
-                    32.65,
+                    32.9,
                     "[WorkBench][Transcript][FINAL] "
                     f"segment={continuation} "
                     "text=boundary chunk and the second chunk",
                 ),
                 line(
-                    32.66,
+                    32.91,
                     "[WorkBench][Transcription] state=completed "
                     f"segment={continuation} model=test provider=cpu "
                     "audio_ms=15000 decode_ms=200 windows=1 total_ms=210",
@@ -314,6 +351,9 @@ class TurnSuiteTest(unittest.TestCase):
         self.assertTrue(result.turns[0].checks["single_real_endpoint"])
         self.assertTrue(result.turns[0].checks["no_correction_without_hey"])
         self.assertTrue(result.turns[0].checks["rollover_overlap_contract"])
+        self.assertTrue(
+            result.turns[0].checks["intermediate_actions_deferred"]
+        )
         self.assertEqual(
             result.turns[0].transcript,
             "The first boundary chunk and the second chunk",

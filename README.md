@@ -101,9 +101,12 @@ expose for a true locked Hub mode.
 - Connects both G2 lenses and an R1 ring.
 - Starts raw 16 kHz mono LC3 streaming automatically.
 - Journals compressed audio before decoding, saves VAD speech with a
-  two-second pre-roll and a 1.75-second total-silence boundary, and transcribes
-  locally with a Tools-selectable local model. Parakeet 0.6B is the current
-  default; Parakeet 110M and Tiny Whisper remain available.
+  two-second pre-roll, and transcribes locally with a Tools-selectable local
+  model. In the default flow, a turn closes only after VAD remains inactive for
+  1.5 seconds (about two seconds of acoustic silence including Silero's 500 ms
+  qualification). Selected-agent Listen Mode uses its separate one-second
+  VAD-inactive endpoint. Parakeet 0.6B is the current default; Parakeet 110M
+  and Tiny Whisper remain available.
 - Lets Android users choose a shared device folder for Files-visible speech
   WAVs plus separate `.raw.txt`, `.corrected.txt`, and optional
   `.conversation.txt` transcripts. The existing **Messages** tab continues to

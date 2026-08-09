@@ -1,39 +1,33 @@
 # Local audio pipeline and recovery
 
-```text
-G2 BLE notifications
-        │
-        ▼
- durable LC3 journal isolate ────────► 15-minute raw recovery files
-        │ acknowledged packets only
-        ▼
- native LC3 decoder
-        │
-        ▼
- fixed clipping-safe gain
-        │ 16 kHz mono PCM
-        ├──────────────► one-second UI meter summaries
-        ▼
- VAD isolate ── 2 s pre-roll / 1.75 s total silence ──► atomic speech WAV
-        │                              │
-        │                              └──────► selected shared folder
-        ▼
- transcription supervisor + job ledger
-        │
-        ▼
- selected STT isolate ─────────────► atomic transcript + JSONL index
-                                               │
-                                               ├──► selected shared folder
-                                               └──► local Hey Memo consumer
-                                                        │
-                                                        ▼
-                                                 Gemma memo revisions
+```mermaid
+flowchart TD
+    A[G2 BLE audio] --> B[Durable LC3 journal]
+    B --> C[LC3 decode + fixed gain]
+    C --> D[Continuous VAD isolate + 2 s pre-roll]
+    D --> E{Endpoint mode}
+    E -->|Default flow| F[Require 1.5 s continuously VAD-inactive]
+    E -->|Selected-agent Listen Mode| G[Require 1.0 s continuously VAD-inactive]
+    D -->|15-17 s duration rollover| H[Atomic non-final WAV chunk]
+    F --> I[Atomic final WAV chunk]
+    G --> I
+    H --> J[Durable FIFO transcription ledger]
+    I --> J
+    J --> K[Persistent STT isolate: one job at a time]
+    K --> L[Append result to conversation continuous.txt]
+    L --> M{Final VAD chunk?}
+    M -->|No| N[Keep collecting; no queued action, correction, or send]
+    M -->|Yes| O[Use full accumulated transcript exactly once]
+    O --> P[Queued UI + wake/selected-agent gate]
+    P --> Q[Gemma correction and local or WebSocket route]
 ```
 
 The capture journal, decoder, VAD, transcription, BLE callbacks, and Flutter
 rendering do not share a work queue. A slow model or UI frame cannot block raw
-audio persistence. Flutter repaints at up to 30 FPS while every BLE audio
-packet continues through the capture path.
+audio persistence. The transcription isolate stays loaded and the supervisor
+dispatches its durable FIFO one WAV at a time. A completed job immediately
+allows the next queued job to start, even while its transcript is being
+appended and evaluated by the coordinator.
 
 The local `Hey Memo` consumer claims only live finalized transcript segments
 after their raw text is durable. It never owns LC3, PCM, VAD, or STT work and
@@ -116,9 +110,11 @@ The package README, patch, licenses, and SHA-256 runtime manifest are under
 - Pending packets stay in memory while the journal isolate restarts. If the
   bounded queue reaches 600 packets, Work Bench disconnects the wearables
   instead of silently dropping unjournaled source audio.
-- VAD saves speech only. It keeps two seconds before speech. Silero qualifies
-  500 ms of silence, then Work Bench retains a 1,250 ms endpoint tail, for a
-  nominal 1.75-second total-silence boundary. Speech resuming during that tail
+- VAD saves speech only. It keeps two seconds before speech. The default flow
+  requires 1,500 ms continuously VAD-inactive after Silero's 500 ms silence
+  qualification, for a nominal two-second acoustic-silence boundary.
+  Selected-agent Listen Mode is a separate mode with a one-second VAD-inactive
+  endpoint. Speech resuming during either endpoint
   cancels finalization and remains in the same WAV/STT/Gemma turn. The
   `speech_ended` marker reports the retained tail as `audio_ms`, independent of
   UI scheduling. It writes a partial WAV first and atomically renames completed
@@ -134,13 +130,14 @@ The package README, patch, licenses, and SHA-256 runtime manifest are under
   boundary appears, a 17-second hard limit closes the
   chunk and prepends the final one second of audio to its continuation. This
   overlap is padding for STT word-boundary safety; exact repeated leading words
-  are removed from the continuous transcript and live route input. A duration
+  are removed from the continuous transcript. A duration
   rollover never emits a false silence endpoint, clears the visible
   conversation, or arms Memo's silence timer. Each original raw chunk remains
   independently durable, and recognized text is appended by atomic replacement
-  to one `<conversation>.continuous.txt` file. Natural endpoint pauses close
-  the logical conversation. The bounded glasses FIFO presents each unique
-  recognized chunk as `Queued` then `Saved` or `Sent`.
+  to one `<conversation>.continuous.txt` file. Intermediate STT results never
+  enter correction or delivery. The final chunk opens that boundary once and
+  supplies the full accumulated transcript to the bounded glasses FIFO as one
+  `Queued` item, followed by `Saved` or `Sent`.
 - Gemma correction is eligible only when a recognized chunk begins with the
   complete word `hey`, case-insensitively. Ordinary ambient chunks and
   mid-sentence mentions bypass the LLM, receive a durable `no_wake_word` skip

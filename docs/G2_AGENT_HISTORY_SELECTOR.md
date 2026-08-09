@@ -456,7 +456,8 @@ gesture-controlled ownership.
    Active Listen Mode switches the VAD endpoint to one
    inactive second before STT. Speech
    detected during that endpoint resets it and continues the same audio turn;
-   only the final turn is transcribed, corrected, and sent. Explicitly selected
+   intermediate STT chunks only extend the logical transcript; the final
+   accumulated turn is corrected and sent once. Explicitly selected
    correction is inserted ahead of pending normal jobs while never interrupting
    an already-running Gemma inference.
 5. Persistent selector and detail pages use the full 576×288 G2 text
@@ -507,7 +508,8 @@ gesture-controlled ownership.
   in the title and is immutably snapshotted for the speech segment. Transcript
   states never replace another newer segment;
 - selected-agent detail speech uses a one-second VAD-inactive endpoint, resumed
-  VAD keeps the same turn open, and only the finalized turn reaches correction;
+  VAD keeps the same turn open, and intermediate STT chunks remain collection-
+  only until the finalized accumulated turn reaches correction;
 - explicit Listen Mode selection makes non-`Hey` live speech
   correction-eligible, while all other ambient speech remains wake-gated;
 - `ladies changes` is corrected to context-supported `latest changes` before
@@ -623,9 +625,10 @@ harness cannot mechanically actuate the wearable.
   exact prior history page so swipe paging resumes immediately.
 - In detail mode, one uninterrupted second with VAD inactive finalizes the
   speech turn. VAD activity during that second resets the endpoint and appends
-  audio to the same turn. Once the endpoint fires, Listen Mode stops accepting
-  selected-agent audio, STT text replaces `Listening`, and correction plus the
-  single send happen afterward.
+  audio to the same turn. Bounded STT chunks can be processed before that point
+  without creating a send. Once the endpoint fires, Listen Mode stops accepting
+  selected-agent audio, the complete accumulated STT text replaces `Listening`,
+  and correction plus the single send happen afterward.
 - `[x]` renders as one line; each agent and Memo start `Agent - content` and
   flow into at most one bounded continuation line inside a fixed-width pointer
   gutter. The continuation has one additional leading space, with adaptive

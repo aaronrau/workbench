@@ -107,9 +107,12 @@ then restores the Hub page automatically.
 Selected-agent detail speech changes the VAD endpoint before transcription.
 After VAD falls inactive, the worker retains one second of PCM. Positive VAD
 during that interval resets the endpoint and continues the same speech turn.
-Only an uninterrupted one-second inactive interval finalizes the durable turn,
-dispatches STT, runs Gemma correction, and sends one command. There is no
-second post-transcription timer or transcript-batch gate.
+Only an uninterrupted one-second inactive interval finalizes the durable turn.
+The default flow is separate and requires 1.5 seconds continuously VAD-inactive.
+In both modes the persistent STT worker may process bounded duration chunks
+while speech continues, but those results only append to the durable logical
+transcript. The final result runs Gemma correction and sends one complete
+command; there is no second post-transcription timer.
 
 The microphone notification format observed in MentraOS and on hardware is:
 

@@ -105,15 +105,19 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
    ```
 
    It exercises one continuous long phrase, short phrases with 400 ms pauses,
-   separate questions with 2 second pauses, and closely queued turns with 1.8
-   second pauses. It verifies the 1,250 ms retained endpoint tail, the nominal
-   1.75-second total-silence boundary, a soft 15-second inter-word/VAD-pause
-   boundary with a 17-second overlapped hard fallback, one real endpoint per logical
-   continuous turn, boundary-deduplicated combined transcript accuracy,
-   no Gemma correction for fixtures without the complete word `hey`, segment
-   ordering, buffer clearing, UI clearing, and safety independently for each
-   turn. The runner restores the original computer speaker volume even when a
-   case fails.
+   separate questions and closely queued turns with 2.2 second pauses. It
+   verifies the 1,500 ms retained default endpoint tail, the
+   nominal two-second acoustic-silence boundary, a soft 15-second inter-word/
+   VAD-pause boundary with a 17-second overlapped hard fallback, one real
+   endpoint per logical continuous turn, boundary-deduplicated combined
+   transcript accuracy,
+   every intermediate chunk defers its downstream action, no Gemma correction
+   for fixtures without the complete word `hey`, segment ordering, buffer
+   clearing, UI clearing, and safety independently for each turn. The runner
+   restores the original computer speaker volume even when a case fails. It
+   also re-enables the required Android log tags after connection preflight and
+   restores their original values afterward, so valid playback cannot silently
+   produce an empty `device.log`.
 
    Select the comprehensive duration or silence-boundary profiles when the
    task requires shorter speech, longer continuous speech, or different pause
@@ -128,7 +132,7 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
 
    The duration profile spans 100 ms clips through approximately 60 seconds.
    The boundary profile probes inserted silence from 100 ms through 5 seconds,
-   with dense characterization points around the nominal 1.75-second acoustic
+   with dense characterization points around the nominal two-second acoustic
    split boundary. Use `--repeat 3` with selected `--case NAME` options for
    three-run boundary stability checks.
 

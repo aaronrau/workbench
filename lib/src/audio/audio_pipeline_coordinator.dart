@@ -17,6 +17,7 @@ import 'speech_model.dart';
 import 'transcript_turn_state.dart';
 import 'transcript_correction_config.dart';
 import 'transcript_correction_supervisor.dart';
+import 'transcript_turn_assembler.dart';
 import 'transcription_worker.dart';
 import 'vad_worker.dart';
 
@@ -129,14 +130,14 @@ final class AudioPipelineCoordinator {
   VadSupervisor? _vad;
   TranscriptionSupervisor? _transcription;
   TranscriptCorrectionSupervisor? _correction;
-  ContinuousTranscriptStore? _continuousTranscriptStore;
+  TranscriptTurnAssembler? _transcriptTurnAssembler;
   Future<void>? _decodePump;
   Future<void> _transcriptHandlingTail = Future<void>.value();
   bool _initialized = false;
   bool _initialStartupComplete = false;
   bool _disposed = false;
   bool _vadWasReady = false;
-  bool _selectedAgentDetailVadMode = false;
+  VadEndpointMode _vadEndpointMode = VadEndpointMode.defaultFlow;
   bool _modelSwitching = false;
   bool _refreshSharedTranscriptsAfterExport = false;
   bool _decodeBackpressureReported = false;
@@ -247,16 +248,14 @@ final class AudioPipelineCoordinator {
         onSegment: _onSpeechSegment,
         onStatus: _vadStatus,
         onSpeechEvent: onVadSpeechEvent,
-        endpointDelay: _selectedAgentDetailVadMode
-            ? selectedAgentVadTranscriptionDelay
-            : vadTranscriptionDelay,
+        endpointMode: _vadEndpointMode,
       );
       activeVadProvider = await _vad!.start();
       _vadWasReady = true;
 
       _speechPath = '${paths.audioRoot}/speech';
-      _continuousTranscriptStore = ContinuousTranscriptStore(
-        speechPath: _speechPath!,
+      _transcriptTurnAssembler = TranscriptTurnAssembler(
+        store: ContinuousTranscriptStore(speechPath: _speechPath!),
       );
       _transcription = TranscriptionSupervisor(
         model: paths.transcription,
@@ -501,20 +500,23 @@ final class AudioPipelineCoordinator {
     final id = result.segmentId;
     lastTranscriptPath = result.transcriptPath;
     var displayedText = result.text;
-    var routableText = result.text;
+    String? actionText = segment == null || segment.isConversationFinal
+        ? result.text.trim()
+        : null;
     final exportPaths = <String>[result.transcriptPath];
-    final continuousStore = _continuousTranscriptStore;
-    if (result.routeEligible && segment != null && continuousStore != null) {
+    final turnAssembler = _transcriptTurnAssembler;
+    if (result.routeEligible && segment != null && turnAssembler != null) {
       try {
-        final snapshot = await continuousStore.append(
+        final assembly = await turnAssembler.append(
           conversationId: segment.conversationId,
           text: result.text,
+          isConversationFinal: segment.isConversationFinal,
           deduplicateOverlap: segment.leadingOverlapMs > 0,
         );
-        displayedText = snapshot.text;
-        routableText = snapshot.appendedText;
-        lastTranscriptPath = snapshot.path;
-        exportPaths.add(snapshot.path);
+        displayedText = assembly.text;
+        actionText = assembly.actionText;
+        lastTranscriptPath = assembly.path;
+        exportPaths.add(assembly.path);
         log(
           'Pipeline',
           '[WorkBench][Transcript] state=conversation_saved '
@@ -553,6 +555,21 @@ final class AudioPipelineCoordinator {
       startup = StartupSnapshot(
         phase: StartupPhase.ready,
         message: 'Local audio ready · $activeModelName · $activeProvider',
+        provider: activeProvider,
+      );
+      onChanged();
+      return;
+    }
+    final routableText = actionText;
+    if (routableText == null) {
+      log(
+        'Pipeline',
+        '[WorkBench][VoiceRoute] state=collecting segment=$id '
+            'reason=conversation_continues action=deferred',
+      );
+      startup = StartupSnapshot(
+        phase: StartupPhase.ready,
+        message: 'Listening · transcription queue remains active',
         provider: activeProvider,
       );
       onChanged();
@@ -1029,14 +1046,15 @@ final class AudioPipelineCoordinator {
   }
 
   void setSelectedAgentDetailVadMode(bool enabled) {
-    if (_disposed || enabled == _selectedAgentDetailVadMode) {
+    final mode = enabled
+        ? VadEndpointMode.selectedAgent
+        : VadEndpointMode.defaultFlow;
+    if (_disposed || mode == _vadEndpointMode) {
       return;
     }
-    _selectedAgentDetailVadMode = enabled;
-    final delay = enabled
-        ? selectedAgentVadTranscriptionDelay
-        : vadTranscriptionDelay;
-    _vad?.setEndpointDelay(delay);
+    _vadEndpointMode = mode;
+    final delay = vadEndpointDelayForMode(mode);
+    _vad?.setEndpointMode(mode);
     log(
       'Pipeline',
       '[WorkBench][VAD] state=endpoint_mode '
@@ -1241,7 +1259,7 @@ final class AudioPipelineCoordinator {
     _vad = null;
     _transcription = null;
     _correction = null;
-    _continuousTranscriptStore = null;
+    _transcriptTurnAssembler = null;
     _transcriptionPaths = null;
     _speechPath = null;
     _inferenceProviders = null;

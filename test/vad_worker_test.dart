@@ -4,20 +4,24 @@ import 'package:even_g2_r1_poc/src/audio/vad_worker.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('finalizes after 1.75 seconds of total detected silence', () {
+  test('default mode waits 1.5 seconds after VAD becomes inactive', () {
     expect(vadDetectorSilenceDuration, const Duration(milliseconds: 500));
-    expect(vadTranscriptionDelay, const Duration(milliseconds: 1250));
-    expect(vadTotalSilenceDuration, const Duration(milliseconds: 1750));
+    expect(defaultVadEndpointDelay, const Duration(milliseconds: 1500));
+    expect(defaultVadTotalSilenceDuration, const Duration(seconds: 2));
     expect(
-      vadDetectorSilenceDuration + vadTranscriptionDelay,
-      vadTotalSilenceDuration,
+      vadDetectorSilenceDuration + defaultVadEndpointDelay,
+      defaultVadTotalSilenceDuration,
+    );
+    expect(
+      vadEndpointDelayForMode(VadEndpointMode.defaultFlow),
+      defaultVadEndpointDelay,
     );
   });
 
   test('resumed speech cancels the endpoint tail', () {
     final endpoint = VadEndpointBuffer(
       sampleRate: 16000,
-      duration: vadTranscriptionDelay,
+      duration: defaultVadEndpointDelay,
     );
 
     expect(endpoint.begin(8000), isFalse);
@@ -29,15 +33,27 @@ void main() {
     expect(endpoint.capturedMilliseconds, 0);
 
     expect(endpoint.begin(8000), isFalse);
-    expect(endpoint.add(12000), isTrue);
-    expect(endpoint.capturedMilliseconds, 1250);
+    expect(endpoint.add(16000), isTrue);
+    expect(endpoint.capturedMilliseconds, 1500);
   });
 
   test('selected-agent detail waits one VAD-inactive second before STT', () {
-    expect(selectedAgentVadTranscriptionDelay, const Duration(seconds: 1));
+    expect(selectedAgentVadEndpointDelay, const Duration(seconds: 1));
+    expect(
+      selectedAgentVadTotalSilenceDuration,
+      const Duration(milliseconds: 1500),
+    );
+    expect(
+      vadDetectorSilenceDuration + selectedAgentVadEndpointDelay,
+      selectedAgentVadTotalSilenceDuration,
+    );
+    expect(
+      vadEndpointDelayForMode(VadEndpointMode.selectedAgent),
+      selectedAgentVadEndpointDelay,
+    );
     final endpoint = VadEndpointBuffer(
       sampleRate: 16000,
-      duration: selectedAgentVadTranscriptionDelay,
+      duration: selectedAgentVadEndpointDelay,
     );
 
     expect(endpoint.begin(8000), isFalse);

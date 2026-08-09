@@ -15,6 +15,9 @@ typedef VadSpeechEventSink = void Function(VadSpeechEvent event);
 
 enum VadSpeechEventType { started, ended }
 
+/// The two product flows intentionally use different VAD-inactive endpoints.
+enum VadEndpointMode { defaultFlow, selectedAgent }
+
 final class VadSpeechEvent {
   const VadSpeechEvent({
     required this.type,
@@ -29,13 +32,21 @@ final class VadSpeechEvent {
 
 const Duration vadPreRollDuration = Duration(seconds: 2);
 const Duration vadDetectorSilenceDuration = Duration(milliseconds: 500);
-const Duration vadTranscriptionDelay = Duration(milliseconds: 1250);
-const Duration selectedAgentVadTranscriptionDelay = Duration(seconds: 1);
-const Duration vadTotalSilenceDuration = Duration(milliseconds: 1750);
+const Duration defaultVadEndpointDelay = Duration(milliseconds: 1500);
+const Duration selectedAgentVadEndpointDelay = Duration(seconds: 1);
+const Duration defaultVadTotalSilenceDuration = Duration(seconds: 2);
+const Duration selectedAgentVadTotalSilenceDuration = Duration(
+  milliseconds: 1500,
+);
 const Duration preferredVadSegmentDuration = Duration(seconds: 15);
 const Duration maximumVadSegmentDuration = Duration(seconds: 17);
 const Duration vadRolloverOverlapDuration = Duration(seconds: 1);
 const Duration vadWordBoundaryQuietDuration = Duration(milliseconds: 75);
+
+Duration vadEndpointDelayForMode(VadEndpointMode mode) => switch (mode) {
+  VadEndpointMode.defaultFlow => defaultVadEndpointDelay,
+  VadEndpointMode.selectedAgent => selectedAgentVadEndpointDelay,
+};
 
 enum VadSegmentEndReason {
   silence,
@@ -254,9 +265,8 @@ final class VadSupervisor {
     required this.onSegment,
     required this.onStatus,
     this.onSpeechEvent,
-    Duration endpointDelay = vadTranscriptionDelay,
-  }) : assert(endpointDelay > Duration.zero),
-       _endpointDelay = endpointDelay;
+    VadEndpointMode endpointMode = VadEndpointMode.defaultFlow,
+  }) : _endpointMode = endpointMode;
 
   final String modelPath;
   final String outputPath;
@@ -264,7 +274,7 @@ final class VadSupervisor {
   final SpeechSegmentSink onSegment;
   final VadStatusSink onStatus;
   final VadSpeechEventSink? onSpeechEvent;
-  Duration _endpointDelay;
+  VadEndpointMode _endpointMode;
 
   ReceivePort? _events;
   ReceivePort? _errors;
@@ -303,19 +313,19 @@ final class VadSupervisor {
     _commands?.send(<String, Object>{'type': 'flush'});
   }
 
-  /// Selects the quiet interval applied after VAD falls inactive. An active
-  /// endpoint keeps the duration it started with; the new value applies to the
-  /// next quiet transition so a UI change cannot shorten a turn mid-tail.
-  void setEndpointDelay(Duration duration) {
-    if (_disposed || duration == _endpointDelay) {
+  /// Selects the product flow and its quiet interval after VAD falls inactive.
+  /// An active endpoint keeps the duration it started with; the new mode
+  /// applies at the next quiet transition so a UI change cannot shorten a turn
+  /// mid-tail.
+  void setEndpointMode(VadEndpointMode mode) {
+    if (_disposed || mode == _endpointMode) {
       return;
     }
-    if (duration <= Duration.zero) {
-      throw ArgumentError.value(duration, 'duration', 'Must be positive.');
-    }
-    _endpointDelay = duration;
+    _endpointMode = mode;
+    final duration = vadEndpointDelayForMode(mode);
     _commands?.send(<String, Object>{
-      'type': 'set_endpoint_delay',
+      'type': 'set_endpoint_mode',
+      'mode': mode.name,
       'delayMs': duration.inMilliseconds,
     });
   }
@@ -361,7 +371,9 @@ final class VadSupervisor {
         'modelPath': modelPath,
         'outputPath': outputPath,
         'providers': providers,
-        'endpointDelayMs': _endpointDelay.inMilliseconds,
+        'endpointDelayMs': vadEndpointDelayForMode(
+          _endpointMode,
+        ).inMilliseconds,
       },
       debugName: 'workbench-vad',
       errorsAreFatal: true,
@@ -865,7 +877,7 @@ void _vadWorker(Map<String, Object> bootstrap) {
         return;
       }
       switch (message['type']) {
-        case 'set_endpoint_delay':
+        case 'set_endpoint_mode':
           final delayMs = message['delayMs'];
           if (delayMs is int && delayMs > 0) {
             endpointDelay = Duration(milliseconds: delayMs);

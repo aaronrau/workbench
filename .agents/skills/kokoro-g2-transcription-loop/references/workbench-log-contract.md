@@ -90,7 +90,16 @@ contracts:
 The chunk receives its own queued, processing, completed, and final transcript
 markers. It must not receive `speech_ended`, and `speech_continued` must not
 clear the UI or arm a silence timeout. The eventual silence endpoint uses the
-final continuation segment. The turn-suite scorer combines ordered chunk
+final continuation segment. Each non-final STT result must also report that its
+downstream action was deferred:
+
+```text
+[WorkBench][VoiceRoute] state=collecting segment=<id> reason=conversation_continues action=deferred
+```
+
+It must not create a glasses `Queued` action, correction job, or agent send.
+The final result uses the complete accumulated continuous transcript for the
+single downstream action. The turn-suite scorer combines ordered chunk
 transcripts for WER, removes only an exact suffix/prefix word match introduced
 by hard-overlap padding, requires every reported `audio_ms` to remain at or
 below 19,500 ms (including initial pre-roll), validates the reason/overlap pair,
@@ -102,12 +111,14 @@ endpoint delay. `speech_ended audio_ms` reports the PCM duration captured after
 that transition. Validate `audio_ms` rather than logcat wall time because
 isolate-to-UI marker delivery may be batched under load.
 
-The current command boundary requires approximately 1.75 seconds of total
-silence: Silero qualifies 500 ms before the transition, then Work Bench retains
-and reports a 1,250 ms endpoint tail. A resumed positive VAD detection during
-that tail cancels finalization and keeps the audio in the same turn. Therefore,
-normal completed turns must report `delay_ms=1250` and approximately
-`audio_ms=1250`.
+The default command boundary starts when VAD becomes inactive and requires an
+uninterrupted 1,500 ms interval. With Silero's preceding 500 ms qualification,
+that is approximately two seconds of acoustic silence. A resumed positive VAD
+detection during that tail cancels finalization and keeps the audio in the same
+turn. Therefore,
+normal default-flow turns must report `delay_ms=1500` and approximately
+`audio_ms=1500`. Selected-agent Listen Mode is a distinct flow and continues
+to require `delay_ms=1000` after VAD becomes inactive.
 
 The attestation marker is required only when the corresponding ready/completed
 provider is `nnapi`. A CPU provider must not emit a synthetic NNAPI

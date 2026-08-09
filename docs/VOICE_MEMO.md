@@ -72,11 +72,12 @@ transcript access, and memo finalization remain available.
 
 ## Silence and explicit finish
 
-The normal VAD turn closes after 1.75 seconds of total silence. Memo mode keeps
-the outer session open for exactly five seconds of total silence:
+The normal VAD turn closes after VAD remains inactive for 1.5 seconds (about
+two seconds of acoustic silence including Silero qualification). Memo mode
+keeps the outer session open for exactly five seconds of total silence:
 
 ```text
-1.75 s VAD turn boundary + 3.25 s memo continuation window = 5.00 s
+2.00 s nominal VAD turn boundary + 3.00 s memo continuation window = 5.00 s
 ```
 
 New `speech_started` activity cancels the continuation timer. At five seconds,

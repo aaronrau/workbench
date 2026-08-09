@@ -279,12 +279,15 @@ display entry. Every `Queued:`, `Sending:`, `Sent:`, `Saved:`, and `Received:`
 status renders in the full-height 576×288 text page instead of the compact
 two-row visualizer slot. Long ordinary statuses therefore use the complete
 vertical viewport and the firmware's full-page scrolling behavior.
-The live turn reaches STT only after the nominal 1.75-second
-total-silence VAD boundary; speech resuming before that boundary remains in the
-same turn. A single tap while this item is still `Queued:` is consumed before
-the history selector. If the raw transcript starts with the complete word
-`Hey`, its durable correction job moves ahead of other ready Gemma work; an
-already-running inference remains ahead and is never interrupted. The item
+The default live turn closes after VAD remains inactive for 1.5 seconds, or
+about two seconds of acoustic silence including Silero qualification. Duration
+chunks may enter the persistent STT FIFO earlier, but they only extend the
+durable continuous transcript. Correction and routing occur once, using the
+full transcript after the final endpoint. A single tap while this item is still
+`Queued:` is consumed before the history selector. If the raw transcript starts
+with the complete word `Hey`, its durable correction job moves ahead of other
+ready Gemma work; an already-running inference remains ahead and is never
+interrupted. The item
 immediately changes to `Sending:` so a second tap cannot submit it again.
 Otherwise the item resolves to `Saved:` immediately without invoking Gemma or
 sending a WebSocket message. A later asynchronous raw fallback is idempotent and cannot

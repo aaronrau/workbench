@@ -16,10 +16,34 @@ from pathlib import Path
 
 import kokoro_g2_loop as loop
 
-ENDPOINT_TAIL_MS = 1250
-ENDPOINT_AUDIO_MIN_MS = 1200
-ENDPOINT_AUDIO_MAX_MS = 1350
+ENDPOINT_TAIL_MS = 1500
+ENDPOINT_AUDIO_MIN_MS = 1450
+ENDPOINT_AUDIO_MAX_MS = 1600
 MAXIMUM_CHUNK_AUDIO_MS = 19500
+REQUIRED_ANDROID_LOG_TAGS = (
+    "log.tag.WorkBenchTest",
+    "log.tag.flutter",
+    "log.tag.WorkBench",
+)
+
+
+def _enable_android_log_tags(adb_prefix: list[str]) -> dict[str, str]:
+    previous: dict[str, str] = {}
+    for tag in REQUIRED_ANDROID_LOG_TAGS:
+        previous[tag] = loop.get_android_property(adb_prefix, tag)
+        loop.set_android_property(adb_prefix, tag, "V")
+    return previous
+
+
+def _restore_android_log_tags(
+    adb_prefix: list[str],
+    previous: dict[str, str],
+) -> None:
+    for tag, value in previous.items():
+        try:
+            loop.set_android_property(adb_prefix, tag, value)
+        except subprocess.CalledProcessError:
+            pass
 
 
 @dataclass(frozen=True)
@@ -68,7 +92,7 @@ CASES = (
             "When does the train leave?",
             "Did you open the front door?",
         ),
-        silence_seconds=2.0,
+        silence_seconds=2.2,
         expected_turns=3,
     ),
     TurnCase(
@@ -78,7 +102,7 @@ CASES = (
             "Please close the blue window.",
             "Please call the next meeting.",
         ),
-        silence_seconds=1.8,
+        silence_seconds=2.2,
         expected_turns=3,
     ),
 )
@@ -264,14 +288,14 @@ BOUNDARY_CASES = (
     _boundary_case(400, 1),
     _boundary_case(800, 1),
     _boundary_case(1200, 1),
-    _boundary_case(1350, None),
-    _boundary_case(1450, None),
-    _boundary_case(1500, None),
-    _boundary_case(1550, None),
-    _boundary_case(1650, None),
-    _boundary_case(1700, None),
-    _boundary_case(1750, None),
-    _boundary_case(1800, 2),
+    _boundary_case(1600, 1),
+    _boundary_case(1800, None),
+    _boundary_case(1900, None),
+    _boundary_case(1950, None),
+    _boundary_case(2000, None),
+    _boundary_case(2050, None),
+    _boundary_case(2100, 2),
+    _boundary_case(2200, 2),
     _boundary_case(2500, 2),
     _boundary_case(5000, 2),
 )
@@ -317,6 +341,10 @@ COMPLETED_RE = re.compile(
 )
 CORRECTION_QUEUED_RE = re.compile(
     r"\[WorkBench\]\[Correction\] state=queued segment=(?P<id>\S+)"
+)
+ACTION_DEFERRED_RE = re.compile(
+    r"\[WorkBench\]\[VoiceRoute\] state=collecting segment=(?P<id>\S+) "
+    r"reason=conversation_continues action=deferred"
 )
 FINAL_RE = re.compile(
     r"\[WorkBench\]\[Transcript\]\[FINAL\] "
@@ -495,6 +523,7 @@ def analyze_case(
     processing = _by_segment(_markers(lines, PROCESSING_RE))
     completed = _by_segment(_markers(lines, COMPLETED_RE, "audioMs"))
     correction_queued = _by_segment(_markers(lines, CORRECTION_QUEUED_RE))
+    action_deferred = _by_segment(_markers(lines, ACTION_DEFERRED_RE))
     finals = _by_segment(_markers(lines, FINAL_RE, "text"))
     ui_clears = _by_segment(_markers(lines, UI_CLEAR_RE))
 
@@ -551,6 +580,7 @@ def analyze_case(
         turn_processing = _turn_markers(segment_id, processing)
         turn_completed = _turn_markers(segment_id, completed)
         turn_correction_queued = _turn_markers(segment_id, correction_queued)
+        turn_action_deferred = _turn_markers(segment_id, action_deferred)
         turn_finals = _turn_markers(segment_id, finals)
         ending = turn_endings[-1] if turn_endings else None
         buffer = turn_buffers[-1] if turn_buffers else None
@@ -650,7 +680,7 @@ def analyze_case(
                 or index < len(expected_transcripts)
             ),
             "ui_cleared_at_start": ui_clear is not None,
-            "endpoint_configured_1250_ms": (
+            "endpoint_configured_1500_ms": (
                 ending is not None and ending.value == ENDPOINT_TAIL_MS
             ),
             "endpoint_audio_duration": (
@@ -681,6 +711,10 @@ def analyze_case(
                 len(turn_chunked) == max(0, len(turn_finals) - 1)
             ),
             "rollover_overlap_contract": rollover_overlap_contract,
+            "intermediate_actions_deferred": (
+                {item.segment_id for item in turn_action_deferred}
+                == set(segment_ids[:-1])
+            ),
             "no_correction_without_hey": (
                 expected_has_wake_word or not turn_correction_queued
             ),
@@ -1122,6 +1156,7 @@ def main() -> int:
             for repetition in range(1, args.repeat + 1)
         ]
     original_volume = get_computer_volume(wpctl)
+    previous_log_tags = _enable_android_log_tags(adb_prefix)
     results: list[CaseResult] = []
     try:
         set_computer_volume(wpctl, args.computer_volume)
@@ -1140,6 +1175,7 @@ def main() -> int:
             )
     finally:
         set_computer_volume(wpctl, original_volume)
+        _restore_android_log_tags(adb_prefix, previous_log_tags)
 
     report = {
         "speaker_id": args.speaker_id,

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:even_g2_r1_poc/src/audio/continuous_transcript_store.dart';
 import 'package:even_g2_r1_poc/src/audio/transcript_correction_supervisor.dart';
+import 'package:even_g2_r1_poc/src/audio/transcript_turn_assembler.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -76,6 +77,60 @@ void main() {
 
     expect(second.appendedText, 'Repeat this instruction.');
     expect(second.text, 'Repeat this instruction.\nRepeat this instruction.');
+  });
+
+  test('collects queued STT chunks and acts once on the final chunk', () async {
+    final assembler = TranscriptTurnAssembler(
+      store: ContinuousTranscriptStore(speechPath: temp.path),
+    );
+
+    final intermediate = await assembler.append(
+      conversationId: 'conversation-action',
+      text: 'Hey Flux inspect the current',
+      isConversationFinal: false,
+    );
+    expect(intermediate.text, 'Hey Flux inspect the current');
+    expect(intermediate.actionText, isNull);
+
+    final finalChunk = await assembler.append(
+      conversationId: 'conversation-action',
+      text: 'queued state and send it.',
+      isConversationFinal: true,
+    );
+    expect(
+      finalChunk.actionText,
+      'Hey Flux inspect the current\nqueued state and send it.',
+    );
+    expect(
+      isLiveTranscriptCorrectionEligible(
+        finalChunk.actionText!,
+        explicitlyTargeted: false,
+      ),
+      isTrue,
+      reason: 'The leading wake word from the first STT chunk must be kept.',
+    );
+    expect(
+      isLiveTranscriptCorrectionEligible(
+        finalChunk.appendedText,
+        explicitlyTargeted: false,
+      ),
+      isFalse,
+      reason: 'Routing only the final chunk would reproduce the original bug.',
+    );
+  });
+
+  test('a single final STT chunk is immediately action-ready', () async {
+    final assembler = TranscriptTurnAssembler(
+      store: ContinuousTranscriptStore(speechPath: temp.path),
+    );
+
+    final result = await assembler.append(
+      conversationId: 'conversation-short',
+      text: 'Hey Flux send this.',
+      isConversationFinal: true,
+    );
+
+    expect(result.actionText, 'Hey Flux send this.');
   });
 
   test('requires the complete wake word at the beginning', () {

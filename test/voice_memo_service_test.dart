@@ -340,7 +340,7 @@ void main() {
     },
   );
 
-  test('five seconds is measured across the existing VAD boundary', () {
+  test('five seconds includes the default two-second VAD boundary', () {
     final production = VoiceMemoService(
       log: (_, _, {bool isError = false}) {},
       onChanged: () {},
@@ -352,7 +352,7 @@ void main() {
     expect(production.totalSilenceDuration, const Duration(seconds: 5));
     expect(
       production.totalSilenceDuration - production.closedTurnSilenceDuration,
-      const Duration(milliseconds: 3250),
+      const Duration(seconds: 3),
     );
   });
 

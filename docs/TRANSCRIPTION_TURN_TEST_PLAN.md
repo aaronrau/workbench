@@ -6,9 +6,10 @@ Validate that continuous G2 audio becomes reliable conversational turns:
 
 ```text
 speech → 500 ms detector silence → clear prior pre-roll
-→ 1.25 second endpoint tail → atomic WAV → retain tail for next turn
-→ FIFO transcription job
-→ latest-turn text only
+→ 1.50 second default endpoint tail → atomic final WAV
+→ persistent FIFO STT worker (one job at a time)
+→ append every result to the logical turn
+→ final chunk only: one full-transcript action
 ```
 
 All acoustic stimuli use Kokoro speaker `af_maple` (`sid=0`, American English)
@@ -86,9 +87,9 @@ python3 .agents/skills/kokoro-g2-transcription-loop/scripts/kokoro_turn_suite.py
   --case duration_clip_600ms_characterize \
   --case duration_clip_650ms_characterize \
   --case duration_clip_700ms_characterize \
-  --case gap_1650ms_characterize \
-  --case gap_1700ms_characterize \
-  --case gap_1750ms_characterize \
+  --case gap_1900ms_characterize \
+  --case gap_2000ms_characterize \
+  --case gap_2050ms_characterize \
   --repeat 3 \
   --output-dir /tmp/workbench-kokoro-boundary-repeats \
   --computer-volume 0.90
@@ -107,8 +108,8 @@ python3 .agents/skills/kokoro-g2-transcription-loop/scripts/test_kokoro_turn_sui
 | --- | --- | --- |
 | Long continuous | One long phrase without an intentional pause | One segment, one queue entry, one final transcript |
 | Short continuation | Three short clauses separated by 400 ms | One segment; short natural pauses do not end the turn |
-| Separated questions | Three questions separated by 2 seconds | Three segments and three ordered transcripts |
-| Queue overlap | Short turns separated by 1.8 seconds | Each turn closes independently while the prior STT job may still be processing |
+| Separated questions | Three questions separated by 2.2 seconds | Three segments and three ordered transcripts |
+| Queue overlap | Short turns separated by 2.2 seconds | Each turn closes independently while the prior STT job may still be processing |
 
 The phrases use distinct nouns and colors so a transcript from one turn leaking
 into the next is detectable.
@@ -188,9 +189,9 @@ exact recognized boundary sequence for WER, and still fails on missing words.
 ### Phase C: silence-gap boundary
 
 Each stimulus contains two distinct short phrases. The nominal acoustic split
-boundary is 1.75 seconds: 500 ms for Silero to report silence, followed by Work
-Bench's 1,250 ms endpoint capture. Speaker, room, and microphone tails can
-shift the observed boundary, so dense probes are required.
+boundary is two seconds: 500 ms for Silero to report silence, followed by Work
+Bench's 1,500 ms default endpoint capture. Speaker, room, and microphone tails
+can shift the observed boundary, so dense probes are required.
 
 | ID | Inserted digital silence | Repetitions | Expected result |
 | --- | ---: | ---: | --- |
@@ -198,14 +199,14 @@ shift the observed boundary, so dense probes are required.
 | C2 | 400 ms | 1 | One merged turn |
 | C3 | 800 ms | 1 | One merged turn |
 | C4 | 1200 ms | 3 | One merged turn |
-| C5 | 1350 ms | 3 | Boundary characterization |
-| C6 | 1450 ms | 3 | Boundary characterization |
-| C7 | 1500 ms | 3 | Boundary characterization |
-| C8 | 1550 ms | 3 | Boundary characterization |
-| C9 | 1650 ms | 3 | Boundary characterization |
-| C10 | 1700 ms | 3 | Boundary characterization |
-| C11 | 1750 ms | 3 | Boundary characterization |
-| C12 | 1800 ms | 3 | Two independent turns |
+| C5 | 1600 ms | 3 | One merged turn |
+| C6 | 1800 ms | 3 | Boundary characterization |
+| C7 | 1900 ms | 3 | Boundary characterization |
+| C8 | 1950 ms | 3 | Boundary characterization |
+| C9 | 2000 ms | 3 | Boundary characterization |
+| C10 | 2050 ms | 3 | Boundary characterization |
+| C11 | 2100 ms | 3 | Two independent turns |
+| C12 | 2200 ms | 3 | Two independent turns |
 | C13 | 2500 ms | 1 | Two independent turns |
 | C14 | 5000 ms | 1 | Two independent turns |
 
@@ -218,8 +219,8 @@ one adjacent 100 ms bucket.
 
 | ID | Sequence | Expected result |
 | --- | --- | --- |
-| D1 | 10 short turns, 1.8-second gaps | Ten ordered final results |
-| D2 | 25 short turns, 2-second gaps | No queue loss or stale UI result |
+| D1 | 10 short turns, 2.2-second gaps | Ten ordered final results |
+| D2 | 25 short turns, 2.2-second gaps | No queue loss or stale UI result |
 | D3 | Short, 60-second, then short turn | FIFO results and bounded memory |
 | D4 | Switch apps during a 30-second turn | Audio and VAD remain continuous |
 | D5 | Screen off during a 60-second turn | Foreground service keeps capture alive |
@@ -248,7 +249,7 @@ Bluetooth restart even if a transcript eventually appears.
 ```text
 [WorkBench][VAD] state=speech_started segment=<id>
 [WorkBench][TranscriptUI] state=cleared reason=speech_started segment=<id>
-[WorkBench][VAD] state=speech_ending segment=<id> delay_ms=1250
+[WorkBench][VAD] state=speech_ending segment=<id> delay_ms=1500
 [WorkBench][VAD] state=buffer_cleared segment=<id> bytes=<positive> next=ready
 [WorkBench][VAD] state=speech_ended segment=<id> audio_ms=<duration>
 [WorkBench][Transcription] state=queued segment=<id> pending=<count>
@@ -260,7 +261,7 @@ Bluetooth restart even if a transcript eventually appears.
 
 - Both playback boundary markers are present and name the same case.
 - The observed segment count equals the expected turn count.
-- `speech_ended audio_ms` contains 1.20–1.35 seconds of post-VAD PCM for every
+- `speech_ended audio_ms` contains 1.45–1.60 seconds of post-VAD PCM for every
   normally completed turn. Logcat wall time is retained as a diagnostic only
   because isolate-to-UI delivery may be batched under load.
 - Buffer clearing occurs when the endpoint starts and before the same segment
@@ -269,6 +270,10 @@ Bluetooth restart even if a transcript eventually appears.
 - Segment IDs remain ordered across start, clear, queue, processing, and final
   transcript markers.
 - Each completed turn produces its own WAV and TXT file.
+- Every duration chunk is transcribed in FIFO order and appended durably, but
+  each non-final chunk reports `VoiceRoute state=collecting ... action=deferred`.
+- Only the final chunk creates the one queued action and uses the complete
+  accumulated transcript for correction or delivery.
 - A new `speech_started` marker clears the previous visible text immediately.
 - A prior turn's distinct keywords do not appear in the next turn's transcript.
 - Per-turn normalized word error rate is at most 25 percent.
@@ -281,10 +286,11 @@ Additional comprehensive-suite criteria:
 - A1–A2 produce no completed segment and do not leave a `.part.wav`.
 - A7 completes in all three repetitions; A3–A6 produce a recorded detection
   curve with no orphaned partial segment.
-- B1–B5 produce one and only one segment at each duration.
-- C1–C4 always merge, C10–C12 always split, and C5–C9 report a repeatable
+- B1–B5 produce one and only one logical turn at each duration; long turns may
+  contain multiple bounded WAV/STT chunks.
+- C1–C5 always merge, C11–C12 always split, and C6–C10 report a repeatable
   transition boundary.
-- Every normal close reports 950–1100 ms in `speech_ended audio_ms`.
+- Every normal default close reports 1450–1600 ms in `speech_ended audio_ms`.
 - Final transcript latency is recorded from `state=queued` to `FINAL`; the
   queue must drain after every case.
 - The number of WAV/TXT pairs equals the number of completed turns.
@@ -313,10 +319,28 @@ Matched-input model comparison additionally requires:
 
 ## Reference physical runs
 
-### Current 1,250 ms endpoint-tail revision
+### Current 1,500 ms default endpoint revision
 
-On July 27, 2026, a representative RedMagic phone passed both sides of the
-1.75-second total-silence boundary with the packaged Parakeet 0.6B model
+On August 8, 2026, Android build 89 was installed on the representative phone
+and exercised with Kokoro `af_maple` from the computer speaker. The 29.6-second
+case produced one logical turn with two FIFO STT chunks. The first chunk logged
+`action=deferred`; the final chunk reported `delay_ms=1500` and
+`audio_ms=1500`, then entered the downstream route exactly once with the full
+continuous transcript. The turn, queue, endpoint, rollover, marker-order,
+transport, and safety assertions all passed.
+
+The physical run is not an acoustic-accuracy pass: its WER was 0.813. A short
+continuation trial likewise passed the VAD, endpoint, queue, transport, and
+safety assertions but returned an empty transcript. Preserve both failures as
+recognizer/acoustic evidence; do not use them as a fully passing STT baseline.
+The automated Dart and runner regression suites independently pass the final-
+only action policy and the 1,500 ms timing contract.
+
+### Earlier 1,250 ms endpoint-tail revision
+
+The following evidence predates the 1,500 ms default endpoint. On July 27,
+2026, a representative RedMagic phone passed both sides of the 1.75-second
+total-silence boundary with the packaged Parakeet 0.6B model
 attested on NNAPI:
 
 - `short_continuation` kept three utterances separated by 400 ms in one turn.
@@ -468,11 +492,10 @@ levels before becoming a product guarantee.
 | 1550 ms | Split three times, merged once |
 | 1650–5000 ms | Split in the ascending sweep |
 
-The transition is therefore probabilistic around 1.45–1.55 seconds on the
-current hardware and room path. The stable product zones should remain at or
-below 1.2 seconds for “continue this turn” and at or above 1.8 seconds for
-“start a new turn”; boundary values must not be used as deterministic UI
-promises.
+For that earlier revision, the transition was probabilistic around 1.45–1.55
+seconds on the tested hardware and room path. Those values are historical and
+must not be used as deterministic UI promises for the current two-second
+nominal default boundary.
 
 ### Continuous duration
 
