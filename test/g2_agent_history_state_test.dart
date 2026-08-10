@@ -676,7 +676,7 @@ void main() {
     expect(state.render(), contains('live synthetic response'));
   });
 
-  test('selector collapses returns and ellipsizes on one row', () {
+  test('selector collapses returns before bounded two-line wrapping', () {
     final state = G2AgentHistoryState()
       ..open(
         agents: const <String>['Pike'],
@@ -695,15 +695,16 @@ void main() {
       );
 
     final rows = state.render().split('\n');
-    expect(rows, hasLength(3));
+    expect(rows, hasLength(4));
     expect(
       rows[1],
       startsWith('     [Pike] ready for review second line third line'),
     );
     expect(state.render(), isNot(contains('\r')));
-    expect(rows[1], endsWith('…'));
+    expect(rows[2], startsWith('     '));
+    expect(rows[2], endsWith('…'));
     expect(
-      G2TextLayout.history.textWidth(rows[1]),
+      G2TextLayout.history.textWidth(rows[2]),
       lessThanOrEqualTo(G2TextLayout.history.wrappingWidthPixels),
     );
     expect(rows.last, '     Memo - No saved memo');
@@ -730,7 +731,7 @@ void main() {
     );
   });
 
-  test('selector keeps same-size recent text below native swipe height', () {
+  test('two-line selector remains below native swipe height', () {
     final flatMessage = List<String>.filled(40, 'status ').join();
     final recentMessage =
         '${flatMessage.substring(0, 140)}\n${flatMessage.substring(141)}';
@@ -758,10 +759,11 @@ void main() {
       );
 
     final rows = state.render().split('\n');
-    expect(rows, hasLength(7));
+    expect(rows, hasLength(G2AgentHistoryState.selectorMaximumRenderedRows));
     expect(rows.length, lessThan(G2TextLayout.history.maximumVisibleRows));
     expect(rows[1], startsWith('     [Agent One] 15sec status'));
-    expect(rows[1], endsWith('…'));
+    expect(rows[2], startsWith('     '));
+    expect(rows[2], endsWith('…'));
     expect(rows.last, '     Memo - synthetic memo');
     for (final row in rows) {
       expect(
@@ -771,7 +773,7 @@ void main() {
     }
   });
 
-  test('selector moves cursor while blocks fit and scrolls at the edge', () {
+  test('selector pages complete two-line blocks in both directions', () {
     final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
     final state = G2AgentHistoryState()
       ..open(
@@ -789,52 +791,38 @@ void main() {
         memo: longMessage,
       );
 
-    state.selectNext();
-    expect(state.selected?.label, 'Flux');
-    expect(state.render().split('\n')[1], startsWith(' >  [Flux] '));
-
-    state.selectNext();
-    expect(state.selected?.label, 'Pike');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
-    expect(state.render(), contains(' >  [Pike] '));
-    expect(state.render(), contains('[Vale] '));
-
-    state.selectNext();
-    expect(state.selected?.label, 'Vale');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
-    expect(state.render(), contains(' >  [Vale] '));
-
-    state.selectNext();
-    expect(state.selected?.label, 'Brock');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
-    expect(state.render(), contains('[Flux] '));
-    expect(state.render(), contains(' >  [Brock] '));
-    expect(state.render(), contains('Memo -'));
-
-    state.selectNext();
+    final forwardWindows = <String>{state.render()};
+    for (var index = 0; index < state.entries.length - 1; index++) {
+      state.selectNext();
+      final rendered = state.render();
+      forwardWindows.add(rendered);
+      expect(
+        rendered.split('\n').length,
+        lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
+      );
+      final selected = state.selected!;
+      final selectedText = selected.kind == G2AgentHistoryEntryKind.agent
+          ? '[${selected.label}] '
+          : '${selected.label} -';
+      expect(rendered, contains(' >  $selectedText'));
+    }
     expect(state.selected?.label, 'Memo');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
-    expect(state.render(), contains(' >  Memo -'));
-
-    state.selectPrevious();
-    expect(state.selected?.label, 'Brock');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
-    expect(state.render(), contains(' >  [Brock] '));
-
-    state.selectPrevious();
-    expect(state.selected?.label, 'Vale');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
-    expect(state.render(), contains(' >  [Vale] '));
-
-    state.selectPrevious();
-    expect(state.selected?.label, 'Pike');
-    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
-    expect(state.render(), contains(' >  [Pike] '));
-    expect(state.render(), contains('[Pike] '));
+    expect(forwardWindows.length, greaterThan(3));
     expect(state.render(), isNot(contains(RegExp(r'\d+/\d+'))));
+
+    for (var index = 0; index < state.entries.length - 2; index++) {
+      state.selectPrevious();
+      final rendered = state.render();
+      expect(
+        rendered.split('\n').length,
+        lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
+      );
+      expect(rendered, contains(' >  [${state.selected!.label}] '));
+    }
+    expect(state.selected?.label, 'Flux');
   });
 
-  test('long and short previews each retain one stable selector row', () {
+  test('mixed one- and two-line entries page without splitting blocks', () {
     final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
     final state = G2AgentHistoryState()
       ..open(
@@ -858,12 +846,15 @@ void main() {
       state.selectNext();
     }
     expect(state.selected?.label, 'Nova');
-    expect(state.render(), contains('[Flux] '));
+    expect(state.render(), isNot(contains('[Flux] ')));
     expect(state.render(), contains(' >  [Nova] '));
     expect(state.render(), contains('Memo -'));
     final shifted = state.render().split('\n');
-    expect(shifted, hasLength(7));
-    expect(shifted[1], startsWith('     [Flux] '));
+    expect(
+      shifted.length,
+      lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
+    );
+    expect(shifted[1], startsWith('     [Vale] '));
     expect(shifted, contains(startsWith('     Memo -')));
   });
 

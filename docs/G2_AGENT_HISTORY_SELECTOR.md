@@ -45,12 +45,12 @@ configuration. The phone's Messages view remains the complete history.
 
 ### Selector
 
-Every option occupies one rendered line. Carriage returns, newlines,
+Every option occupies one or two rendered lines. Carriage returns, newlines,
 and repeated whitespace in private content are collapsed before width
 measurement, so source formatting never forces a selector line break. Agent
 rows start `[Agent] 4min content`, where the age is the time since that agent's
-newest received message. Memo starts `Memo - content`; measured overflow is
-ellipsized on that row.
+newest received message. Memo starts `Memo - content`; measured overflow
+continues on one aligned second row and is ellipsized there.
 `[x] - Swipe to Select` remains a
 fixed one-line header. There is no page counter. Every rendered line reserves a
 fixed 25-pixel pointer gutter. The selected gutter includes two spaces after
@@ -73,18 +73,21 @@ hour, `hr` below one day, `day` below 30 days, and 30-day `mon` units after
 that. Future timestamps are clamped to `0sec`. Agents without a received
 message omit the age.
 
-When a normalized preview is too wide, it ends with an ellipsis on the same
-row:
+When a normalized preview is too wide, it uses one aligned continuation row
+and ends with an ellipsis there:
 
 ```text
  >  [x] - Swipe to Select
-     [Agent One] latest sent command that is shortened…
-     [Agent Two] another command shortened to fit…
+     [Agent One] latest sent command that continues
+     on the second measured row…
+     [Agent Two] another command that continues on
+     its second measured row…
 ```
 
-Complete one-row entries are bounded inside the seven rows beneath the fixed
-header. The ninth physical row stays unused so the firmware's own full-height
-scrolling path cannot claim the swipe. While the next entry fits, swipes move
+Complete one- or two-row entries are adaptively windowed inside the seven rows
+beneath the fixed header. The ninth physical row stays unused so the firmware's
+own full-height scrolling path cannot claim the swipe. While the next entry
+fits, swipes move
 only `>`.
 When it does not fit, the minimum number of complete entries moves offscreen so
 the selected entry and its following context remain visible. Selection wraps
@@ -102,7 +105,7 @@ the left display edge. Host layout uses one shared calibrated wrapping budget.
 Standalone glyph advances overestimate the physically observed firmware width,
 so the utility reserves an 18-pixel right-side safety budget and adds a 50-unit
 calibration. Selector content receives a separate 25-pixel pointer gutter and
-is limited to one row independently of selection. The physical container
+is limited to two rows independently of selection. The physical container
 remains 576 pixels wide and its inset content width is 568 pixels. A
 second startup/create command is not sufficient after the visualizer exists;
 the firmware retains the visualizer's compact 520x64 gesture slot, clipping
@@ -490,8 +493,8 @@ gesture-controlled ownership.
    container. Multi-page details overlay one variable-height right-edge bitmap
    with a visible 4-pixel thumb inside a valid 20-pixel container. History uses
    a borderless surface with one stable four-pixel inset; the selector uses a
-   fixed pointer gutter and bounds complete one-row entries while reserving one
-   physical row below the selector.
+   fixed pointer gutter and adaptively windows complete one- or two-row entries
+   while reserving one physical row below the selector.
    Agent details reserve two fixed control rows and seven content rows; Memo details
    reserve one title and eight content rows.
    All use high-priority bounded writes.
@@ -507,10 +510,10 @@ gesture-controlled ownership.
 - opening always selects `[x]`;
 - swipe up/down wraps across `[x]`, five agent options, and the final Memo
   option;
-- every agent starts one `[Agent] content` row, collapses carriage returns,
-  newlines, and repeated whitespace before measurement, ellipsizes pixel
-  overflow on that row, and leaves the selector below the nine-row native
-  scrolling height and 2,000 UTF-8 bytes;
+- every agent starts one `[Agent] content` row, may use one aligned continuation
+  row, collapses carriage returns, newlines, and repeated whitespace before
+  measurement, ellipsizes further pixel overflow, and leaves the selector
+  below the nine-row native scrolling height and 2,000 UTF-8 bytes;
 - selected and unselected pointer gutters have equal measured width, including
   two spaces after `>`, so cursor movement never shifts row content;
 - selector and detail rendering share the same calibrated width and row-layout
@@ -611,9 +614,9 @@ representative phone:
 3. tap and verify `[x]` is selected first;
 4. verify the newest replying agent is first, each replying row shows one
    compact elapsed unit, never-replied agents follow without an age, then swipe
-   through every agent and the final Memo option while checking one-line
-   ellipsis, stable horizontal alignment, the unused ninth physical row, and
-   the borderless surface;
+   through every agent and the final Memo option while checking the optional
+   aligned continuation row, second-row ellipsis, stable horizontal alignment,
+   the unused ninth physical row, and the borderless surface;
 5. select an agent with more than five exchanges and multiple response updates,
    verify the G2 list exactly matches the phone agent tab in newest-message
    order, with every item shown as `[HH:mm] Message`, and verify that the
@@ -642,9 +645,9 @@ explicit privacy rules.
 
 ### Debug gesture simulation
 
-A debug APK accepts an explicit ADB intent at the same `WearableController`
-boundary used by a decoded R1 event. Gesture types are `0` single tap, `1`
-swipe up, `2` swipe down, and `3` double tap:
+A foregrounded debug APK accepts explicit ADB intents at the same
+`WearableController` boundary used by a decoded R1 event. Gesture types are `0`
+single tap, `1` swipe up, `2` swipe down, and `3` double tap:
 
 ```sh
 adb -s <android-serial> shell am start \
@@ -653,10 +656,22 @@ adb -s <android-serial> shell am start \
   --ei gesture_type 2
 ```
 
-The hook validates the action and type, reports only gesture metadata, and is
-disabled in non-debuggable builds. It exercises controller state, serialized
-rendering, and live G2 writes. It does not qualify the physical R1-to-G2 radio
-or firmware forwarding path, which remains a separate manual check.
+Four app-private selector fixtures exercise short rows, consecutive long rows,
+mixed one- and two-line rows with normalized line breaks, and extreme ASCII
+widths. Fixture text is synthetic, is not persisted, and is never logged:
+
+```sh
+adb -s <android-serial> shell am start \
+  -n dev.opensourceglasses.even_g2_r1_poc/.MainActivity \
+  -a dev.opensourceglasses.even_g2_r1_poc.SHOW_AGENT_SELECTOR_FIXTURE \
+  --ei selector_fixture 1
+```
+
+The hooks validate each action and integer, report only gesture or fixture
+metadata, and are disabled in non-debuggable builds. They exercise controller
+state, serialized rendering, and live G2 writes. They do not qualify the
+physical R1-to-G2 radio or firmware forwarding path, which remains a separate
+manual check.
 
 ### Validation performed
 

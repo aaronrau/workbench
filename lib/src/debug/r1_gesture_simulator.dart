@@ -12,15 +12,23 @@ void installDebugR1GestureSimulator(WearableController controller) {
     return;
   }
   const MethodChannel(debugR1GestureChannelName).setMethodCallHandler((call) {
-    if (call.method != 'simulateR1Gesture') {
-      throw MissingPluginException('Unsupported debug gesture method.');
-    }
     final arguments = call.arguments;
-    if (arguments is! Map<Object?, Object?> || arguments['type'] is! int) {
-      throw const FormatException('A simulated R1 gesture type is required.');
+    if (arguments is! Map<Object?, Object?>) {
+      throw const FormatException('Debug simulation arguments are required.');
     }
-    return Future<bool>.value(
-      controller.simulateR1GestureForDebug(arguments['type']! as int),
-    );
+    return switch (call.method) {
+      'simulateR1Gesture' when arguments['type'] is int => Future<bool>.value(
+        controller.simulateR1GestureForDebug(arguments['type']! as int),
+      ),
+      'showAgentSelectorFixture' when arguments['fixture'] is int =>
+        Future<bool>.value(
+          controller.showAgentSelectorFixtureForDebug(
+            arguments['fixture']! as int,
+          ),
+        ),
+      'simulateR1Gesture' || 'showAgentSelectorFixture' =>
+        throw const FormatException('A debug simulation integer is required.'),
+      _ => throw MissingPluginException('Unsupported debug simulation method.'),
+    };
   });
 }

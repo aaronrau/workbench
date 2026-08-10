@@ -39,6 +39,9 @@ class MainActivity : FlutterActivity() {
         private const val DEBUG_GESTURE_ACTION =
             "dev.opensourceglasses.even_g2_r1_poc.SIMULATE_R1_GESTURE"
         private const val DEBUG_GESTURE_TYPE = "gesture_type"
+        private const val DEBUG_SELECTOR_ACTION =
+            "dev.opensourceglasses.even_g2_r1_poc.SHOW_AGENT_SELECTOR_FIXTURE"
+        private const val DEBUG_SELECTOR_FIXTURE = "selector_fixture"
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
@@ -284,21 +287,15 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        dispatchDebugGesture(intent)
+        dispatchDebugCommand(intent)
     }
 
-    private fun dispatchDebugGesture(intent: Intent) {
+    private fun dispatchDebugCommand(intent: Intent) {
         val isDebuggable =
             applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-        if (!isDebuggable || intent.action != DEBUG_GESTURE_ACTION) {
-            return
-        }
-        val type = intent.getIntExtra(DEBUG_GESTURE_TYPE, -1)
-        if (type !in 0..3) {
-            Log.e(
-                "WorkBench",
-                "[WorkBench][DebugGesture] state=rejected reason=invalid_type",
-            )
+        if (!isDebuggable ||
+            (intent.action != DEBUG_GESTURE_ACTION && intent.action != DEBUG_SELECTOR_ACTION)
+        ) {
             return
         }
         if (!::debugGestureChannel.isInitialized) {
@@ -308,14 +305,44 @@ class MainActivity : FlutterActivity() {
             )
             return
         }
-        debugGestureChannel.invokeMethod(
-            "simulateR1Gesture",
-            mapOf("type" to type),
-        )
-        Log.i(
-            "WorkBench",
-            "[WorkBench][DebugGesture] state=dispatched type=$type",
-        )
+        when (intent.action) {
+            DEBUG_GESTURE_ACTION -> {
+                val type = intent.getIntExtra(DEBUG_GESTURE_TYPE, -1)
+                if (type !in 0..3) {
+                    Log.e(
+                        "WorkBench",
+                        "[WorkBench][DebugGesture] state=rejected reason=invalid_type",
+                    )
+                    return
+                }
+                debugGestureChannel.invokeMethod(
+                    "simulateR1Gesture",
+                    mapOf("type" to type),
+                )
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][DebugGesture] state=dispatched type=$type",
+                )
+            }
+            DEBUG_SELECTOR_ACTION -> {
+                val fixture = intent.getIntExtra(DEBUG_SELECTOR_FIXTURE, -1)
+                if (fixture !in 0..3) {
+                    Log.e(
+                        "WorkBench",
+                        "[WorkBench][DebugSelector] state=rejected reason=invalid_fixture",
+                    )
+                    return
+                }
+                debugGestureChannel.invokeMethod(
+                    "showAgentSelectorFixture",
+                    mapOf("fixture" to fixture),
+                )
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][DebugSelector] state=dispatched fixture=$fixture",
+                )
+            }
+        }
     }
 
     private fun reportPreviousProcessExits() {

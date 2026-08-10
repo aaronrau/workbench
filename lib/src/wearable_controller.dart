@@ -68,6 +68,71 @@ G2GestureEvent simulatedR1GestureEvent(int type) {
   return G2GestureEvent(type: type, source: 2, name: name);
 }
 
+const int simulatedAgentSelectorFixtureCount = 4;
+
+@visibleForTesting
+void openSimulatedAgentSelectorFixture(G2AgentHistoryState state, int fixture) {
+  if (fixture < 0 || fixture >= simulatedAgentSelectorFixtureCount) {
+    throw ArgumentError.value(
+      fixture,
+      'fixture',
+      'must be between 0 and ${simulatedAgentSelectorFixtureCount - 1}',
+    );
+  }
+  const agents = <String>['Pike', 'Nova', 'Vale', 'Reed', 'Moss'];
+  final text = switch (fixture) {
+    0 => const <String>[
+      'Ready.',
+      'Short status.',
+      'Waiting for review.',
+      'Finished.',
+      'No action needed.',
+      'Short memo.',
+    ],
+    1 => const <String>[
+      'A deliberately long received update that wraps onto the second selector row and is safely ellipsized after that boundary.',
+      'Another long response fills two measured rows while the surrounding agent entries remain complete during navigation.',
+      'This synthetic progress message verifies that consecutive two-line blocks page without activating native scrolling.',
+      'The fourth long update exercises a later window and keeps its selection marker aligned with the first rendered row.',
+      'The final agent response remains readable across the page edge and never creates a ninth physical text row.',
+      'A long memo uses the same two-line limit and stays complete while the selector window advances to its final entry.',
+    ],
+    2 => const <String>[
+      'Short first response.',
+      'A mixed-length response follows the short row and wraps onto a second measured line before safe ellipsis.',
+      'line one\r\nline two\rline three with repeated     spacing that is normalized before wrapping',
+      'OK.',
+      'Another final mixed-length response validates backward paging across alternating one-line and two-line blocks.',
+      'Mixed memo.',
+    ],
+    _ => const <String>[
+      'WWWW WWWW WWWW WWWW WWWW WWWW WWWW WWWW WWWW WWWW WWWW WWWW',
+      'iiii iiiii iiiii iiiii iiiii iiiii iiiii iiiii iiiii iiiii iiiii iiiii iiiii iiiii iiiii',
+      '1234567890 / 1234567890 / 1234567890 / 1234567890 / 1234567890 / 1234567890',
+      '[] () {} -- :: ;; .. !! ?? repeated punctuation remains bounded and measurable on the display',
+      'AnExactBoundaryCandidateUsesLongUnbrokenTextToVerifyPixelFittingAndSafeEllipsisAcrossTwoRows',
+      'Memo WWWW iiiii 1234567890 punctuation -- bounded final selector entry.',
+    ],
+  };
+  final now = DateTime.utc(2026, 1, 1, 12);
+  state.open(
+    agents: agents,
+    exchanges: const <AgentExchangeView>[],
+    messages: <AgentMessageView>[
+      for (var index = 0; index < agents.length; index++)
+        AgentMessageView(
+          id: 'fixture-$fixture-${index + 1}',
+          agent: agents[index],
+          direction: AgentMessageDirection.received,
+          message: text[index],
+          updatedAt: now.subtract(Duration(minutes: index)),
+        ),
+    ],
+    memo: text.last,
+    now: now,
+  );
+}
+
 final class _SelectedAgentSpeechRoute {
   const _SelectedAgentSpeechRoute({required this.agent, required this.source});
 
@@ -382,6 +447,35 @@ final class WearableController extends ChangeNotifier
           'consumed=$consumed history=${_agentHistory.mode.name}',
     );
     return consumed;
+  }
+
+  bool showAgentSelectorFixtureForDebug(int fixture) {
+    if (_disposed ||
+        !g2.isConnected ||
+        _voiceMemo.isActive ||
+        _agentHistoryOpening ||
+        _agentHistoryClosing) {
+      addLog(
+        'R1 gesture simulation',
+        '[WorkBench][DebugSelector] state=rejected fixture=$fixture',
+        isError: true,
+      );
+      return false;
+    }
+    _agentHistoryWaitTimer?.cancel();
+    _agentHistoryWaitTimer = null;
+    _agentHistoryGeneration++;
+    openSimulatedAgentSelectorFixture(_agentHistory, fixture);
+    _historyDisplayQueue.reset();
+    _glassesStatusQueue.setPaused(true, owner: 'history');
+    _syncSelectedAgentVadMode();
+    final rows = _agentHistory.render().split('\n').length;
+    _queueAgentHistoryDisplay();
+    addLog(
+      'R1 gesture simulation',
+      '[WorkBench][DebugSelector] state=opened fixture=$fixture rows=$rows',
+    );
+    return true;
   }
 
   final FlutterReactiveBle _ble;

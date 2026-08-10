@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:even_g2_r1_poc/src/audio/audio_pipeline_coordinator.dart';
+import 'package:even_g2_r1_poc/src/protocol/g2_text_layout.dart';
 import 'package:even_g2_r1_poc/src/wearable_controller.dart';
 import 'package:even_g2_r1_poc/src/websocket/g2_agent_history_state.dart';
 import 'package:even_g2_r1_poc/src/websocket/voice_websocket_client.dart';
@@ -182,6 +184,57 @@ void main() {
     expect(swipe.name, 'swipe_down');
     expect(swipe.source, 2);
     expect(() => simulatedR1GestureEvent(4), throwsArgumentError);
+  });
+
+  test('debug selector fixtures keep two-line paging within safe limits', () {
+    for (
+      var fixture = 0;
+      fixture < simulatedAgentSelectorFixtureCount;
+      fixture++
+    ) {
+      final state = G2AgentHistoryState();
+      openSimulatedAgentSelectorFixture(state, fixture);
+      final windows = <String>{};
+
+      for (var step = 0; step < state.entries.length * 2; step++) {
+        final rendered = state.render();
+        final rows = rendered.split('\n');
+        windows.add(rendered);
+        expect(
+          rows.length,
+          lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
+        );
+        expect(utf8.encode(rendered).length, lessThanOrEqualTo(2000));
+        for (final row in rows) {
+          expect(
+            G2TextLayout.history.textWidth(row),
+            lessThanOrEqualTo(G2TextLayout.history.wrappingWidthPixels),
+          );
+        }
+        state.selectNext();
+      }
+      for (var step = 0; step < state.entries.length; step++) {
+        state.selectPrevious();
+        expect(
+          state.render().split('\n').length,
+          lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
+        );
+      }
+
+      if (fixture > 0) {
+        expect(windows.length, greaterThan(1));
+      }
+      if (fixture == 1) {
+        final rows = windows.first.split('\n');
+        expect(rows[1], contains('[Pike] 0sec'));
+        expect(rows[2], startsWith('     '));
+        expect(rows[2], endsWith('…'));
+      }
+    }
+    expect(
+      () => openSimulatedAgentSelectorFixture(G2AgentHistoryState(), 4),
+      throwsArgumentError,
+    );
   });
 
   test('single tap commits a queued transcript before opening history', () {
