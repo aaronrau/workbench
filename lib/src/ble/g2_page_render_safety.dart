@@ -15,6 +15,7 @@ final class G2PageRenderFrame {
     required int borderWidth,
     required int borderColor,
     required int paddingLength,
+    int? maximumTextRows,
   }) {
     if (RegExp(
       r'[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]',
@@ -29,6 +30,22 @@ final class G2PageRenderFrame {
         'G2 full-page text exceeds the $g2MaximumTextPageUtf8Bytes-byte '
         'firmware limit.',
       );
+    }
+    if (maximumTextRows != null) {
+      if (maximumTextRows < 1) {
+        throw ArgumentError.value(
+          maximumTextRows,
+          'maximumTextRows',
+          'must be at least one',
+        );
+      }
+      final textRows = '\n'.allMatches(content).length + 1;
+      if (textRows > maximumTextRows) {
+        throw FormatException(
+          'G2 full-page text has $textRows rows; the active surface allows '
+          'at most $maximumTextRows.',
+        );
+      }
     }
     final normalizedPageCount = pageCount < 1 ? 1 : pageCount;
     return G2PageRenderFrame._(

@@ -45,12 +45,12 @@ configuration. The phone's Messages view remains the complete history.
 
 ### Selector
 
-Every option occupies one or two rendered lines. Carriage returns, newlines,
+Every option occupies one rendered line. Carriage returns, newlines,
 and repeated whitespace in private content are collapsed before width
 measurement, so source formatting never forces a selector line break. Agent
 rows start `[Agent] 4min content`, where the age is the time since that agent's
-newest received message. Memo starts `Memo - content`; measured overflow
-continues on one aligned second row and is ellipsized there.
+newest received message. Memo starts `Memo - content`; measured overflow is
+ellipsized on that row.
 `[x] - Swipe to Select` remains a
 fixed one-line header. There is no page counter. Every rendered line reserves a
 fixed 25-pixel pointer gutter. The selected gutter includes two spaces after
@@ -73,26 +73,27 @@ hour, `hr` below one day, `day` below 30 days, and 30-day `mon` units after
 that. Future timestamps are clamped to `0sec`. Agents without a received
 message omit the age.
 
-When a normalized preview is too wide, it uses one aligned continuation row
-and ends with an ellipsis:
+When a normalized preview is too wide, it ends with an ellipsis on the same
+row:
 
 ```text
  >  [x] - Swipe to Select
-     [Agent One] latest sent command that continues
-     on the second measured row…
-     [Agent Two] another command that continues on
-     its second measured row…
+     [Agent One] latest sent command that is shortened…
+     [Agent Two] another command shortened to fit…
 ```
 
-Complete one- or two-row entries are adaptively windowed inside the eight rows
-beneath the fixed header. While the next entry fits, swipes move only `>`.
+Complete one-row entries are bounded inside the seven rows beneath the fixed
+header. The ninth physical row stays unused so the firmware's own full-height
+scrolling path cannot claim the swipe. While the next entry fits, swipes move
+only `>`.
 When it does not fit, the minimum number of complete entries moves offscreen so
 the selected entry and its following context remain visible. Selection wraps
 between `[x]` and Memo, and entries are never split across viewport boundaries.
 
 The marker is the only selection indicator, so the layout remains grayscale
 and does not rely on color. Wrapping uses G2 pixel advances instead of a fixed
-rune budget. The complete nine-row page remains bounded to 2,048 characters.
+rune budget. The complete eight-row selector remains bounded to 2,000 UTF-8
+bytes.
 
 History rebuilds the active Hub surface as a dedicated borderless 576x288 text
 page with a four-pixel firmware inset. The selector and every detail-page
@@ -101,7 +102,7 @@ the left display edge. Host layout uses one shared calibrated wrapping budget.
 Standalone glyph advances overestimate the physically observed firmware width,
 so the utility reserves an 18-pixel right-side safety budget and adds a 50-unit
 calibration. Selector content receives a separate 25-pixel pointer gutter and
-is limited to two rows independently of selection. The physical container
+is limited to one row independently of selection. The physical container
 remains 576 pixels wide and its inset content width is 568 pixels. A
 second startup/create command is not sufficient after the visualizer exists;
 the firmware retains the visualizer's compact 520x64 gesture slot, clipping
@@ -489,7 +490,8 @@ gesture-controlled ownership.
    container. Multi-page details overlay one variable-height right-edge bitmap
    with a visible 4-pixel thumb inside a valid 20-pixel container. History uses
    a borderless surface with one stable four-pixel inset; the selector uses a
-   fixed pointer gutter and adaptively windows complete one- or two-row entries.
+   fixed pointer gutter and bounds complete one-row entries while reserving one
+   physical row below the selector.
    Agent details reserve two fixed control rows and seven content rows; Memo details
    reserve one title and eight content rows.
    All use high-priority bounded writes.

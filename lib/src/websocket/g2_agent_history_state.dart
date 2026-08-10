@@ -30,7 +30,11 @@ final class G2AgentHistoryEntry {
 
 final class G2AgentHistoryState {
   static const int maximumAgents = 5;
-  static const int selectorEntryMaximumLines = 2;
+  static const int selectorEntryMaximumLines = 1;
+  // Keep the selector shorter than the physical nine-row text surface. A
+  // full-height text frame can enter the firmware's own scrolling path while
+  // Work Bench is also handling the same swipe gesture.
+  static const int selectorMaximumRenderedRows = 8;
   static const int maximumPageCharacters =
       G2TextLayout.historyMaximumPageCharacters;
   static const int standardDetailBodyLinesPerPage = 8;
@@ -656,7 +660,7 @@ final class G2AgentHistoryState {
     final start = _selectorWindowStart.clamp(1, entries.length - 1);
     final visible = <int>[];
     var usedRows = 0;
-    final rowBudget = _layout.maximumVisibleRows - 1;
+    final rowBudget = selectorMaximumRenderedRows - 1;
     for (var index = start; index < entries.length; index++) {
       final rows = _selectorEntryLineCount(index);
       if (visible.isNotEmpty && usedRows + rows > rowBudget) {
@@ -672,7 +676,7 @@ final class G2AgentHistoryState {
     if (entries.length <= 1) {
       return 1;
     }
-    final rowBudget = _layout.maximumVisibleRows - 1;
+    final rowBudget = selectorMaximumRenderedRows - 1;
     var usedRows = 0;
     var start = entries.length - 1;
     for (var index = entries.length - 1; index >= 1; index--) {

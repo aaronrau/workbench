@@ -102,4 +102,20 @@ void main() {
       throwsA(isA<FormatException>()),
     );
   });
+
+  test('rejects a selector frame that reaches the native swipe height', () {
+    expect(
+      () => G2PageRenderFrame.validate(
+        content: List<String>.filled(9, 'synthetic row').join('\n'),
+        showPageIndicator: false,
+        pageIndex: 0,
+        pageCount: 1,
+        borderWidth: 0,
+        borderColor: 5,
+        paddingLength: 4,
+        maximumTextRows: 8,
+      ),
+      throwsA(isA<FormatException>()),
+    );
+  });
 }

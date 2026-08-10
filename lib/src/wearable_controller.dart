@@ -2007,6 +2007,7 @@ final class WearableController extends ChangeNotifier
     }
     final generation = _agentHistoryGeneration;
     final isDetail = _agentHistory.mode == G2AgentHistoryMode.detail;
+    final isSelector = _agentHistory.mode == G2AgentHistoryMode.selector;
     final content = _agentHistory.render();
     final pageIndex = isDetail ? _agentHistory.detailPageIndex : 0;
     final pageCount = isDetail ? _agentHistory.detailPageCount : 1;
@@ -2031,6 +2032,9 @@ final class WearableController extends ChangeNotifier
           borderColor: G2Protocol.expandedTextBorderColor,
           paddingLength: G2Protocol.expandedTextPaddingLength,
           allowPageReplacement: allowPageReplacement,
+          maximumTextRows: isSelector
+              ? G2AgentHistoryState.selectorMaximumRenderedRows
+              : null,
         );
       },
       onError: (_) {

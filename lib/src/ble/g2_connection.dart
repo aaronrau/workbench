@@ -600,6 +600,7 @@ final class G2Connection {
     int borderColor = G2Protocol.fullPageTextBorderColor,
     int paddingLength = G2Protocol.fullPageTextPaddingLength,
     bool allowPageReplacement = true,
+    int? maximumTextRows,
   }) async {
     final nextFrame = G2PageRenderFrame.validate(
       content: content,
@@ -609,6 +610,7 @@ final class G2Connection {
       borderWidth: borderWidth,
       borderColor: borderColor,
       paddingLength: paddingLength,
+      maximumTextRows: maximumTextRows,
     );
     _requireConnected();
     if (_memoDisplayActive) {
