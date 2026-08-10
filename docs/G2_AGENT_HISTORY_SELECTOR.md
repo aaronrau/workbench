@@ -119,7 +119,7 @@ newest-first and listed using their local 24-hour timestamp. Agent and
 direction labels are omitted from the rows:
 
 ```text
-   [Agent One · Ready] - Tap to listen
+   [Agent One] - Swipe to Navigate
  >  • Listen Mode - Tap to start
 [14:33] <correlated completion>
 [14:32] <first correlated progress update>
@@ -132,8 +132,8 @@ row. Every agent detail reserves two fixed rows and seven message or transcript
 rows. Opening it does not enable speech targeting. A second tap changes the
 Listen row's active
 arrow from `>` to `<` without shifting the title; only then does speech directly
-target the agent named once in the title. The title becomes
-`[Agent One · Listening] - Tap to send`, and the selected row becomes
+target the agent named once in the title. The title remains
+`[Agent One] - Swipe to Navigate`, and the selected row becomes
 ` <  • Send transcript - Tap`. Swipe up stops Listen Mode and moves the active
 `<` control to the agent title. Tapping that title returns to the selector;
 swipe down returns focus to Listen Mode. During an active session, swipe down
@@ -142,17 +142,14 @@ one page. A swipe-up
 cancel clears the transient speech overlay and restores the exact history page
 that was visible when Listen Mode started. VAD endpoints do not stop the manual
 session: each endpoint queues an audio chunk for FIFO STT, and every completed
-chunk refreshes the body with only the accumulated transcript text. Lifecycle
-and preview state appear once beside the agent name together with the available
-tap action; its dot blinks while STT is pending. Later speech keeps appending to
-the same display owner. Preview Correction is always enabled and has no
+chunk refreshes the body with only the accumulated transcript text. Later
+speech keeps appending to the same display owner. Preview Correction is always
+enabled and has no
 selectable control. Every appended STT result automatically refreshes one
-serialized correction preview, while the title reports listening, queued,
-correcting, update-pending, or ready plus `Tap to send`. Only the next tap on
-Send stops capture, waits for the final VAD flush and all queued STT, then
-changes the title to `[Agent One · Sending] - Tap to dismiss`. Send reuses the
-current preview without another LLM call. The detail returns to newest-first
-durable history after acknowledgement.
+serialized correction preview. Only the next tap on Send stops capture, waits
+for the final VAD flush and all queued STT, then changes the second row to
+`Dismiss - Tap`. Send reuses the current preview without another LLM call. The
+detail returns to newest-first durable history after acknowledgement.
 Every successfully indexed matching-agent response replaces the open detail's
 durable body and rebuilds page 1 immediately. A nonmatching response is saved
 without interrupting the current agent. Active listening or sending controls
@@ -168,7 +165,7 @@ and the compact age use the newest received direction only. Detail history
 keeps every indexed durable message and never truncates to that preview bound.
 
 Every detail page begins with `[ Memo · Tap to dismiss ]` or the two agent rows
-`   [<name> · Ready] - Tap to listen` and
+`   [<name>] - Swipe to Navigate` and
 ` >  • Listen Mode - Tap to start`. Conversation rows use
 `[HH:mm] Message`, strip
 an identical stored agent prefix first, and never repeat the agent name in the
@@ -533,9 +530,9 @@ gesture-controlled ownership.
   a second tap enables the target, and an upward swipe exits before any later
   speech can inherit the target, clears its transient overlay, restores the
   prior pageable history body, and focuses the agent back control;
-- inactive agent details render `   [Name · Ready] - Tap to listen` and
-  ` >  • Listen Mode - Tap to start`; active Listen Mode renders its process
-  and action beside the name plus ` <  • Send transcript - Tap`. There is no
+- agent details render the fixed title `   [Name] - Swipe to Navigate` and
+  initially show ` >  • Listen Mode - Tap to start`; active Listen Mode changes
+  only the second row to ` <  • Send transcript - Tap`. There is no
   Preview Correction row or toggle. The agent appears only
   in the title and is immutably snapshotted for the manual session. Transcript
   states never replace another newer session;
@@ -543,12 +540,11 @@ gesture-controlled ownership.
   endpoint; every completed STT chunk appends to the visible accumulator, later
   VAD speech remains in the same manual session, and no endpoint invokes
   delivery;
-- the title-status dot blinks while any registered audio chunk is awaiting STT,
-  then each result appends before the status clears; the body contains only the
-  raw or corrected transcript and never repeats `Listening`;
+- transcription state remains internal while each result appends; the body
+  contains only the raw or corrected transcript and never repeats `Listening`;
 - automatic preview correction queues at most one correction at a time,
   coalesces a newer STT revision, renders a corrected prefix plus any raw tail,
-  and reports queued/correcting/update-pending/ready state in the title;
+  and keeps those states out of the fixed navigation title;
 - explicit Listen Mode selection makes non-`Hey` live speech
   correction-eligible, while all other ambient speech remains wake-gated;
 - `ladies changes` is corrected to context-supported `latest changes` before
@@ -676,20 +672,17 @@ Correction because the harness cannot actuate the wearable controls.
   title without requiring `Hey` or the agent name. Swipe up stops Listen Mode
   and focuses `< Name`; tap returns to the selector, while swipe down returns
   to Listen and subsequent down swipes page.
-- Inactive agent details show `   [Name · Ready] - Tap to listen` and
-  ` >  • Listen Mode - Tap to start`. Active Listen Mode shows status once in
-  `[Name · Listening] - Tap to send`, plus
-  ` <  • Send transcript - Tap` without a Preview Correction row. Swipe down
-  pages the transcript directly. A tap on Send exits the mode and shows
-  `[Name · Sending] - Tap to dismiss` with
-  ` <  • Dismiss - Tap`, followed by acknowledged `Sent` or fallback `Saved`
-  beside the name. Stopping restores the
+- Agent details show the fixed title `   [Name] - Swipe to Navigate` and
+  initially show ` >  • Listen Mode - Tap to start`. Active Listen Mode changes
+  only the second row to ` <  • Send transcript - Tap` without a Preview
+  Correction row. Swipe down pages the transcript directly. A tap on Send exits
+  the mode and changes only that row to ` <  • Dismiss - Tap`. Stopping restores the
   exact prior history page so swipe paging resumes immediately.
 - In detail mode, one uninterrupted second with VAD inactive finalizes one
   audio chunk, not the manual session. VAD activity during that second resets
   the chunk endpoint. Each completed STT result appends to and redraws only the
   transcript body; later speech continues the same session without a send. The
-  title-status dot blinks while STT is pending. Every append refreshes one
+  title remains fixed while STT is pending. Every append refreshes one
   serialized automatic preview; Send waits for and reuses the current result
   without another correction request.
 - `[x]` renders on one line; each agent and Memo uses one first row and at most

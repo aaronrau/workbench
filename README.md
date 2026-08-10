@@ -176,7 +176,7 @@ expose for a true locked Hub mode.
   received list as the phone agent tab, shown as `[HH:mm] Message`. Saving the
   socket configuration does not clear this history, and startup reindexes its
   durable message files if the performance index is missing. Agent details
-  open with `   [Flux · Ready] - Tap to listen` and
+  open with `   [Flux] - Swipe to Navigate` and
   ` >  • Listen Mode - Tap to start`; opening the agent
   does not target audio. A second tap changes the Listen arrow from `>` to `<`
   and enables targeting. Swipe up stops Listen Mode and moves the active `<`
@@ -198,20 +198,18 @@ expose for a true locked Hub mode.
   activates Listen Mode snapshots that configured agent and starts a manual
   transcript session without requiring a spoken `Hey` or agent name. Otherwise
   audio follows the ordinary transcription and wake-word route. The title
-  changes to `[Flux · Listening] - Tap to send`, while the selected control
-  becomes ` <  • Send transcript - Tap`. Preview Correction is always enabled
+  remains `[Flux] - Swipe to Navigate`, while the selected control becomes
+  ` <  • Send transcript - Tap`. Preview Correction is always enabled
   and has no selectable row or toggle. Each full second
   with VAD inactive closes only an audio chunk and queues it in the persistent STT FIFO;
   it never exits Listen Mode or sends. As STT chunks finish, only their
-  accumulated transcript text appears in the body. The single status beside
-  the agent name changes state and blinks its dot while transcription is
-  pending. Later speech continues appending regardless of earlier VAD
+  accumulated transcript text appears in the body. Later speech continues
+  appending regardless of earlier VAD
   endpoints. Every completed STT append automatically refreshes one serialized
-  correction preview. The title reports the current phase and available tap
+  correction preview. The second row continues to show the available tap
   action. Sending waits for and reuses the current preview, so it never invokes
-  Gemma a second time. The detail shows
-  `[Flux · Sending] - Tap to dismiss` and
-  ` <  • Dismiss - Tap` during that work;
+  Gemma a second time. During that work the fixed title remains unchanged and
+  the action row becomes ` <  • Dismiss - Tap`;
   tapping while sending dismisses the detail while delivery continues. New speech after
   Listen Mode exit or dismissal is no longer targeted to the previously
   selected agent. Selected-agent correction enters ahead of pending normal

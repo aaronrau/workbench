@@ -187,7 +187,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Ready] - Tap to listen\n'
+          '   [Pike] - Swipe to Navigate\n'
           ' >  • Listen Mode - Tap to start\n',
         ),
       );
@@ -198,7 +198,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Listening] - Tap to stop\n'
+          '   [Pike] - Swipe to Navigate\n'
           ' <  • Listen Mode - Tap to stop\n',
         ),
       );
@@ -207,7 +207,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Listening] - Tap to send\n'
+          '   [Pike] - Swipe to Navigate\n'
           ' <  • Send transcript - Tap\n',
         ),
       );
@@ -239,7 +239,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Sending] - Tap to dismiss\n'
+          '   [Pike] - Swipe to Navigate\n'
           ' <  • Dismiss - Tap\n',
         ),
       );
@@ -266,7 +266,7 @@ void main() {
         ),
         isTrue,
       );
-      expect(state.render(), contains('[Pike · Sent]'));
+      expect(state.render(), contains('[Pike] - Swipe to Navigate'));
       expect(state.render(), contains(' >  • Listen Mode - Tap to start'));
       expect(state.render(), contains('No conversation yet'));
     },
@@ -298,7 +298,7 @@ void main() {
 
     expect(state.detailSpeechState, G2AgentDetailSpeechState.sending);
     expect(state.detailPageIndex, 0);
-    expect(state.render(), contains('[Pike · Sending]'));
+    expect(state.render(), contains('[Pike] - Swipe to Navigate'));
     expect(state.render(), contains(' <  • Dismiss - Tap'));
     expect(state.render(), isNot(contains('Sending…')));
     expect(state.selectPreviousDetailPage(), isFalse);
@@ -323,7 +323,7 @@ void main() {
       ),
       isTrue,
     );
-    expect(state.render(), contains('[Pike · Sent]'));
+    expect(state.render(), contains('[Pike] - Swipe to Navigate'));
     expect(state.render(), contains(' >  • Listen Mode - Tap to start'));
     expect(state.detailPageIndex, 0);
     expect(state.render(), contains('retained delivery history row 39'));
@@ -349,7 +349,7 @@ void main() {
       ),
       isFalse,
     );
-    expect(state.render(), contains('[Pike · Listening]'));
+    expect(state.render(), contains('[Pike] - Swipe to Navigate'));
     expect(state.render(), isNot(contains('Listening…')));
   });
 
@@ -384,7 +384,7 @@ void main() {
       expect(state.detailPageIndex, historyPageIndex);
       expect(state.beginTargetedSpeech('segment-1'), isTrue);
       expect(state.detailPageIndex, 0);
-      expect(state.render(), contains('[Pike · Listening]'));
+      expect(state.render(), contains('[Pike] - Swipe to Navigate'));
       expect(state.render(), isNot(contains('Listening…')));
 
       expect(state.exitDetailListenMode(), isTrue);
@@ -398,7 +398,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Ready] - Tap to listen\n'
+          '   [Pike] - Swipe to Navigate\n'
           ' >  • Listen Mode - Tap to start\n',
         ),
       );
@@ -459,7 +459,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Flux · Ready] - Tap to listen\n'
+        '   [Flux] - Swipe to Navigate\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -468,7 +468,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Flux · Listening] - Tap to stop\n'
+        '   [Flux] - Swipe to Navigate\n'
         ' <  • Listen Mode - Tap to stop\n',
       ),
     );
@@ -478,7 +478,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '< [Flux · History] - Tap for agents\n'
+        '< [Flux] - Swipe to Navigate\n'
         '     • Listen Mode - Tap to start\n',
       ),
     );
@@ -489,7 +489,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Flux · Ready] - Tap to listen\n'
+        '   [Flux] - Swipe to Navigate\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -501,7 +501,7 @@ void main() {
     expect(state.returnToSelector(), isFalse);
   });
 
-  test('active listening renders process and tap action in the title', () {
+  test('agent detail keeps navigation in the title and action in row two', () {
     final state = G2AgentHistoryState()
       ..open(
         agents: const <String>['Flux'],
@@ -514,14 +514,14 @@ void main() {
 
     expect(state.detailBodyLinesPerPage, 7);
     final initial = state.render();
-    expect(initial, startsWith('   [Flux · Listening] - Tap to send\n'));
+    expect(initial, startsWith('   [Flux] - Swipe to Navigate\n'));
     expect(initial, contains(' <  • Send transcript - Tap'));
     expect(initial, isNot(contains('Preview Correction')));
     expect(
       state.detailCorrectionPreviewState,
       SelectedAgentCorrectionPreviewState.waiting,
     );
-    expect(RegExp('Listening').allMatches(initial), hasLength(1));
+    expect(initial, isNot(contains('Listening')));
     expect(initial, isNot(contains('Status:')));
     expect(initial, isNot(contains('Listening…')));
     expect(state.render().split('\n'), hasLength(9));
@@ -536,7 +536,7 @@ void main() {
       isTrue,
     );
     final queued = state.render();
-    expect(queued, startsWith('   [Flux · Correction queued] - Tap to send\n'));
+    expect(queued, startsWith('   [Flux] - Swipe to Navigate\n'));
     expect(queued, isNot(contains('Preview Correction')));
     expect(queued, isNot(contains('Status:')));
 
@@ -548,7 +548,7 @@ void main() {
       ),
       isTrue,
     );
-    expect(state.render(), contains('[Flux · • Transcribing] - Tap to send'));
+    expect(state.render(), startsWith('   [Flux] - Swipe to Navigate\n'));
     expect(
       state
           .render()
@@ -568,12 +568,14 @@ void main() {
       ),
       isTrue,
     );
-    expect(state.render(), contains('Transcribing]'));
+    expect(state.detailTranscriptionPending, isTrue);
+    expect(state.detailTranscriptionIndicatorVisible, isFalse);
+    expect(state.render(), isNot(contains('Transcribing')));
 
     expect(
       state.render(),
       startsWith(
-        '   [Flux ·   Transcribing] - Tap to send\n'
+        '   [Flux] - Swipe to Navigate\n'
         ' <  • Send transcript - Tap\n',
       ),
     );
@@ -630,7 +632,7 @@ void main() {
     );
     expect(state.detailControl, G2AgentDetailControl.back);
     expect(state.detailPageIndex, 0);
-    expect(state.render(), startsWith('< [Flux · History] - Tap for agents\n'));
+    expect(state.render(), startsWith('< [Flux] - Swipe to Navigate\n'));
     expect(state.render(), contains('newest synthetic response'));
     expect(
       state.render().indexOf('newest synthetic response'),
@@ -666,7 +668,7 @@ void main() {
     );
     expect(state.detailListenModeSelected, isTrue);
     expect(state.activeDetailSpeechSegmentId, 'active-flux-segment');
-    expect(state.render(), contains('[Flux · Listening]'));
+    expect(state.render(), contains('[Flux] - Swipe to Navigate'));
     expect(state.render(), isNot(contains('Listening…')));
 
     expect(state.exitDetailListenMode(), isTrue);
@@ -940,7 +942,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Pike · Ready] - Tap to listen\n'
+        '   [Pike] - Swipe to Navigate\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -948,7 +950,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Pike · Ready] - Tap to listen\n'
+        '   [Pike] - Swipe to Navigate\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );
@@ -982,7 +984,7 @@ void main() {
       expect(
         state.render(),
         startsWith(
-          '   [Pike · Listening] - Tap to stop\n'
+          '   [Pike] - Swipe to Navigate\n'
           ' <  • Listen Mode - Tap to stop\n',
         ),
       );
@@ -1022,7 +1024,7 @@ void main() {
     expect(
       state.render(),
       contains(
-        '   [Pike · Ready] - Tap to listen\n'
+        '   [Pike] - Swipe to Navigate\n'
         ' >  • Listen Mode - Tap to start\n${stamp(sentAt)} '
         'report synthetic progress\n${stamp(sentAt)} First result\n'
         'Second result\nThird result\n\n'
@@ -1059,7 +1061,7 @@ void main() {
     expect(
       state.render(),
       startsWith(
-        '   [Flux · Ready] - Tap to listen\n'
+        '   [Flux] - Swipe to Navigate\n'
         ' >  • Listen Mode - Tap to start\n',
       ),
     );

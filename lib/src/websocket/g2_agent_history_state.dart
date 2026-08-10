@@ -750,20 +750,13 @@ final class G2AgentHistoryState {
     final titlePrefix = cancel || detailControl == G2AgentDetailControl.back
         ? '< ['
         : '   [';
-    final titleStatus = cancel ? 'Waiting' : _agentTitleStatus();
-    final titleAction = cancel ? 'Tap to cancel' : _agentTitleAction();
-    final titleSuffix = ' · $titleStatus] - $titleAction';
-    final widestTitleSuffixWidth = _layout.textWidth(
-      ' · Correction queued] - Tap to send',
-    );
-    final titleSuffixWidth = _layout.textWidth(titleSuffix);
-    final reservedTitleSuffixWidth = titleSuffixWidth > widestTitleSuffixWidth
-        ? titleSuffixWidth
-        : widestTitleSuffixWidth;
+    final titleSuffix = cancel
+        ? ' · Waiting] - Tap to cancel'
+        : '] - Swipe to Navigate';
     final titleWidth =
         _layout.wrappingWidthPixels -
         _layout.textWidth(titlePrefix) -
-        reservedTitleSuffixWidth;
+        _layout.textWidth(titleSuffix);
     final name = _oneLine(
       detailTitle ?? 'Unknown',
     ).replaceFirst(RegExp(r':+$'), '');
@@ -802,50 +795,6 @@ final class G2AgentHistoryState {
       (false, _) => 'Listen Mode - Tap to start',
     };
     return '$prefix• $label';
-  }
-
-  String _agentTitleStatus() {
-    if (detailControl == G2AgentDetailControl.back) {
-      return 'History';
-    }
-    if (detailSpeechState == G2AgentDetailSpeechState.sending) {
-      return 'Sending';
-    }
-    if (detailSpeechState == G2AgentDetailSpeechState.sent) {
-      return 'Sent';
-    }
-    if (detailSpeechState == G2AgentDetailSpeechState.saved) {
-      return 'Saved';
-    }
-    if (!detailListenModeSelected) {
-      return 'Ready';
-    }
-    final dot = detailTranscriptionIndicatorVisible ? '•' : ' ';
-    if (detailTranscriptionPending) {
-      return '$dot Transcribing';
-    }
-    return switch (detailCorrectionPreviewState) {
-      SelectedAgentCorrectionPreviewState.off => 'Listening',
-      SelectedAgentCorrectionPreviewState.waiting => 'Listening',
-      SelectedAgentCorrectionPreviewState.queued => 'Correction queued',
-      SelectedAgentCorrectionPreviewState.correcting => 'Correcting',
-      SelectedAgentCorrectionPreviewState.updatePending => 'Update pending',
-      SelectedAgentCorrectionPreviewState.current => 'Preview ready',
-      SelectedAgentCorrectionPreviewState.failed => 'Raw ready',
-    };
-  }
-
-  String _agentTitleAction() {
-    if (detailControl == G2AgentDetailControl.back) {
-      return 'Tap for agents';
-    }
-    return switch (detailSpeechState) {
-      G2AgentDetailSpeechState.sending => 'Tap to dismiss',
-      G2AgentDetailSpeechState.listening => 'Tap to send',
-      G2AgentDetailSpeechState.sent ||
-      G2AgentDetailSpeechState.saved => 'Tap to listen',
-      null => detailListenModeSelected ? 'Tap to stop' : 'Tap to listen',
-    };
   }
 
   List<List<String>> _detailPages() {
