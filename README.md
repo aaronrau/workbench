@@ -194,7 +194,10 @@ expose for a true locked Hub mode.
   details retain eight, and all show only a proportional
   right-edge scroll thumb. Detail pages are pre-paginated, keep a fixed
   scrollbar image container, and use serialized in-place updates while
-  scrolling instead of rebuilding the page on every swipe. The tap that
+  scrolling instead of rebuilding the page on every swipe. A render-safety
+  guard validates the complete UTF-8 frame, suppresses an identical frame,
+  and defers any page replacement requested during a swipe until the settled
+  recovery path can recreate it. The tap that
   activates Listen Mode snapshots that configured agent and starts a manual
   transcript session without requiring a spoken `Hey` or agent name. Otherwise
   audio follows the ordinary transcription and wake-word route. The title

@@ -8,6 +8,7 @@ import '../audio/g2_audio_analysis_worker.dart';
 import '../protocol/g2_protocol.dart';
 import '../util/hex.dart';
 import 'ble_models.dart';
+import 'g2_page_render_safety.dart';
 
 typedef G2GestureConsumer = bool Function(G2GestureEvent event);
 
@@ -598,12 +599,46 @@ final class G2Connection {
     int borderWidth = G2Protocol.fullPageTextBorderWidth,
     int borderColor = G2Protocol.fullPageTextBorderColor,
     int paddingLength = G2Protocol.fullPageTextPaddingLength,
+    bool allowPageReplacement = true,
   }) async {
+    final nextFrame = G2PageRenderFrame.validate(
+      content: content,
+      showPageIndicator: showPageIndicator,
+      pageIndex: pageIndex,
+      pageCount: pageCount,
+      borderWidth: borderWidth,
+      borderColor: borderColor,
+      paddingLength: paddingLength,
+    );
     _requireConnected();
     if (_memoDisplayActive) {
       _log(
         'G2 TX',
         'Full-page text suppressed while the private memo page owns the display',
+      );
+      return;
+    }
+    final currentFrame = _fullPageTextActive
+        ? G2PageRenderFrame.validate(
+            content: _lastPageContent,
+            showPageIndicator: _fullPageTextIndicatorActive,
+            pageIndex: _fullPageTextPageIndex,
+            pageCount: _fullPageTextPageCount,
+            borderWidth: _fullPageTextBorderWidth,
+            borderColor: _fullPageTextBorderColor,
+            paddingLength: _fullPageTextPaddingLength,
+          )
+        : null;
+    final renderAction = G2PageRenderSafety.decide(
+      current: currentFrame,
+      next: nextFrame,
+      pageCreated: _pageCreated,
+      allowPageReplacement: allowPageReplacement,
+    );
+    if (renderAction == G2PageRenderAction.skip) {
+      _log(
+        'G2 TX',
+        'Duplicate full-page text render suppressed after safety check',
       );
       return;
     }
@@ -617,35 +652,38 @@ final class G2Connection {
     _visibleGestureTimer?.cancel();
     _visibleGestureTimer = null;
     _visibleGesturePageLabel = null;
+    _fullPageTextPageCount = nextFrame.pageCount;
+    _fullPageTextPageIndex = nextFrame.pageIndex;
+    _fullPageTextBorderWidth = nextFrame.borderWidth;
+    _fullPageTextBorderColor = nextFrame.borderColor;
+    _fullPageTextPaddingLength = nextFrame.paddingLength;
+    _fullPageTextIndicatorActive = nextFrame.showPageIndicator;
+    if (renderAction == G2PageRenderAction.deferReplacement) {
+      // A gesture may arrive while firmware is transitioning the current page
+      // out of the foreground. Replacing the page in that interval can wedge
+      // the glasses or drop the G2 link. Retain only the validated newest
+      // frame and let the settled page-recovery path recreate it.
+      _fullPageTextActive = true;
+      _lastPageContent = content;
+      _pageCreated = false;
+      if (keepPageActive && !_nativeMenuOpen) {
+        _schedulePageRestore('deferred gesture page replacement');
+      }
+      _log(
+        'G2 TX',
+        'Full-page replacement deferred after safety check '
+            '(${nextFrame.utf8Bytes} UTF-8 bytes)',
+      );
+      return;
+    }
     _controlledPageRendersInFlight++;
     var completed = false;
     try {
-      final wasFullPageTextActive = _fullPageTextActive;
-      final previousIndicatorActive = _fullPageTextIndicatorActive;
-      final previousBorderWidth = _fullPageTextBorderWidth;
-      final previousBorderColor = _fullPageTextBorderColor;
-      final previousPaddingLength = _fullPageTextPaddingLength;
-      _fullPageTextPageCount = pageCount < 1 ? 1 : pageCount;
-      _fullPageTextPageIndex = pageIndex.clamp(0, _fullPageTextPageCount - 1);
-      _fullPageTextBorderWidth = borderWidth.clamp(0, 32);
-      _fullPageTextBorderColor = borderColor.clamp(0, 15);
-      _fullPageTextPaddingLength = paddingLength.clamp(0, 32);
-      // A single page does not scroll, and its 288 px full-height thumb would
-      // exceed the G2 image-container maximum height of 144 px.
-      _fullPageTextIndicatorActive =
-          showPageIndicator && _fullPageTextPageCount > 1;
-      final canUpgradeInPlace =
-          wasFullPageTextActive &&
-          _pageCreated &&
-          previousIndicatorActive == _fullPageTextIndicatorActive &&
-          previousBorderWidth == _fullPageTextBorderWidth &&
-          previousBorderColor == _fullPageTextBorderColor &&
-          previousPaddingLength == _fullPageTextPaddingLength;
-      if (!wasFullPageTextActive || !_pageCreated) {
+      if (renderAction == G2PageRenderAction.replacePage) {
         _fullPageTextActive = true;
         await _createFullPageText(content);
         completed = _pageCreated;
-      } else if (canUpgradeInPlace) {
+      } else {
         // Detail pages are pre-paginated on the phone. Keep the page and its
         // event-capture/image containers stable, then upgrade only the bounded
         // text and thumb bitmap. Rebuilding here can race the firmware's page
@@ -659,28 +697,6 @@ final class G2Connection {
         _lastPageContent = content;
         if (await _sendFullPageTextIndicator(settleAfterRebuild: false)) {
           _finishControlledPageRebuild('full-page text upgraded');
-          completed = true;
-        }
-      } else {
-        // Rebuild only when the page structure changes, such as adding or
-        // removing the detail-thumb image container.
-        await _sendPayload(
-          G2Ids.serviceEvenHub,
-          _protocol.rebuildTextPage(
-            content,
-            showPageIndicator: _fullPageTextIndicatorActive,
-            pageIndex: _fullPageTextPageIndex,
-            pageCount: _fullPageTextPageCount,
-            borderWidth: _fullPageTextBorderWidth,
-            borderColor: _fullPageTextBorderColor,
-            paddingLength: _fullPageTextPaddingLength,
-          ),
-          reserveFlag: true,
-          priority: AsyncWritePriority.high,
-        );
-        _lastPageContent = content;
-        if (await _sendFullPageTextIndicator(settleAfterRebuild: true)) {
-          _finishControlledPageRebuild('full-page text updated');
           completed = true;
         }
       }

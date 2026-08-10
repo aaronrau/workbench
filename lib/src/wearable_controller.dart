@@ -1310,10 +1310,10 @@ final class WearableController extends ChangeNotifier
         switch (resolveAgentHistorySelectionMove(event.type)) {
           case AgentHistorySelectionMove.previous:
             _agentHistory.selectPrevious();
-            _queueAgentHistoryDisplay();
+            _queueAgentHistoryDisplay(allowPageReplacement: false);
           case AgentHistorySelectionMove.next:
             _agentHistory.selectNext();
-            _queueAgentHistoryDisplay();
+            _queueAgentHistoryDisplay(allowPageReplacement: false);
           case AgentHistorySelectionMove.none:
             break;
         }
@@ -1344,7 +1344,7 @@ final class WearableController extends ChangeNotifier
                   '${_agentHistory.detailPageCount}',
             );
           }
-          _queueAgentHistoryDisplay();
+          _queueAgentHistoryDisplay(allowPageReplacement: false);
         }
       }
       return true;
@@ -1983,8 +1983,8 @@ final class WearableController extends ChangeNotifier
     );
   }
 
-  void _queueAgentHistoryDisplay() {
-    unawaited(_showAgentHistory());
+  void _queueAgentHistoryDisplay({bool allowPageReplacement = true}) {
+    unawaited(_showAgentHistory(allowPageReplacement: allowPageReplacement));
   }
 
   void _syncSelectedAgentVadMode() {
@@ -2001,7 +2001,7 @@ final class WearableController extends ChangeNotifier
     await g2.sendTestDetailThumb();
   }
 
-  Future<void> _showAgentHistory() async {
+  Future<void> _showAgentHistory({bool allowPageReplacement = true}) async {
     if (_disposed || !_agentHistory.isOpen || !g2.isConnected) {
       return;
     }
@@ -2030,6 +2030,7 @@ final class WearableController extends ChangeNotifier
           borderWidth: G2Protocol.expandedTextBorderWidth,
           borderColor: G2Protocol.expandedTextBorderColor,
           paddingLength: G2Protocol.expandedTextPaddingLength,
+          allowPageReplacement: allowPageReplacement,
         );
       },
       onError: (_) {

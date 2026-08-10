@@ -590,6 +590,10 @@ gesture-controlled ownership.
   one thumb upload while that signature is queued, active, or already shown;
 - rapid swipes retain only the latest pending page while one serialized BLE
   text/thumb update is active, instead of replaying every intermediate page;
+- every full-page frame passes the render-safety guard before a BLE write;
+  identical frames are suppressed, swipe changes may update only an existing
+  compatible page in place, and a required replacement is deferred to the
+  settled page-recovery path;
 - dismiss clears private text before restoring the pulse;
 - BLE timeout cannot stall later selector writes;
 - disconnect/reconnect rerenders no more than one bounded private page.
