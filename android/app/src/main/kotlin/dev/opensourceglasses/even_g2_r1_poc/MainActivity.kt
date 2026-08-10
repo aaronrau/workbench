@@ -6,6 +6,7 @@ import android.app.ApplicationExitInfo
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
@@ -33,6 +34,11 @@ class MainActivity : FlutterActivity() {
             "dev.opensourceglasses/workbench_storage"
         private const val GEMMA_CHANNEL =
             "dev.opensourceglasses/workbench_gemma"
+        private const val DEBUG_GESTURE_CHANNEL =
+            "dev.opensourceglasses/workbench_debug_gesture"
+        private const val DEBUG_GESTURE_ACTION =
+            "dev.opensourceglasses.even_g2_r1_poc.SIMULATE_R1_GESTURE"
+        private const val DEBUG_GESTURE_TYPE = "gesture_type"
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
@@ -56,10 +62,15 @@ class MainActivity : FlutterActivity() {
     private var sharedAudioPlayer: MediaPlayer? = null
     private var sharedAudioFileName: String? = null
     private lateinit var gemmaBridge: GemmaCorrectionBridge
+    private lateinit var debugGestureChannel: MethodChannel
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         reportPreviousProcessExits()
+        debugGestureChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            DEBUG_GESTURE_CHANNEL,
+        )
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             BACKGROUND_CHANNEL,
@@ -268,6 +279,43 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             GEMMA_CHANNEL,
         ).setMethodCallHandler(gemmaBridge::handle)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        dispatchDebugGesture(intent)
+    }
+
+    private fun dispatchDebugGesture(intent: Intent) {
+        val isDebuggable =
+            applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        if (!isDebuggable || intent.action != DEBUG_GESTURE_ACTION) {
+            return
+        }
+        val type = intent.getIntExtra(DEBUG_GESTURE_TYPE, -1)
+        if (type !in 0..3) {
+            Log.e(
+                "WorkBench",
+                "[WorkBench][DebugGesture] state=rejected reason=invalid_type",
+            )
+            return
+        }
+        if (!::debugGestureChannel.isInitialized) {
+            Log.e(
+                "WorkBench",
+                "[WorkBench][DebugGesture] state=rejected reason=channel_unavailable",
+            )
+            return
+        }
+        debugGestureChannel.invokeMethod(
+            "simulateR1Gesture",
+            mapOf("type" to type),
+        )
+        Log.i(
+            "WorkBench",
+            "[WorkBench][DebugGesture] state=dispatched type=$type",
+        )
     }
 
     private fun reportPreviousProcessExits() {

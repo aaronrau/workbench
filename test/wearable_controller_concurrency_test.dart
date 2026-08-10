@@ -172,6 +172,18 @@ void main() {
     }
   });
 
+  test('debug key presses map to typed R1 controller events', () {
+    final tap = simulatedR1GestureEvent(0);
+    final swipe = simulatedR1GestureEvent(2);
+
+    expect(tap.name, 'single_tap');
+    expect(tap.source, 2);
+    expect(tap.isFromR1, isTrue);
+    expect(swipe.name, 'swipe_down');
+    expect(swipe.source, 2);
+    expect(() => simulatedR1GestureEvent(4), throwsArgumentError);
+  });
+
   test('single tap commits a queued transcript before opening history', () {
     expect(
       resolveQueuedTranscriptTapAction(

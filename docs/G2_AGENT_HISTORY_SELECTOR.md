@@ -508,9 +508,9 @@ gesture-controlled ownership.
 - swipe up/down wraps across `[x]`, five agent options, and the final Memo
   option;
 - every agent starts one `[Agent] content` row, collapses carriage returns,
-  newlines, and repeated whitespace before wrapping, uses at most one aligned
-  continuation row, ellipsizes further pixel overflow, and leaves each selector
-  page under 2,048 characters;
+  newlines, and repeated whitespace before measurement, ellipsizes pixel
+  overflow on that row, and leaves the selector below the nine-row native
+  scrolling height and 2,000 UTF-8 bytes;
 - selected and unselected pointer gutters have equal measured width, including
   two spaces after `>`, so cursor movement never shifts row content;
 - selector and detail rendering share the same calibrated width and row-layout
@@ -611,9 +611,9 @@ representative phone:
 3. tap and verify `[x]` is selected first;
 4. verify the newest replying agent is first, each replying row shows one
    compact elapsed unit, never-replied agents follow without an age, then swipe
-   through every agent and the final Memo option while checking the optional
-   measured continuation row, second-row ellipsis, stable horizontal alignment,
-   and the borderless surface;
+   through every agent and the final Memo option while checking one-line
+   ellipsis, stable horizontal alignment, the unused ninth physical row, and
+   the borderless surface;
 5. select an agent with more than five exchanges and multiple response updates,
    verify the G2 list exactly matches the phone agent tab in newest-message
    order, with every item shown as `[HH:mm] Message`, and verify that the
@@ -639,6 +639,24 @@ representative phone:
 Raw screenshots, recordings, device logs, and protocol traces remain outside
 the repository and are deleted or preserved only under the repository's
 explicit privacy rules.
+
+### Debug gesture simulation
+
+A debug APK accepts an explicit ADB intent at the same `WearableController`
+boundary used by a decoded R1 event. Gesture types are `0` single tap, `1`
+swipe up, `2` swipe down, and `3` double tap:
+
+```sh
+adb -s <android-serial> shell am start \
+  -n dev.opensourceglasses.even_g2_r1_poc/.MainActivity \
+  -a dev.opensourceglasses.even_g2_r1_poc.SIMULATE_R1_GESTURE \
+  --ei gesture_type 2
+```
+
+The hook validates the action and type, reports only gesture metadata, and is
+disabled in non-debuggable builds. It exercises controller state, serialized
+rendering, and live G2 writes. It does not qualify the physical R1-to-G2 radio
+or firmware forwarding path, which remains a separate manual check.
 
 ### Validation performed
 

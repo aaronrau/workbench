@@ -56,6 +56,18 @@ enum AgentDetailTranscriptTapAction {
   dismiss,
 }
 
+@visibleForTesting
+G2GestureEvent simulatedR1GestureEvent(int type) {
+  final name = switch (type) {
+    0 => 'single_tap',
+    1 => 'swipe_up',
+    2 => 'swipe_down',
+    3 => 'double_tap',
+    _ => throw ArgumentError.value(type, 'type', 'must be between 0 and 3'),
+  };
+  return G2GestureEvent(type: type, source: 2, name: name);
+}
+
 final class _SelectedAgentSpeechRoute {
   const _SelectedAgentSpeechRoute({required this.agent, required this.source});
 
@@ -359,6 +371,17 @@ final class WearableController extends ChangeNotifier
           addLog('Glasses status', message, isError: isError),
     );
     r1 = R1Connection(ble: _ble, log: addLog, onChanged: _connectionChanged);
+  }
+
+  bool simulateR1GestureForDebug(int type) {
+    final event = simulatedR1GestureEvent(type);
+    final consumed = _handleG2Gesture(event);
+    addLog(
+      'R1 gesture simulation',
+      '[WorkBench][DebugGesture] state=handled type=$type name=${event.name} '
+          'consumed=$consumed history=${_agentHistory.mode.name}',
+    );
+    return consumed;
   }
 
   final FlutterReactiveBle _ble;
