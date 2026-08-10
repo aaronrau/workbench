@@ -226,9 +226,13 @@ void main() {
       }
       if (fixture == 1) {
         final rows = windows.first.split('\n');
-        expect(rows[1], contains('[Pike] 0sec'));
+        expect(rows[1], contains('[Pike] A deliberately long'));
         expect(rows[2], startsWith('     '));
         expect(rows[2], endsWith('…'));
+        expect(
+          windows.first,
+          isNot(contains(RegExp(r'\b\d+(?:sec|min|hr|day|mon)\b'))),
+        );
       }
     }
     expect(

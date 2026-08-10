@@ -15,7 +15,6 @@ final class G2AgentHistoryEntry {
     required this.kind,
     required this.label,
     required this.preview,
-    this.relativeAge,
     this.exchange,
     this.detail,
   });
@@ -23,7 +22,6 @@ final class G2AgentHistoryEntry {
   final G2AgentHistoryEntryKind kind;
   final String label;
   final String preview;
-  final String? relativeAge;
   final AgentExchangeView? exchange;
   final String? detail;
 }
@@ -117,9 +115,7 @@ final class G2AgentHistoryState {
     required List<AgentExchangeView> exchanges,
     List<AgentMessageView> messages = const <AgentMessageView>[],
     String? memo,
-    DateTime? now,
   }) {
-    final openedAt = (now ?? DateTime.now()).toUtc();
     final byAgent = <String, AgentExchangeView>{
       for (final exchange in exchanges) exchange.agent.toLowerCase(): exchange,
     };
@@ -189,7 +185,6 @@ final class G2AgentHistoryState {
       final agent = rankedAgent.value;
       final exchange = byAgent[agent.toLowerCase()];
       final latestMessage = latestMessageByAgent[agent.toLowerCase()];
-      final latestReceivedAt = latestReceivedAtByAgent[agent.toLowerCase()];
       final message = latestMessage == null
           ? _latestExchangeMessage(exchange, agent)
           : _stripSpeakerPrefix(latestMessage.message, agent);
@@ -198,9 +193,6 @@ final class G2AgentHistoryState {
           kind: G2AgentHistoryEntryKind.agent,
           label: agent,
           preview: message.isEmpty ? 'No messages' : _oneLine(message),
-          relativeAge: latestReceivedAt == null
-              ? null
-              : _formatElapsed(openedAt.difference(latestReceivedAt)),
           exchange: exchange,
         ),
       );
@@ -706,17 +698,12 @@ final class G2AgentHistoryState {
 
   List<String> _selectorEntryContentLines(G2AgentHistoryEntry entry) {
     final normalizedLabel = _oneLine(entry.label);
-    final relativeAge = _oneLine(entry.relativeAge ?? '');
     final label = entry.kind == G2AgentHistoryEntryKind.agent
         ? '[$normalizedLabel]'
         : normalizedLabel;
     final preview = _oneLine(entry.preview);
     final content = entry.kind == G2AgentHistoryEntryKind.agent
-        ? <String>[
-            label,
-            if (relativeAge.isNotEmpty) relativeAge,
-            if (preview.isNotEmpty) preview,
-          ].join(' ')
+        ? <String>[label, if (preview.isNotEmpty) preview].join(' ')
         : preview.isEmpty
         ? label
         : '$label - $preview';
@@ -858,23 +845,6 @@ final class G2AgentHistoryState {
       latest = exchange.sentAt.toUtc();
     }
     return latest;
-  }
-
-  static String _formatElapsed(Duration elapsed) {
-    final safeElapsed = elapsed.isNegative ? Duration.zero : elapsed;
-    if (safeElapsed.inSeconds < Duration.secondsPerMinute) {
-      return '${safeElapsed.inSeconds}sec';
-    }
-    if (safeElapsed.inMinutes < Duration.minutesPerHour) {
-      return '${safeElapsed.inMinutes}min';
-    }
-    if (safeElapsed.inHours < Duration.hoursPerDay) {
-      return '${safeElapsed.inHours}hr';
-    }
-    if (safeElapsed.inDays < 30) {
-      return '${safeElapsed.inDays}day';
-    }
-    return '${safeElapsed.inDays ~/ 30}mon';
   }
 
   static String _latestExchangeMessage(

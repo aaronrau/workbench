@@ -129,7 +129,6 @@ void openSimulatedAgentSelectorFixture(G2AgentHistoryState state, int fixture) {
         ),
     ],
     memo: text.last,
-    now: now,
   );
 }
 

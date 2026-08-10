@@ -755,13 +755,12 @@ void main() {
           ),
         ],
         memo: 'synthetic memo',
-        now: sentAt.add(const Duration(seconds: 15)),
       );
 
     final rows = state.render().split('\n');
     expect(rows, hasLength(G2AgentHistoryState.selectorMaximumRenderedRows));
     expect(rows.length, lessThan(G2TextLayout.history.maximumVisibleRows));
-    expect(rows[1], startsWith('     [Agent One] 15sec status'));
+    expect(rows[1], startsWith('     [Agent One] status'));
     expect(rows[2], startsWith('     '));
     expect(rows[2], endsWith('…'));
     expect(rows.last, '     Memo - synthetic memo');
@@ -1020,14 +1019,10 @@ void main() {
             legacy: false,
           ),
         ],
-        now: sentAt,
       )
       ..selectNext();
 
-    expect(
-      state.render(),
-      contains(' >  [Flux] 0sec inspect the synthetic build'),
-    );
+    expect(state.render(), contains(' >  [Flux] inspect the synthetic build'));
     expect(state.render(), isNot(contains('[Flux] Flux:')));
 
     state.showSelectedDetail();
@@ -1240,7 +1235,7 @@ void main() {
     expect(state.detailSpeechState, G2AgentDetailSpeechState.listening);
   });
 
-  test('sorts agents by newest received message and shows its age', () {
+  test('sorts agents by newest received message without showing its age', () {
     final now = DateTime.utc(2026, 2, 1, 12);
     final state = G2AgentHistoryState()
       ..open(
@@ -1283,7 +1278,6 @@ void main() {
             updatedAt: now.subtract(const Duration(hours: 1)),
           ),
         ],
-        now: now,
       );
 
     expect(state.entries.map((entry) => entry.label), <String>[
@@ -1295,9 +1289,9 @@ void main() {
       'Memo',
     ]);
     final rendered = state.render();
-    expect(rendered, contains('[Vale] 15sec most recent received update'));
-    expect(rendered, contains('[Pike] 4min newer sent preview'));
-    expect(rendered, contains('[Flux] 1hr older received update'));
+    expect(rendered, contains('[Vale] most recent received update'));
+    expect(rendered, contains('[Pike] newer sent preview'));
+    expect(rendered, contains('[Flux] older received update'));
     expect(rendered, contains('[No Reply] newest sent-only command'));
     expect(rendered, isNot(contains('[No Reply ')));
   });
@@ -1329,7 +1323,6 @@ void main() {
               legacy: false,
             ),
           ],
-          now: now,
         );
 
       expect(state.entries.map((entry) => entry.label), <String>[
@@ -1338,8 +1331,8 @@ void main() {
         'Pike',
         'Memo',
       ]);
-      expect(state.render(), contains('[Vale] 15sec Vale update ready'));
-      expect(state.render(), contains('[Pike] 4min Pike update ready'));
+      expect(state.render(), contains('[Vale] Vale update ready'));
+      expect(state.render(), contains('[Pike] Pike update ready'));
     },
   );
 
@@ -1366,7 +1359,6 @@ void main() {
             updatedAt: receivedAt,
           ),
         ],
-        now: now,
       );
 
     expect(state.entries.map((entry) => entry.label), <String>[
@@ -1379,49 +1371,27 @@ void main() {
     ]);
   });
 
-  test('renders one compact elapsed unit at every boundary', () {
+  test('does not render an elapsed-time element', () {
     final now = DateTime.utc(2026, 2, 1, 12);
-    final cases = <(Duration, String)>[
-      (const Duration(seconds: -5), '0sec'),
-      (const Duration(seconds: 15), '15sec'),
-      (const Duration(seconds: 59), '59sec'),
-      (const Duration(minutes: 1), '1min'),
-      (const Duration(minutes: 59), '59min'),
-      (const Duration(hours: 1), '1hr'),
-      (const Duration(hours: 23), '23hr'),
-      (const Duration(days: 1), '1day'),
-      (const Duration(days: 29), '29day'),
-      (const Duration(days: 30), '1mon'),
-      (const Duration(days: 60), '2mon'),
-    ];
-
-    for (final (elapsed, expected) in cases) {
-      final state = G2AgentHistoryState()
-        ..open(
-          agents: const <String>['Pike'],
-          exchanges: const <AgentExchangeView>[],
-          messages: <AgentMessageView>[
-            AgentMessageView(
-              id: 'pike-$expected',
-              agent: 'Pike',
-              direction: AgentMessageDirection.received,
-              message: 'synthetic update',
-              updatedAt: now.subtract(elapsed),
-            ),
-          ],
-          now: now,
-        );
-
-      expect(
-        state.render(),
-        contains('[Pike] $expected synthetic update'),
-        reason: 'Expected $expected for $elapsed.',
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: const <AgentExchangeView>[],
+        messages: <AgentMessageView>[
+          AgentMessageView(
+            id: 'pike-received',
+            agent: 'Pike',
+            direction: AgentMessageDirection.received,
+            message: 'synthetic update',
+            updatedAt: now.subtract(const Duration(days: 60)),
+          ),
+        ],
       );
-      expect(
-        state.render().runes.length,
-        lessThanOrEqualTo(G2AgentHistoryState.maximumPageCharacters),
-      );
-      expect(state.render().split('\n').length, lessThanOrEqualTo(9));
-    }
+
+    expect(state.render(), contains('[Pike] synthetic update'));
+    expect(
+      state.render(),
+      isNot(contains(RegExp(r'\b\d+(?:sec|min|hr|day|mon)\b'))),
+    );
   });
 }

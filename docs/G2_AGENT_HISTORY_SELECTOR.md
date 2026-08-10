@@ -20,8 +20,7 @@ This flow extends, rather than replaces, the existing behavior:
 
 ## Product interpretation
 
-The selector renders every agent option with a `[Agent] 4min content` first row
-after that agent has received a message, and `[Agent] content` before then.
+The selector renders every agent option with a `[Agent] content` first row.
 Carriage returns, newlines, and repeated whitespace are collapsed to spaces
 before the row is measured; overflow after the second measured row is
 ellipsized. Opening the option loads every exchange retained in the bounded
@@ -48,8 +47,8 @@ configuration. The phone's Messages view remains the complete history.
 Every option occupies one or two rendered lines. Carriage returns, newlines,
 and repeated whitespace in private content are collapsed before width
 measurement, so source formatting never forces a selector line break. Agent
-rows start `[Agent] 4min content`, where the age is the time since that agent's
-newest received message. Memo starts `Memo - content`; measured overflow
+rows start `[Agent] content` without an elapsed-time element. Memo starts
+`Memo - content`; measured overflow
 continues on one aligned second row and is ellipsized there.
 `[x] - Swipe to Select` remains a
 fixed one-line header. There is no page counter. Every rendered line reserves a
@@ -60,18 +59,13 @@ short selector is:
 
 ```text
  >  [x] - Swipe to Select
-     [Agent One] 15sec latest received update
-     [Agent Three] 4min latest sent command
-     [Agent Five] 1hr earlier received update
+     [Agent One] latest received update
+     [Agent Three] latest sent command
+     [Agent Five] earlier received update
      [Agent Two] No messages
      [Agent Four] No messages
      Memo - latest saved memo
 ```
-
-The age uses one rounded-down unit: `sec` below one minute, `min` below one
-hour, `hr` below one day, `day` below 30 days, and 30-day `mon` units after
-that. Future timestamps are clamped to `0sec`. Agents without a received
-message omit the age.
 
 When a normalized preview is too wide, it uses one aligned continuation row
 and ends with an ellipsis there:
@@ -514,6 +508,8 @@ gesture-controlled ownership.
   row, collapses carriage returns, newlines, and repeated whitespace before
   measurement, ellipsizes further pixel overflow, and leaves the selector
   below the nine-row native scrolling height and 2,000 UTF-8 bytes;
+- agent rows never include an elapsed-time element, while their sort order
+  still follows newest received-message activity;
 - selected and unselected pointer gutters have equal measured width, including
   two spaces after `>`, so cursor movement never shifts row content;
 - selector and detail rendering share the same calibrated width and row-layout
@@ -612,9 +608,9 @@ representative phone:
    replies at distinguishable times;
 2. connect the physical G2/R1 pair;
 3. tap and verify `[x]` is selected first;
-4. verify the newest replying agent is first, each replying row shows one
-   compact elapsed unit, never-replied agents follow without an age, then swipe
-   through every agent and the final Memo option while checking the optional
+4. verify the newest replying agent is first, no row shows an elapsed-time
+   element, and never-replied agents follow; then swipe through every agent and
+   the final Memo option while checking the optional
    aligned continuation row, second-row ellipsis, stable horizontal alignment,
    the unused ninth physical row, and the borderless surface;
 5. select an agent with more than five exchanges and multiple response updates,

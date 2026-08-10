@@ -163,14 +163,14 @@ expose for a true locked Hub mode.
   memo, double tap retains its higher-priority finish action.
 - Implements the fallback single-tap agent history selector with `Dismiss`
   selected first, up to five agent options, and the local Memo option last.
-  Each agent option is one bounded `[Agent] 4min content` row. Carriage returns,
-  newlines, and repeated whitespace are collapsed to spaces before width
-  measurement, so source formatting never forces a new row; overflow is
-  ellipsized. Every rendered row reserves the
+  Each agent option starts with `[Agent] content` and may use one aligned
+  continuation row; elapsed time is not displayed. Carriage returns, newlines,
+  and repeated whitespace are collapsed to spaces before width measurement,
+  and overflow after the second row is ellipsized. Every rendered row reserves the
   same fixed 25-pixel pointer gutter, including two spaces after `>`, so content
   remains at the same horizontal position while selection moves. Complete
-  one-row entries are bounded inside an eight-row selector, leaving the ninth
-  physical row unused so firmware scrolling cannot claim a swipe.
+  one- or two-row entries are windowed inside an eight-row selector, leaving
+  the ninth physical row unused so firmware scrolling cannot claim a swipe.
   Each agent preview uses its newest
   durable message by timestamp, whether that message was sent or received.
   Agent detail pages rebuild the same durable newest-message-first sent and
