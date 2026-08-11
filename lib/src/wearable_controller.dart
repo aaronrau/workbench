@@ -49,11 +49,11 @@ enum QueuedTranscriptTapAction { none, save, correctAndRoute }
 
 enum AgentDetailTranscriptTapAction {
   none,
+  ignore,
   activateListenMode,
   exitListenMode,
   finishSpeech,
   returnToSelector,
-  dismiss,
 }
 
 @visibleForTesting
@@ -132,6 +132,19 @@ void openSimulatedAgentSelectorFixture(G2AgentHistoryState state, int fixture) {
   );
 }
 
+@visibleForTesting
+void openSimulatedAgentSendingFixture(G2AgentHistoryState state) {
+  openSimulatedAgentSelectorFixture(state, 0);
+  state
+    ..selectNext()
+    ..showSelectedDetail();
+  if (!state.selectDetailListenMode() ||
+      !state.beginTargetedSpeech('debug-sending') ||
+      !state.finishTargetedSpeechCapture('debug-sending')) {
+    throw StateError('Could not create the synthetic sending fixture.');
+  }
+}
+
 final class _SelectedAgentSpeechRoute {
   const _SelectedAgentSpeechRoute({required this.agent, required this.source});
 
@@ -194,6 +207,7 @@ final class CoalescedDisplayQueue {
   void reset() {
     _renderedKey = null;
     _resetRevision++;
+    _supersedePending();
   }
 
   Future<void> waitForIdle() => _idleCompleter?.future ?? Future<void>.value();
@@ -328,7 +342,7 @@ AgentDetailTranscriptTapAction resolveAgentDetailTranscriptTapAction({
     return AgentDetailTranscriptTapAction.none;
   }
   if (speechState == G2AgentDetailSpeechState.sending) {
-    return AgentDetailTranscriptTapAction.dismiss;
+    return AgentDetailTranscriptTapAction.ignore;
   }
   if (!isAgentDetail) {
     return AgentDetailTranscriptTapAction.none;
@@ -474,6 +488,31 @@ final class WearableController extends ChangeNotifier
       'R1 gesture simulation',
       '[WorkBench][DebugSelector] state=opened fixture=$fixture rows=$rows',
     );
+    return true;
+  }
+
+  bool showAgentSendingFixtureForDebug() {
+    if (_disposed ||
+        !g2.isConnected ||
+        _voiceMemo.isActive ||
+        _agentHistoryOpening ||
+        _agentHistoryClosing) {
+      addLog(
+        'R1 gesture simulation',
+        '[WorkBench][DebugSending] state=rejected',
+        isError: true,
+      );
+      return false;
+    }
+    _agentHistoryWaitTimer?.cancel();
+    _agentHistoryWaitTimer = null;
+    _agentHistoryGeneration++;
+    openSimulatedAgentSendingFixture(_agentHistory);
+    _historyDisplayQueue.reset();
+    _glassesStatusQueue.setPaused(true, owner: 'history');
+    _syncSelectedAgentVadMode();
+    _queueAgentHistoryDisplay();
+    addLog('R1 gesture simulation', '[WorkBench][DebugSending] state=opened');
     return true;
   }
 
@@ -1416,8 +1455,7 @@ final class WearableController extends ChangeNotifier
           case AgentDetailTranscriptTapAction.returnToSelector:
             _returnToAgentHistorySelector();
             return true;
-          case AgentDetailTranscriptTapAction.dismiss:
-            unawaited(_closeAgentHistory(clearDisplay: true));
+          case AgentDetailTranscriptTapAction.ignore:
             return true;
           case AgentDetailTranscriptTapAction.none:
             unawaited(_activateAgentHistorySelection());
@@ -2177,6 +2215,11 @@ final class WearableController extends ChangeNotifier
       _agentHistory.close();
       _syncSelectedAgentVadMode();
       _historyDisplayQueue.reset();
+      // A rapid second ring tap used to clear the G2 page while the first
+      // tap's Sending render was still active. Keep the logical page close
+      // behind that bounded render so their multi-write firmware sequences
+      // can never overlap.
+      await _historyDisplayQueue.waitForIdle();
       if (clearDisplay && g2.isConnected && !g2.isMemoDisplayActive) {
         try {
           await g2.exitFullPageText();

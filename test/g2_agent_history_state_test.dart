@@ -240,7 +240,7 @@ void main() {
         state.render(),
         startsWith(
           '   [Pike] - Swipe to Navigate\n'
-          ' <  • Dismiss - Tap\n',
+          ' <  • Sending - Wait\n',
         ),
       );
       expect(state.render(), contains('pull the latest changes'));
@@ -255,7 +255,7 @@ void main() {
         ),
         isTrue,
       );
-      expect(state.render(), contains(' <  • Dismiss - Tap'));
+      expect(state.render(), contains(' <  • Sending - Wait'));
       expect(state.render(), contains('pull the latest changes'));
 
       expect(
@@ -299,7 +299,7 @@ void main() {
     expect(state.detailSpeechState, G2AgentDetailSpeechState.sending);
     expect(state.detailPageIndex, 0);
     expect(state.render(), contains('[Pike] - Swipe to Navigate'));
-    expect(state.render(), contains(' <  • Dismiss - Tap'));
+    expect(state.render(), contains(' <  • Sending - Wait'));
     expect(state.render(), isNot(contains('Sending…')));
     expect(state.selectPreviousDetailPage(), isFalse);
     expect(state.selectNextDetailPage(), isFalse);

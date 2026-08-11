@@ -42,6 +42,8 @@ class MainActivity : FlutterActivity() {
         private const val DEBUG_SELECTOR_ACTION =
             "dev.opensourceglasses.even_g2_r1_poc.SHOW_AGENT_SELECTOR_FIXTURE"
         private const val DEBUG_SELECTOR_FIXTURE = "selector_fixture"
+        private const val DEBUG_SENDING_ACTION =
+            "dev.opensourceglasses.even_g2_r1_poc.SHOW_AGENT_SENDING_FIXTURE"
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
@@ -294,7 +296,9 @@ class MainActivity : FlutterActivity() {
         val isDebuggable =
             applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         if (!isDebuggable ||
-            (intent.action != DEBUG_GESTURE_ACTION && intent.action != DEBUG_SELECTOR_ACTION)
+            (intent.action != DEBUG_GESTURE_ACTION &&
+                intent.action != DEBUG_SELECTOR_ACTION &&
+                intent.action != DEBUG_SENDING_ACTION)
         ) {
             return
         }
@@ -340,6 +344,16 @@ class MainActivity : FlutterActivity() {
                 Log.i(
                     "WorkBench",
                     "[WorkBench][DebugSelector] state=dispatched fixture=$fixture",
+                )
+            }
+            DEBUG_SENDING_ACTION -> {
+                debugGestureChannel.invokeMethod(
+                    "showAgentSendingFixture",
+                    emptyMap<String, Int>(),
+                )
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][DebugSending] state=dispatched",
                 )
             }
         }

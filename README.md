@@ -213,9 +213,9 @@ expose for a true locked Hub mode.
   correction preview. The second row continues to show the available tap
   action. Sending waits for and reuses the current preview, so it never invokes
   Gemma a second time. During that work the fixed title remains unchanged and
-  the action row becomes ` <  • Dismiss - Tap`;
-  tapping while sending dismisses the detail while delivery continues. New speech after
-  Listen Mode exit or dismissal is no longer targeted to the previously
+  the action row becomes ` <  • Sending - Wait`; repeated taps are consumed
+  without changing the page while delivery is in flight. New speech after
+  Listen Mode exit is no longer targeted to the previously
   selected agent. Selected-agent correction enters ahead of pending normal
   corrections while any already-running Gemma inference finishes safely.
   Every indexed matching-agent socket response refreshes page 1 immediately;

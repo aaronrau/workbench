@@ -26,8 +26,14 @@ void installDebugR1GestureSimulator(WearableController controller) {
             arguments['fixture']! as int,
           ),
         ),
-      'simulateR1Gesture' || 'showAgentSelectorFixture' =>
-        throw const FormatException('A debug simulation integer is required.'),
+      'showAgentSendingFixture' => Future<bool>.value(
+        controller.showAgentSendingFixtureForDebug(),
+      ),
+      'simulateR1Gesture' ||
+      'showAgentSelectorFixture' ||
+      'showAgentSendingFixture' => throw const FormatException(
+        'A debug simulation integer is required.',
+      ),
       _ => throw MissingPluginException('Unsupported debug simulation method.'),
     };
   });

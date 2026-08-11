@@ -780,7 +780,7 @@ final class G2AgentHistoryState {
       (true, G2AgentDetailSpeechState.sent) => 'Listen Mode - Tap to stop',
       (true, G2AgentDetailSpeechState.saved) => 'Listen Mode - Tap to stop',
       (true, _) => 'Listen Mode - Tap to stop',
-      (false, G2AgentDetailSpeechState.sending) => 'Dismiss - Tap',
+      (false, G2AgentDetailSpeechState.sending) => 'Sending - Wait',
       (false, G2AgentDetailSpeechState.sent) => 'Listen Mode - Tap to start',
       (false, G2AgentDetailSpeechState.saved) => 'Listen Mode - Tap to start',
       (false, _) => 'Listen Mode - Tap to start',

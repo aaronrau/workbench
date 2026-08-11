@@ -9,6 +9,27 @@ import 'package:even_g2_r1_poc/src/websocket/voice_websocket_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('synthetic sending fixture owns an inert tapped detail', () {
+    final state = G2AgentHistoryState();
+
+    openSimulatedAgentSendingFixture(state);
+
+    expect(state.mode, G2AgentHistoryMode.detail);
+    expect(state.isAgentDetail, isTrue);
+    expect(state.detailListenModeSelected, isFalse);
+    expect(state.detailSpeechState, G2AgentDetailSpeechState.sending);
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        isAgentDetail: state.isAgentDetail,
+        detailControl: state.detailControl,
+        listenModeSelected: state.detailListenModeSelected,
+        speechState: state.detailSpeechState,
+      ),
+      AgentDetailTranscriptTapAction.ignore,
+    );
+  });
+
   test(
     'primary STT dispatch does not await conversation analysis handoff',
     () async {
@@ -128,6 +149,43 @@ void main() {
 
     expect(rendered, <String>['detail-1', 'detail-4']);
   });
+
+  test(
+    'reset drops pending display work and waits for the active render',
+    () async {
+      final queue = CoalescedDisplayQueue();
+      final started = Completer<void>();
+      final release = Completer<void>();
+      var pendingRendered = false;
+
+      final active = queue.schedule(
+        key: 'sending',
+        render: () async {
+          started.complete();
+          await release.future;
+        },
+      );
+      await started.future;
+      final pending = queue.schedule(
+        key: 'newer-sending',
+        render: () async => pendingRendered = true,
+      );
+
+      queue.reset();
+      var becameIdle = false;
+      final idle = queue.waitForIdle().then((_) => becameIdle = true);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(becameIdle, isFalse);
+      expect(pendingRendered, isFalse);
+
+      release.complete();
+      await Future.wait(<Future<void>>[active, pending, idle]);
+
+      expect(becameIdle, isTrue);
+      expect(pendingRendered, isFalse);
+    },
+  );
 
   test('retries a display key after a failed render', () async {
     final queue = CoalescedDisplayQueue();
@@ -279,7 +337,7 @@ void main() {
     );
   });
 
-  test('detail tap activates, exits, sends, and dismisses by state', () {
+  test('detail tap activates, exits, sends, and ignores repeats by state', () {
     expect(
       resolveAgentDetailTranscriptTapAction(
         gestureType: 0,
@@ -318,7 +376,7 @@ void main() {
         listenModeSelected: false,
         speechState: G2AgentDetailSpeechState.sending,
       ),
-      AgentDetailTranscriptTapAction.dismiss,
+      AgentDetailTranscriptTapAction.ignore,
     );
     expect(
       resolveAgentDetailTranscriptTapAction(

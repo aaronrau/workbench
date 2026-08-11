@@ -146,7 +146,8 @@ enabled and has no
 selectable control. Every appended STT result automatically refreshes one
 serialized correction preview. Only the next tap on Send stops capture, waits
 for the final VAD flush and all queued STT, then changes the second row to
-`Dismiss - Tap`. Send reuses the current preview without another LLM call. The
+`Sending - Wait`. Further taps are consumed until delivery finishes. Send
+reuses the current preview without another LLM call. The
 detail returns to newest-first durable history after acknowledgement.
 Every successfully indexed matching-agent response replaces the open detail's
 durable body and rebuilds page 1 immediately. A nonmatching response is saved
@@ -254,7 +255,7 @@ message.
 | Swipe up while the agent title owns focus | Show the previous message page |
 | Swipe up/down in Memo detail | Show the previous/next Memo page |
 | Tap during `Listening` while Send owns focus | Stop capture and flush/wait for STT, then reuse the latest automatic preview |
-| Tap during `Sending:` | Dismiss the detail immediately; that delivery continues, but new speech is no longer targeted |
+| Tap during `Sending:` | Consume the tap without changing the page or starting another delivery |
 | Tap after `Sent:`/`Saved:` | Start a new Listen Mode turn and restore retained history beneath the controls |
 | Double tap | Ignore |
 
@@ -552,8 +553,8 @@ gesture-controlled ownership.
   the selected-agent route receives it;
 - the second tap on Send exits Listen Mode, acknowledges the final VAD flush,
   waits for all registered STT chunks, and reuses the current automatic preview
-  without a second correction. A tap on a sending detail dismisses it while
-  delivery continues independently;
+  without a second correction. Further taps while sending are inert, and page
+  teardown waits for any active render before restoring the visualizer;
 - changing selection after Listen Mode starts cannot change that session's
   target;
 - removing the snapshotted agent from configuration prevents the send;
@@ -669,6 +670,16 @@ state, serialized rendering, and live G2 writes. They do not qualify the
 physical R1-to-G2 radio or firmware forwarding path, which remains a separate
 manual check.
 
+The sending-state fixture opens a synthetic agent detail already showing
+`Sending - Wait`. It performs no capture, correction, persistence, or network
+request, so repeated simulated taps can stress the live G2 page safely:
+
+```sh
+adb -s <android-serial> shell am start \
+  -n dev.opensourceglasses.even_g2_r1_poc/.MainActivity \
+  -a dev.opensourceglasses.even_g2_r1_poc.SHOW_AGENT_SENDING_FIXTURE
+```
+
 ### Validation performed
 
 On 2026-07-30, the checked-in Android validator ran on the representative
@@ -711,8 +722,9 @@ Correction because the harness cannot actuate the wearable controls.
   initially show ` >  • Listen Mode - Tap to start`. Active Listen Mode changes
   only the second row to ` <  • Send transcript - Tap` without a Preview
   Correction row. Swipe down pages the transcript directly. A tap on Send exits
-  the mode and changes only that row to ` <  • Dismiss - Tap`. Stopping restores the
-  exact prior history page so swipe paging resumes immediately.
+  the mode and changes only that row to ` <  • Sending - Wait`. Repeated taps
+  are ignored until the delivery completes. Stopping restores the exact prior
+  history page so swipe paging resumes immediately.
 - In detail mode, one uninterrupted second with VAD inactive finalizes one
   audio chunk, not the manual session. VAD activity during that second resets
   the chunk endpoint. Each completed STT result appends to and redraws only the
@@ -746,9 +758,8 @@ Correction because the harness cannot actuate the wearable controls.
   waits for all snapshotted session chunks to finish STT. It sends the current
   automatically corrected aggregate without invoking correction again; a
   failed preview retains raw text and resolves without routing.
-- Tap during `Sending:` immediately dismisses the detail without cancelling or
-  awaiting that delivery. Speech beginning after dismissal is not forwarded to
-  the formerly selected agent.
+- Tap during `Sending:` is consumed without dismissing, rerendering, or
+  starting another delivery. The page remains stable until delivery resolves.
 - Memo and the prior double-tap behavior keep their documented priority.
 - No selector operation blocks or weakens capture, storage, correction, message
   delivery, privacy, or BLE timeout boundaries.
