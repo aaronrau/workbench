@@ -542,6 +542,7 @@ final class WearableController extends ChangeNotifier
   Timer? _audioNotifyTimer;
   Timer? _backgroundNotifyTimer;
   Future<void> _memoDisplayTail = Future<void>.value();
+  Future<void> _webSocketExportTail = Future<void>.value();
   final CoalescedDisplayQueue _historyDisplayQueue = CoalescedDisplayQueue();
   final G2AgentHistoryState _agentHistory = G2AgentHistoryState();
   final LinkedHashMap<String, _SelectedAgentSpeechRoute>
@@ -579,6 +580,7 @@ final class WearableController extends ChangeNotifier
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
   static const Duration _audioUiFrameInterval = Duration(milliseconds: 33);
+  static const Duration _webSocketExportTimeout = Duration(seconds: 10);
   static const int _maximumLogEntries = 30;
   static const int _memoryPressureLogEntries = _maximumLogEntries;
   static const int _maximumLogMessageCharacters = 2048;
@@ -2553,26 +2555,11 @@ final class WearableController extends ChangeNotifier
         message: message,
       );
       savedMessage = saved;
-      try {
-        final exported = await _sharedAudioExportStore.exportFiles(<String>[
-          saved.path,
-        ]);
-        addLog(
-          'WebSocket',
-          '[WorkBench][VoiceWebSocket] state=received_saved '
-              'shared=${exported > 0}',
-        );
-        if (exported > 0 && _sharedMessageViewActive) {
-          unawaited(_refreshSharedWebSocketMessages());
-        }
-      } on Object {
-        addLog(
-          'WebSocket',
-          '[WorkBench][VoiceWebSocket] state=received_export_failed '
-              'fallback=app_private',
-          isError: true,
-        );
-      }
+      _scheduleWebSocketMessageExport(
+        saved,
+        successState: 'received_saved',
+        failureState: 'received_export_failed',
+      );
     } on Object catch (error) {
       persistenceError = error;
       addLog(
@@ -2647,21 +2634,11 @@ final class WearableController extends ChangeNotifier
         direction: direction,
         message: message,
       );
-      try {
-        final exported = await _sharedAudioExportStore.exportFiles(<String>[
-          saved.path,
-        ]);
-        if (exported > 0 && _sharedMessageViewActive) {
-          unawaited(_refreshSharedWebSocketMessages());
-        }
-      } on Object {
-        addLog(
-          'WebSocket',
-          '[WorkBench][VoiceWebSocket] state=message_export_failed '
-              'fallback=app_private',
-          isError: true,
-        );
-      }
+      _scheduleWebSocketMessageExport(
+        saved,
+        successState: 'message_exported',
+        failureState: 'message_export_failed',
+      );
       return saved;
     } on Object {
       addLog(
@@ -2671,6 +2648,47 @@ final class WearableController extends ChangeNotifier
         isError: true,
       );
       return null;
+    }
+  }
+
+  void _scheduleWebSocketMessageExport(
+    SavedWebSocketMessage saved, {
+    required String successState,
+    required String failureState,
+  }) {
+    _webSocketExportTail = _webSocketExportTail.then(
+      (_) => _exportWebSocketMessage(
+        saved,
+        successState: successState,
+        failureState: failureState,
+      ),
+    );
+  }
+
+  Future<void> _exportWebSocketMessage(
+    SavedWebSocketMessage saved, {
+    required String successState,
+    required String failureState,
+  }) async {
+    try {
+      final exported = await _sharedAudioExportStore
+          .exportFiles(<String>[saved.path])
+          .timeout(_webSocketExportTimeout);
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=$successState '
+            'shared=${exported > 0}',
+      );
+      if (exported > 0 && _sharedMessageViewActive) {
+        unawaited(_refreshSharedWebSocketMessages());
+      }
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=$failureState '
+            'fallback=app_private',
+        isError: true,
+      );
     }
   }
 
@@ -2693,9 +2711,7 @@ final class WearableController extends ChangeNotifier
         requestId: result.requestId,
       );
       await _refreshOpenAgentHistoryFor(result.agent);
-      if (_sharedMessageViewActive) {
-        await _refreshAgentMessages();
-      }
+      await _refreshAgentMessages();
     } on Object {
       addLog(
         'WebSocket',

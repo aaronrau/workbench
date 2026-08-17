@@ -287,7 +287,9 @@ X-Voice-Api-Token: <local-secret>
 The client sends no hello message. It waits for `connection.ready`, routes a
 complete configured agent-name match with `message.send`, correlates the
 server's `message.accepted` using `request_id`, and resumes from the last
-observed event ID after an unexpected reconnect.
+observed event ID after an unexpected reconnect. The HTTP upgrade and ready
+handshake each have a ten-second bound, so a stalled connection attempt cannot
+hold an accepted Messages-tab queue item indefinitely.
 
 After a successful agent delivery, an ordinary G2/R1 double tap sends a
 `summary.request` for that same agent. Changing connection configuration clears

@@ -73,7 +73,10 @@ adb -s <android-serial> reverse tcp:8787 tcp:8787
 
 The HTTP upgrade includes exactly one configured authentication header. Work
 Bench sends no client hello and waits for a version-1 `connection.ready`
-message before sending agent traffic.
+message before sending agent traffic. Both the HTTP upgrade and the subsequent
+ready wait have independent ten-second bounds. A stalled upgrade is abandoned,
+any socket that completes after that bound is closed, and the endpoint resumes
+its normal reconnect and FIFO retry schedule.
 
 ## Messages tab
 
@@ -161,6 +164,18 @@ the app, or explicitly deleting a row from the Messages tab cancels that item;
 queued commands are never restored or surprisingly delivered in a later
 process. The Messages tab displays live queue state only; acknowledged messages
 continue into the durable sent-message archive.
+
+Sent-message and inbound-response index snapshots are serialized. A progress
+event that arrives immediately after its acknowledgement therefore cannot race
+the sent-message snapshot or leave the live Messages view behind the durable
+files. Every acknowledged send also refreshes the in-memory agent list even if
+a reconnect caused the tab-activity hint to be stale.
+
+App-private message persistence and history indexing do not await shared-folder
+export. Small text exports run on an independent serialized tail with a
+ten-second wait bound; a slow document provider therefore cannot delay Sent
+history, inbound display, or later socket work. Explicit refresh and recovery
+sync retain the durable app-private file as their source.
 
 ## Double-tap progress request
 
@@ -399,7 +414,7 @@ cannot block every later status indefinitely.
 
 ## Reliability and privacy boundaries
 
-- WebSocket ready and acknowledgement waits are bounded.
+- WebSocket upgrade, ready, and acknowledgement waits are bounded.
 - Modern `agent_busy` commands use a bounded, expiring, in-memory FIFO; its
   retry timer and pending futures are canceled on configuration changes,
   disconnect, and shutdown.

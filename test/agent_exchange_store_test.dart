@@ -239,6 +239,49 @@ void main() {
     },
   );
 
+  test('serializes concurrent sent and response index snapshots', () async {
+    final store = AgentExchangeStore(supportDirectory: () async => temp);
+    await store.initialize();
+
+    for (var index = 0; index < 8; index++) {
+      final sent = File('${temp.path}/sent-$index.message.txt')
+        ..writeAsStringSync('Flux: synthetic request $index\n');
+      final received = File('${temp.path}/received-$index.message.txt')
+        ..writeAsStringSync('Flux: synthetic response $index\n');
+      await Future.wait<String?>(<Future<String?>>[
+        store.recordSent(
+          agent: 'Flux',
+          messagePath: sent.path,
+          legacy: false,
+          requestId: 'request-$index',
+        ),
+        store.attachResponse(
+          responsePath: received.path,
+          kind: 'progress',
+          requestId: 'request-$index',
+          agent: 'Flux',
+        ),
+      ]);
+    }
+
+    final reopened = AgentExchangeStore(supportDirectory: () async => temp);
+    await reopened.initialize();
+    final history = await reopened.retainedMessagesForAgents(const <String>[
+      'Flux',
+    ]);
+
+    expect(history, hasLength(16));
+    expect(
+      history.map((message) => message.message),
+      containsAll(<String>[
+        for (var index = 0; index < 8; index++) ...<String>[
+          'synthetic request $index',
+          'synthetic response $index',
+        ],
+      ]),
+    );
+  });
+
   test('does not attach an unrelated same-agent modern event', () async {
     final sent = File('${temp.path}/sent.message.txt')
       ..writeAsStringSync('Pike: request update\n');

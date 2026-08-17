@@ -814,6 +814,63 @@ void main() {
     );
   });
 
+  test(
+    'times out a hung upgrade and drains the queue after reconnect',
+    () async {
+      final pendingConnection = Completer<WebSocket>();
+      var connectorCalls = 0;
+      final observedStatuses = <VoiceWebSocketStatus>[];
+      final client = VoiceWebSocketClient(
+        configStore: VoiceWebSocketConfigStore.inMemory(
+          VoiceWebSocketConfig.validate(
+            host: '127.0.0.1',
+            port: server.port,
+            secret: 'synthetic-upgrade-timeout-secret',
+            authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+            agentNames: const <String>['Agent One'],
+          ),
+        ),
+        connector: (uri, headers) {
+          connectorCalls++;
+          if (connectorCalls == 1) {
+            return pendingConnection.future;
+          }
+          return WebSocket.connect(uri.toString(), headers: headers);
+        },
+        connectionTimeout: const Duration(milliseconds: 20),
+        reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+        readyTimeout: const Duration(seconds: 1),
+        acknowledgementTimeout: const Duration(seconds: 1),
+        busyRetryDelays: const <Duration>[Duration(milliseconds: 10)],
+      );
+      addTearDown(client.close);
+      client.addListener(() => observedStatuses.add(client.status));
+      await client.initialize();
+      await _waitUntil(() => client.status == VoiceWebSocketStatus.connecting);
+
+      final admission = client.enqueueAgentMessage(
+        agent: 'Agent One',
+        message: 'deliver after the upgrade timeout fixture',
+      );
+      final result = await admission.completion!.timeout(
+        const Duration(seconds: 2),
+      );
+
+      expect(result.sent, isTrue);
+      expect(connectorCalls, greaterThanOrEqualTo(2));
+      expect(observedStatuses, contains(VoiceWebSocketStatus.error));
+      expect(client.isReady, isTrue);
+      expect(client.queuedMessages, isEmpty);
+
+      final lateSocket = await WebSocket.connect(
+        client.config.uri.toString(),
+        headers: client.config.upgradeHeaders,
+      );
+      pendingConnection.complete(lateSocket);
+      await _waitUntil(() => lateSocket.readyState == WebSocket.closed);
+    },
+  );
+
   test('queues busy commands and preserves FIFO order', () async {
     const firstMessage = 'run the first queued fixture';
     const secondMessage = 'run the second queued fixture';

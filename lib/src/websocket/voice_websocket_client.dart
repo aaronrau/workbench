@@ -147,6 +147,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     VoiceWebSocketConnector connector = _connect,
     VoiceWebSocketInboundMessage? onInboundMessage,
     VoiceWebSocketInboundEventHandler? onInboundEvent,
+    Duration connectionTimeout = const Duration(seconds: 10),
     Duration readyTimeout = const Duration(seconds: 10),
     Duration acknowledgementTimeout = const Duration(seconds: 10),
     List<Duration> reconnectDelays = const <Duration>[
@@ -169,6 +170,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
        _connector = connector,
        _onInboundMessage = onInboundMessage,
        _onInboundEvent = onInboundEvent,
+       _connectionTimeout = connectionTimeout,
        _readyTimeout = readyTimeout,
        _acknowledgementTimeout = acknowledgementTimeout,
        _reconnectDelays = reconnectDelays,
@@ -180,6 +182,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   final VoiceWebSocketConnector _connector;
   final VoiceWebSocketInboundMessage? _onInboundMessage;
   final VoiceWebSocketInboundEventHandler? _onInboundEvent;
+  final Duration _connectionTimeout;
   final Duration _readyTimeout;
   final Duration _acknowledgementTimeout;
   final List<Duration> _reconnectDelays;
@@ -291,7 +294,22 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     _setStatus(VoiceWebSocketStatus.connecting, 'Connecting…');
 
     try {
-      final socket = await _connector(config.uri, config.upgradeHeaders);
+      final connector = _connector(config.uri, config.upgradeHeaders);
+      late final WebSocket socket;
+      try {
+        socket = await connector.timeout(_connectionTimeout);
+      } on TimeoutException {
+        // Future.timeout cannot cancel an in-flight HTTP upgrade. If the
+        // transport eventually returns a socket after this generation has
+        // moved on, close it instead of leaking a detached connection.
+        unawaited(
+          connector.then<void>(
+            (lateSocket) async => lateSocket.close(),
+            onError: (Object _, StackTrace _) {},
+          ),
+        );
+        rethrow;
+      }
       if (_disposed || generation != _generation) {
         await socket.close();
         if (!ready.isCompleted) {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -66,6 +67,7 @@ final class AgentExchangeStore {
   final List<_AgentMessageRecord> _messages = <_AgentMessageRecord>[];
   final Map<String, List<_PendingResponse>> _orphanResponses =
       <String, List<_PendingResponse>>{};
+  Future<void> _persistTail = Future<void>.value();
   File? _file;
   int _sequence = 0;
   bool _legacyImportComplete = false;
@@ -557,7 +559,20 @@ final class AgentExchangeStore {
       ) ??
       (throw StateError('The selected exchange is no longer available.'));
 
-  Future<void> _persist() async {
+  Future<void> _persist() {
+    final completion = Completer<void>();
+    _persistTail = _persistTail.then((_) async {
+      try {
+        await _writeSnapshot();
+        completion.complete();
+      } on Object catch (error, stackTrace) {
+        completion.completeError(error, stackTrace);
+      }
+    });
+    return completion.future;
+  }
+
+  Future<void> _writeSnapshot() async {
     final file = _file!;
     final partial = File('${file.path}.part');
     final encoded = const JsonEncoder.withIndent('  ').convert(<String, Object>{
