@@ -22,6 +22,56 @@ enum VoiceWebSocketInboundKind { message, progress, completed, summary }
 
 enum VoiceWebSocketDeliveryMode { queued, immediate }
 
+enum VoiceWebSocketQueuedMessageState {
+  sending,
+  waitingForConnection,
+  waitingForAgent,
+}
+
+final class VoiceWebSocketQueuedMessage {
+  const VoiceWebSocketQueuedMessage({
+    required this.id,
+    required this.agent,
+    required this.message,
+    required this.enqueuedAt,
+    required this.state,
+    this.endpointId,
+  });
+
+  final String id;
+  final String agent;
+  final String message;
+  final DateTime enqueuedAt;
+  final VoiceWebSocketQueuedMessageState state;
+  final String? endpointId;
+
+  VoiceWebSocketQueuedMessage forEndpoint(String value) =>
+      VoiceWebSocketQueuedMessage(
+        id: id,
+        endpointId: value,
+        agent: agent,
+        message: message,
+        enqueuedAt: enqueuedAt,
+        state: state,
+      );
+}
+
+final class VoiceWebSocketQueueAdmission {
+  const VoiceWebSocketQueueAdmission({
+    required this.accepted,
+    required this.agent,
+    required this.message,
+    this.queuedMessage,
+    this.completion,
+  });
+
+  final bool accepted;
+  final String agent;
+  final String message;
+  final VoiceWebSocketQueuedMessage? queuedMessage;
+  final Future<VoiceWebSocketSendResult>? completion;
+}
+
 typedef VoiceWebSocketConnector =
     Future<WebSocket> Function(Uri uri, Map<String, Object> headers);
 
@@ -172,6 +222,9 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   bool get isReady => status == VoiceWebSocketStatus.ready;
 
   int get queuedMessageCount => _outboundQueue.length;
+
+  List<VoiceWebSocketQueuedMessage> get queuedMessages =>
+      List.unmodifiable(_outboundQueue.map(_queuedMessageSnapshot));
 
   String? get lastSentAgent => _lastSentAgent;
 
@@ -432,17 +485,41 @@ final class VoiceWebSocketClient extends ChangeNotifier {
         message: trimmedMessage,
       );
     }
-    if (_disposed ||
+    final admission = enqueueAgentMessage(
+      agent: canonicalAgent,
+      message: trimmedMessage,
+    );
+    return admission.completion ??
+        VoiceWebSocketSendResult(
+          sent: false,
+          agent: admission.agent,
+          message: admission.message,
+          legacy: false,
+        );
+  }
+
+  VoiceWebSocketQueueAdmission enqueueAgentMessage({
+    required String agent,
+    required String message,
+  }) {
+    final canonicalAgent = config.agentNames.firstWhere(
+      (name) => name.toLowerCase() == agent.trim().toLowerCase(),
+      orElse: () => '',
+    );
+    final trimmedMessage = message.trim();
+    if (canonicalAgent.isEmpty ||
+        trimmedMessage.isEmpty ||
+        _disposed ||
         _maximumQueuedMessages <= 0 ||
         _outboundQueue.length >= _maximumQueuedMessages) {
-      return VoiceWebSocketSendResult(
-        sent: false,
+      return VoiceWebSocketQueueAdmission(
+        accepted: false,
         agent: canonicalAgent,
         message: trimmedMessage,
-        legacy: false,
       );
     }
     final queued = _QueuedAgentMessage(
+      id: _newRequestId(),
       agent: canonicalAgent,
       message: trimmedMessage,
       enqueuedAt: DateTime.now(),
@@ -450,7 +527,42 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     _outboundQueue.addLast(queued);
     _publishQueueStatus();
     _requestOutboundPump();
-    return queued.completer.future;
+    return VoiceWebSocketQueueAdmission(
+      accepted: true,
+      agent: canonicalAgent,
+      message: trimmedMessage,
+      queuedMessage: _queuedMessageSnapshot(queued),
+      completion: queued.completer.future,
+    );
+  }
+
+  bool cancelQueuedMessage(String id) {
+    _QueuedAgentMessage? queued;
+    for (final candidate in _outboundQueue) {
+      if (candidate.id == id) {
+        queued = candidate;
+        break;
+      }
+    }
+    if (queued == null) {
+      return false;
+    }
+    queued.cancelled = true;
+    if (_outboundQueue.isNotEmpty && identical(_outboundQueue.first, queued)) {
+      _outboundRetryTimer?.cancel();
+      _outboundRetryTimer = null;
+    }
+    final requestId = queued.requestId;
+    if (requestId != null) {
+      final pending = _pending.remove(requestId);
+      pending?.timer.cancel();
+      if (!(pending?.completer.isCompleted ?? true)) {
+        pending!.completer.complete(_AcknowledgementOutcome.cancelled);
+      }
+    }
+    _completeQueuedMessage(queued, sent: false);
+    _requestOutboundPump();
+    return true;
   }
 
   Future<VoiceWebSocketSendResult> _sendImmediateModernAgentMessage({
@@ -467,6 +579,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
     final attempt = await _sendModernAgentMessage(
       _QueuedAgentMessage(
+        id: _newRequestId(),
         agent: agent,
         message: message,
         enqueuedAt: DateTime.now(),
@@ -561,6 +674,12 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     final requestId = queued.requestId ??= _newRequestId();
     var reconnectBeforeAttempt = false;
     for (var attempt = 0; attempt < maximumAttempts; attempt++) {
+      if (queued.cancelled) {
+        return _ModernSendAttempt(
+          outcome: _AcknowledgementOutcome.cancelled,
+          requestId: requestId,
+        );
+      }
       if (reconnectBeforeAttempt ||
           _socket == null ||
           _socket!.readyState != WebSocket.open ||
@@ -576,6 +695,13 @@ final class VoiceWebSocketClient extends ChangeNotifier {
             requestId: requestId,
           );
         }
+      }
+
+      if (queued.cancelled) {
+        return _ModernSendAttempt(
+          outcome: _AcknowledgementOutcome.cancelled,
+          requestId: requestId,
+        );
       }
 
       final activeSocket = _socket;
@@ -614,11 +740,15 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       final outcome = await completer.future;
       if (outcome == _AcknowledgementOutcome.accepted ||
           outcome == _AcknowledgementOutcome.rejected ||
-          outcome == _AcknowledgementOutcome.agentBusy) {
+          outcome == _AcknowledgementOutcome.agentBusy ||
+          outcome == _AcknowledgementOutcome.cancelled) {
         return _ModernSendAttempt(outcome: outcome, requestId: requestId);
       }
-      reconnectBeforeAttempt =
-          outcome == _AcknowledgementOutcome.connectionLost;
+      if (outcome == _AcknowledgementOutcome.connectionLost ||
+          outcome == _AcknowledgementOutcome.timedOut) {
+        await _markDeliveryUnavailable();
+        reconnectBeforeAttempt = true;
+      }
     }
     return _ModernSendAttempt(
       outcome: _AcknowledgementOutcome.timedOut,
@@ -800,6 +930,20 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
     _publishQueueStatus();
   }
+
+  VoiceWebSocketQueuedMessage _queuedMessageSnapshot(
+    _QueuedAgentMessage queued,
+  ) => VoiceWebSocketQueuedMessage(
+    id: queued.id,
+    agent: queued.agent,
+    message: queued.message,
+    enqueuedAt: queued.enqueuedAt,
+    state: queued.retryReason == _QueuedRetryReason.agentBusy
+        ? VoiceWebSocketQueuedMessageState.waitingForAgent
+        : queued.retryReason == _QueuedRetryReason.delivery || !isReady
+        ? VoiceWebSocketQueuedMessageState.waitingForConnection
+        : VoiceWebSocketQueuedMessageState.sending,
+  );
 
   void _cancelOutboundQueue() {
     _outboundRetryTimer?.cancel();
@@ -1159,6 +1303,17 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     _scheduleReconnect();
   }
 
+  Future<void> _markDeliveryUnavailable() async {
+    if (_disposed) {
+      return;
+    }
+    _setStatus(
+      VoiceWebSocketStatus.disconnected,
+      'Unable to send · retrying connection',
+    );
+    await _closeSocket(reconnect: true);
+  }
+
   Future<void> _closeSocket({required bool reconnect}) async {
     _generation++;
     _readyTimer?.cancel();
@@ -1336,11 +1491,13 @@ final class _PendingAcknowledgement {
 
 final class _QueuedAgentMessage {
   _QueuedAgentMessage({
+    required this.id,
     required this.agent,
     required this.message,
     required this.enqueuedAt,
   });
 
+  final String id;
   final String agent;
   final String message;
   final DateTime enqueuedAt;
@@ -1349,6 +1506,7 @@ final class _QueuedAgentMessage {
   String? requestId;
   int retryAttempts = 0;
   _QueuedRetryReason? retryReason;
+  bool cancelled = false;
 }
 
 enum _QueuedRetryReason { agentBusy, delivery }
@@ -1366,4 +1524,5 @@ enum _AcknowledgementOutcome {
   agentBusy,
   connectionLost,
   timedOut,
+  cancelled,
 }

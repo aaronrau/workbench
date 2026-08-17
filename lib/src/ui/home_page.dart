@@ -430,6 +430,7 @@ final class _HomePageState extends State<HomePage> {
         messages: controller.sharedWebSocketMessages,
         agentNames: controller.voiceWebSocketConfig.agentNames,
         agentTargets: controller.voiceWebSocketAgentTargets,
+        queuedAgentMessages: controller.voiceWebSocketQueuedMessages,
         agentMessages: controller.agentMessages,
         transcriptions: controller.sharedTranscripts,
         supportsSharedFolder: controller.supportsSharedAudioFolder,
@@ -461,6 +462,7 @@ final class _HomePageState extends State<HomePage> {
         onLoadMessages: controller.refreshSharedMessages,
         onLoadConversations: controller.refreshConversations,
         onSendAgentMessage: controller.sendDirectAgentMessage,
+        onDeleteQueuedAgentMessage: controller.deleteQueuedAgentMessage,
         onTabChanged: (tab) {
           final messagesSelected = tab == HomeHistoryTab.messages;
           controller.setSharedMessageViewActive(messagesSelected);
@@ -959,6 +961,40 @@ final class _HomePageState extends State<HomePage> {
                   const TextField(
                     textInputAction: TextInputAction.send,
                     decoration: InputDecoration(labelText: 'Message Flux'),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text('Queued', style: theme.textTheme.titleSmall),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Run the synthetic check.',
+                              style: theme.textTheme.bodyMedium,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Unable to send. Queued and will retry when the connection returns.',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const IconButton(
+                        tooltip: 'Delete queued message',
+                        onPressed: null,
+                        icon: Icon(Icons.delete_outline),
+                        constraints: BoxConstraints.tightFor(
+                          width: 48,
+                          height: 48,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),

@@ -635,6 +635,8 @@ final class WearableController extends ChangeNotifier
       _voiceWebSocket.endpointStates;
   List<VoiceWebSocketAgentTarget> get voiceWebSocketAgentTargets =>
       _voiceWebSocket.agentTargets;
+  List<VoiceWebSocketQueuedMessage> get voiceWebSocketQueuedMessages =>
+      _voiceWebSocket.queuedMessages;
   VoiceWebSocketStatus get voiceWebSocketStatus {
     final states = _voiceWebSocket.endpointStates;
     if (states.isEmpty) return VoiceWebSocketStatus.unconfigured;
@@ -1175,28 +1177,70 @@ final class WearableController extends ChangeNotifier
     if (route == null) {
       return false;
     }
-    final result = await _voiceWebSocket.sendAgentMessageWithResult(
+    final admission = _voiceWebSocket.enqueueAgentMessage(
       endpointId: route.endpointId!,
       agent: route.agent,
       message: route.message,
-      deliveryMode: VoiceWebSocketDeliveryMode.immediate,
     );
-    if (!result.sent) {
+    final completion = admission.completion;
+    if (!admission.accepted || completion == null) {
       addLog(
         'WebSocket',
-        '[WorkBench][VoiceWebSocket] state=direct_send_failed '
+        '[WorkBench][VoiceWebSocket] state=direct_queue_failed '
             'characters=${route.message.length}',
         isError: true,
       );
       return false;
     }
-    await _persistAcknowledgedAgentMessage(result);
+    unawaited(_completeDirectAgentMessage(completion));
     addLog(
       'WebSocket',
-      '[WorkBench][VoiceWebSocket] state=direct_sent '
+      '[WorkBench][VoiceWebSocket] state=direct_queued '
           'characters=${route.message.length}',
     );
     return true;
+  }
+
+  Future<void> _completeDirectAgentMessage(
+    Future<VoiceWebSocketSendResult> completion,
+  ) async {
+    try {
+      final result = await completion;
+      if (!result.sent) {
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceWebSocket] state=direct_queue_terminal sent=false',
+        );
+        return;
+      }
+      await _persistAcknowledgedAgentMessage(result);
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=direct_sent '
+            'characters=${result.message.length}',
+      );
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=direct_archive_failed',
+        isError: true,
+      );
+    }
+  }
+
+  void deleteQueuedAgentMessage({
+    required String endpointId,
+    required String queueId,
+  }) {
+    final removed = _voiceWebSocket.cancelQueuedMessage(
+      endpointId: endpointId,
+      queueId: queueId,
+    );
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceWebSocket] state=direct_queue_deleted '
+          'removed=$removed',
+    );
   }
 
   Future<void> linkRingAndGlasses() async {

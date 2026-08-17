@@ -613,8 +613,10 @@ Then:
    messages, read each original transcript followed by its corrected text, or
    play the paired WAV. **All** shows this complete view without an input field.
    Select an agent chip to filter both directions, type a direct message, and
-   use the keyboard's **Send** action; the draft clears only after
-   acknowledgement.
+   use the keyboard's **Send** action. The draft clears when the bounded live
+   FIFO accepts it. If its endpoint is unavailable, the message remains visible
+   as queued with an automatic-retry explanation and a delete action; it moves
+   into durable Sent history only after acknowledgement.
    Agent selection focuses the input automatically; **All** dismisses it.
    Either message view appends more retained rows as you scroll toward the
    bottom.

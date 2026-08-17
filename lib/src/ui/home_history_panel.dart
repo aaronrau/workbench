@@ -7,6 +7,7 @@ import '../audio/shared_audio_export_store.dart';
 import '../audio/voice_memo_models.dart';
 import '../ble/ble_models.dart';
 import '../websocket/agent_exchange_store.dart';
+import '../websocket/voice_websocket_client.dart';
 import '../websocket/voice_websocket_config.dart';
 import 'workbench_theme.dart';
 
@@ -18,6 +19,9 @@ typedef DirectAgentMessageSender =
       required String agent,
       required String message,
     });
+
+typedef QueuedAgentMessageDeleter =
+    void Function({required String endpointId, required String queueId});
 
 final class HomeHistoryPanel extends StatefulWidget {
   const HomeHistoryPanel({
@@ -37,6 +41,7 @@ final class HomeHistoryPanel extends StatefulWidget {
     this.messages = const <SharedWebSocketMessage>[],
     this.agentNames = const <String>[],
     this.agentTargets = const <VoiceWebSocketAgentTarget>[],
+    this.queuedAgentMessages = const <VoiceWebSocketQueuedMessage>[],
     this.agentMessages = const <AgentMessageView>[],
     this.transcriptions = const <SharedTranscript>[],
     this.supportsSharedFolder = false,
@@ -53,6 +58,7 @@ final class HomeHistoryPanel extends StatefulWidget {
     this.onLoadMessages,
     this.onLoadConversations,
     this.onSendAgentMessage,
+    this.onDeleteQueuedAgentMessage,
     this.onTabChanged,
     this.onToggleTranscriptAudio,
     this.isPlayingTranscript,
@@ -75,6 +81,7 @@ final class HomeHistoryPanel extends StatefulWidget {
   final List<SharedWebSocketMessage> messages;
   final List<String> agentNames;
   final List<VoiceWebSocketAgentTarget> agentTargets;
+  final List<VoiceWebSocketQueuedMessage> queuedAgentMessages;
   final List<AgentMessageView> agentMessages;
   final List<SharedTranscript> transcriptions;
   final bool supportsSharedFolder;
@@ -91,6 +98,7 @@ final class HomeHistoryPanel extends StatefulWidget {
   final Future<void> Function()? onLoadMessages;
   final Future<void> Function()? onLoadConversations;
   final DirectAgentMessageSender? onSendAgentMessage;
+  final QueuedAgentMessageDeleter? onDeleteQueuedAgentMessage;
   final ValueChanged<HomeHistoryTab>? onTabChanged;
   final ValueChanged<SharedTranscript>? onToggleTranscriptAudio;
   final bool Function(SharedTranscript transcript)? isPlayingTranscript;
@@ -116,7 +124,6 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   final Set<String> _sendingAgentKeys = <String>{};
   final Map<String, String> _agentDrafts = <String, String>{};
   final Map<String, String> _agentSendStatuses = <String, String>{};
-  final Set<String> _successfulAgentSends = <String>{};
   VoiceWebSocketAgentTarget? _selectedMessageAgent;
   final TextEditingController _agentMessageController = TextEditingController();
   final FocusNode _agentMessageFocusNode = FocusNode();
@@ -589,6 +596,13 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             final byTime = right.updatedAt.compareTo(left.updatedAt);
             return byTime != 0 ? byTime : right.id.compareTo(left.id);
           });
+    final queuedMessages = widget.queuedAgentMessages
+        .where(
+          (message) =>
+              message.endpointId == target.endpointId &&
+              message.agent.toLowerCase() == agent.toLowerCase(),
+        )
+        .toList(growable: false);
     final visibleCount = min(_visibleMessageCount, messages.length);
     final canSend =
         !sending &&
@@ -599,7 +613,8 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
       children: <Widget>[
         Text(
           '${messages.length} saved '
-          '${messages.length == 1 ? 'message' : 'messages'} with $agent',
+          '${messages.length == 1 ? 'message' : 'messages'} with $agent'
+          '${queuedMessages.isEmpty ? '' : ' · ${queuedMessages.length} queued'}',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodySmall,
@@ -626,7 +641,6 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             setState(() {
               _agentDrafts[target.key] = _agentMessageController.text;
               _agentSendStatuses.remove(target.key);
-              _successfulAgentSends.remove(target.key);
             });
           },
           onSubmitted: (_) {
@@ -642,9 +656,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             child: Text(
               status,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: _successfulAgentSends.contains(target.key)
-                    ? theme.colorScheme.onSurface
-                    : theme.colorScheme.error,
+                color: theme.colorScheme.error,
               ),
             ),
           ),
@@ -653,7 +665,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         Expanded(
           child: switch ((
             widget.isLoadingAgentMessages,
-            messages.isEmpty,
+            messages.isEmpty && queuedMessages.isEmpty,
             widget.agentMessageError,
           )) {
             (true, true, _) => _buildLoadingState(
@@ -680,10 +692,20 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                   _loadMoreMessages(notification, messages.length),
               child: ListView.separated(
                 key: const ValueKey<String>('agent-messages-list'),
-                itemCount: visibleCount,
+                itemCount: queuedMessages.length + visibleCount,
                 separatorBuilder: (_, _) => const Divider(height: 1),
-                itemBuilder: (context, index) =>
-                    _buildAgentMessage(context, messages[index]),
+                itemBuilder: (context, index) {
+                  if (index < queuedMessages.length) {
+                    return _buildQueuedAgentMessage(
+                      context,
+                      queuedMessages[index],
+                    );
+                  }
+                  return _buildAgentMessage(
+                    context,
+                    messages[index - queuedMessages.length],
+                  );
+                },
               ),
             ),
           },
@@ -758,6 +780,61 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     );
   }
 
+  Widget _buildQueuedAgentMessage(
+    BuildContext context,
+    VoiceWebSocketQueuedMessage message,
+  ) {
+    final theme = Theme.of(context);
+    final status = switch (message.state) {
+      VoiceWebSocketQueuedMessageState.sending => 'Sending…',
+      VoiceWebSocketQueuedMessageState.waitingForConnection =>
+        'Unable to send. Queued and will retry when the connection returns.',
+      VoiceWebSocketQueuedMessageState.waitingForAgent =>
+        'Agent busy. Queued and will retry.',
+    };
+    return Semantics(
+      liveRegion: true,
+      child: Padding(
+        key: ValueKey<String>('queued-agent-message-${message.id}'),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text('Queued', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 4),
+                  Text(message.message, style: theme.textTheme.bodyMedium),
+                  const SizedBox(height: 4),
+                  Text(status, style: theme.textTheme.bodySmall),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              key: ValueKey<String>(
+                'delete-queued-agent-message-${message.id}',
+              ),
+              tooltip: 'Delete queued message',
+              onPressed:
+                  widget.onDeleteQueuedAgentMessage == null ||
+                      message.endpointId == null
+                  ? null
+                  : () => widget.onDeleteQueuedAgentMessage!(
+                      endpointId: message.endpointId!,
+                      queueId: message.id,
+                    ),
+              icon: const Icon(Icons.delete_outline),
+              constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   List<VoiceWebSocketAgentTarget> _configuredAgentTargets() {
     final seen = <String>{};
     final configured = widget.agentTargets.isNotEmpty
@@ -812,7 +889,6 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     setState(() {
       _sendingAgentKeys.add(target.key);
       _agentSendStatuses.remove(target.key);
-      _successfulAgentSends.remove(target.key);
     });
     var sent = false;
     try {
@@ -830,9 +906,8 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     setState(() {
       _sendingAgentKeys.remove(target.key);
       if (sent) {
-        _successfulAgentSends.add(target.key);
         _agentDrafts[target.key] = '';
-        _agentSendStatuses[target.key] = 'Sent to ${target.agentName}.';
+        _agentSendStatuses.remove(target.key);
         if (_selectedMessageAgent?.key == target.key) {
           _agentMessageController.clear();
         }

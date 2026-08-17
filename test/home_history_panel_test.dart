@@ -6,6 +6,7 @@ import 'package:even_g2_r1_poc/src/ble/ble_models.dart';
 import 'package:even_g2_r1_poc/src/ui/home_history_panel.dart';
 import 'package:even_g2_r1_poc/src/ui/workbench_theme.dart';
 import 'package:even_g2_r1_poc/src/websocket/agent_exchange_store.dart';
+import 'package:even_g2_r1_poc/src/websocket/voice_websocket_client.dart';
 import 'package:even_g2_r1_poc/src/websocket/voice_websocket_config.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -382,7 +383,7 @@ void main() {
 
     expect(sentAgent, 'Flux');
     expect(sentMessage, 'Run the next synthetic check.');
-    expect(find.text('Sent to Flux.'), findsOneWidget);
+    expect(find.text('Sent to Flux.'), findsNothing);
     expect(
       tester
           .widget<TextField>(
@@ -462,6 +463,80 @@ void main() {
     expect(find.text('Keep this synthetic draft.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'shows and deletes an offline queued message on a phone viewport',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      String? deletedEndpoint;
+      String? deletedQueue;
+
+      await tester.pumpWidget(
+        _app(
+          HomeHistoryPanel(
+            events: const <PooledLog>[],
+            conversations: const <SharedConversationTurn>[],
+            agentTargets: const <VoiceWebSocketAgentTarget>[
+              VoiceWebSocketAgentTarget(
+                endpointId: 'offline-endpoint',
+                agentName: 'Flux',
+              ),
+            ],
+            queuedAgentMessages: <VoiceWebSocketQueuedMessage>[
+              VoiceWebSocketQueuedMessage(
+                id: 'synthetic-queue-id',
+                endpointId: 'offline-endpoint',
+                agent: 'Flux',
+                message: 'Run the queued synthetic check.',
+                enqueuedAt: DateTime(2026, 1, 2, 3, 4),
+                state: VoiceWebSocketQueuedMessageState.waitingForConnection,
+              ),
+            ],
+            analysisEnabled: false,
+            needsEnrollment: false,
+            analysisState: 'disabled',
+            knownSpeakerCount: 0,
+            pendingConversationCount: 0,
+            isLoadingConversations: false,
+            isStorageBusy: false,
+            onDeleteQueuedAgentMessage:
+                ({required String endpointId, required String queueId}) {
+                  deletedEndpoint = endpointId;
+                  deletedQueue = queueId;
+                },
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Messages'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Flux'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Queued'), findsOneWidget);
+      expect(find.text('Run the queued synthetic check.'), findsOneWidget);
+      expect(
+        find.text(
+          'Unable to send. Queued and will retry when the connection returns.',
+        ),
+        findsOneWidget,
+      );
+      final delete = find.byKey(
+        const ValueKey<String>(
+          'delete-queued-agent-message-synthetic-queue-id',
+        ),
+      );
+      expect(tester.getSize(delete), const Size(48, 48));
+
+      await tester.tap(delete);
+      await tester.pump();
+
+      expect(deletedEndpoint, 'offline-endpoint');
+      expect(deletedQueue, 'synthetic-queue-id');
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('loads more All and selected-agent messages while scrolling', (
     tester,
@@ -960,7 +1035,7 @@ void main() {
 
       expect(sent, contains('endpoint-a:A1:slow'));
       expect(sent, contains('endpoint-b:B1:fast'));
-      expect(find.text('Sent to B1.'), findsOneWidget);
+      expect(find.text('Sent to B1.'), findsNothing);
       expect(slowSend.isCompleted, isFalse);
 
       slowSend.complete(true);

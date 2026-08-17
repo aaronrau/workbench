@@ -67,6 +67,16 @@ final class VoiceWebSocketConnections extends ChangeNotifier {
   VoiceWebSocketAgentTarget? get lastSentTarget => _lastSentTarget;
   String? get lastSentAgent => _lastSentTarget?.agentName;
 
+  List<VoiceWebSocketQueuedMessage> get queuedMessages => List.unmodifiable(
+    config.endpoints.expand((endpoint) {
+      final client = _connections[endpoint.id]?.client;
+      return client?.queuedMessages.map(
+            (message) => message.forEndpoint(endpoint.id),
+          ) ??
+          const <VoiceWebSocketQueuedMessage>[];
+    }),
+  );
+
   List<VoiceWebSocketEndpointState> get endpointStates => List.unmodifiable(
     config.endpoints.map((endpoint) {
       final managed = _connections[endpoint.id];
@@ -269,6 +279,55 @@ final class VoiceWebSocketConnections extends ChangeNotifier {
       message: trimmed,
       deliveryMode: deliveryMode,
     );
+    return _routeSendResult(endpointId, target, result);
+  }
+
+  VoiceWebSocketQueueAdmission enqueueAgentMessage({
+    required String endpointId,
+    required String agent,
+    required String message,
+  }) {
+    final target = config.targetForAgent(agent);
+    final endpoint = config.endpointById(endpointId);
+    final trimmed = message.trim();
+    final client = _connections[endpointId]?.client;
+    if (target == null ||
+        target.endpointId != endpointId ||
+        endpoint == null ||
+        trimmed.isEmpty ||
+        client == null) {
+      return VoiceWebSocketQueueAdmission(
+        accepted: false,
+        agent: target?.agentName ?? '',
+        message: trimmed,
+      );
+    }
+    final admission = client.enqueueAgentMessage(
+      agent: target.agentName,
+      message: trimmed,
+    );
+    final completion = admission.completion;
+    return VoiceWebSocketQueueAdmission(
+      accepted: admission.accepted,
+      agent: admission.agent,
+      message: admission.message,
+      queuedMessage: admission.queuedMessage?.forEndpoint(endpointId),
+      completion: completion?.then(
+        (result) => _routeSendResult(endpointId, target, result),
+      ),
+    );
+  }
+
+  bool cancelQueuedMessage({
+    required String endpointId,
+    required String queueId,
+  }) => _connections[endpointId]?.client.cancelQueuedMessage(queueId) ?? false;
+
+  VoiceWebSocketSendResult _routeSendResult(
+    String endpointId,
+    VoiceWebSocketAgentTarget target,
+    VoiceWebSocketSendResult result,
+  ) {
     final routed = VoiceWebSocketSendResult(
       sent: result.sent,
       endpointId: endpointId,

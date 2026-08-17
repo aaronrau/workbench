@@ -291,8 +291,8 @@ STT, correction, file export, or access to the original transcript.
 - Keep an acknowledgement timeout or connection loss in the bounded live FIFO
   and reuse its request ID across ambiguous retries. Only a positive
   acknowledgement, explicit non-busy rejection, queue expiry, configuration
-  change, or disposal is terminal. An explicit `agent_busy` retry uses a fresh
-  request ID.
+  change, explicit user deletion from the Messages tab, or disposal is
+  terminal. An explicit `agent_busy` retry uses a fresh request ID.
 - Track event IDs in memory and send `connection.resume` only after a
   previously ready connection reconnects to the same saved configuration.
 - Keep reconnect timers, ready timers, acknowledgement timers, subscriptions,

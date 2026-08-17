@@ -85,6 +85,17 @@ to that destination. A pending send on one endpoint never disables another
 endpoint's agent buttons or composer. `All` continues to combine durable
 messages and transcripts from every endpoint.
 
+A direct send enters that endpoint's bounded live FIFO immediately, so the
+composer never waits indefinitely for a socket acknowledgement. The draft
+clears after queue admission. While delivery is active, the selected-agent view
+shows the message as `Queued` with `Sending…`. If the socket write or
+acknowledgement times out, the endpoint immediately leaves the ready state, its
+Home dot becomes inactive, and the row says: `Unable to send. Queued and will
+retry when the connection returns.` The same row provides a 48dp **Delete
+queued message** action that removes only that endpoint's item. Deletion is
+best-effort if a prior write reached the server but its acknowledgement was
+lost.
+
 The G2 agent selector uses the same complete agent list and windows through all
 configured names instead of dropping names beyond its first visible page.
 
@@ -145,9 +156,11 @@ command in a 32-item, app-process-only FIFO. The head retries after bounded 2,
 order. Each explicit busy rejection starts a new request ID, while a retry for
 an unknown acknowledgement reuses the original request ID. A command expires
 after five minutes and resolves to `Saved:` so the queue cannot remain stuck
-forever. Changing configuration, disconnecting, closing the client, or
-restarting the app cancels the queue; queued commands are never restored or
-surprisingly delivered in a later process.
+forever. Changing configuration, disconnecting, closing the client, restarting
+the app, or explicitly deleting a row from the Messages tab cancels that item;
+queued commands are never restored or surprisingly delivered in a later
+process. The Messages tab displays live queue state only; acknowledged messages
+continue into the durable sent-message archive.
 
 ## Double-tap progress request
 

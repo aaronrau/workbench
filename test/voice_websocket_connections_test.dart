@@ -140,6 +140,77 @@ void main() {
     expect((await slowSend).sent, isTrue);
   });
 
+  test('exposes and cancels only the selected endpoint queue', () async {
+    final releaseSlow = Completer<void>();
+    final slow = await _MockAgentServer.start(<String>[
+      'Alpha',
+    ], acknowledgementGate: releaseSlow.future);
+    final fast = await _MockAgentServer.start(<String>['Beta']);
+    addTearDown(slow.close);
+    addTearDown(fast.close);
+    final connections = VoiceWebSocketConnections(
+      configStore: VoiceWebSocketConfigStore.inMemory(
+        VoiceWebSocketConfig.validateEndpoints(<VoiceWebSocketEndpointConfig>[
+          _endpoint(
+            id: 'slow',
+            host: '127.0.0.2',
+            port: slow.port,
+            secret: 'slow-queue-secret',
+            agents: <String>['Alpha'],
+          ),
+          _endpoint(
+            id: 'fast',
+            host: '127.0.0.3',
+            port: fast.port,
+            secret: 'fast-queue-secret',
+            agents: <String>['Beta'],
+          ),
+        ]),
+      ),
+      acknowledgementTimeout: const Duration(seconds: 3),
+      reconnectDelays: const <Duration>[],
+    );
+    addTearDown(connections.close);
+    await connections.initialize();
+    await _waitFor(
+      () => connections.endpointStates.every(
+        (state) => state.status == VoiceWebSocketStatus.ready,
+      ),
+    );
+
+    final admission = connections.enqueueAgentMessage(
+      endpointId: 'slow',
+      agent: 'Alpha',
+      message: 'cancel the isolated queue fixture',
+    );
+    await _waitFor(() => slow.received.isNotEmpty);
+
+    expect(admission.accepted, isTrue);
+    expect(connections.queuedMessages, hasLength(1));
+    expect(connections.queuedMessages.single.endpointId, 'slow');
+    final fastResult = await connections.sendAgentMessageWithResult(
+      endpointId: 'fast',
+      agent: 'Beta',
+      message: 'keep the fast endpoint active',
+    );
+    expect(fastResult.sent, isTrue);
+
+    expect(
+      connections.cancelQueuedMessage(
+        endpointId: 'slow',
+        queueId: admission.queuedMessage!.id,
+      ),
+      isTrue,
+    );
+    expect((await admission.completion!).sent, isFalse);
+    expect(connections.queuedMessages, isEmpty);
+    expect(
+      connections.stateForEndpoint('fast')?.status,
+      VoiceWebSocketStatus.ready,
+    );
+    releaseSlow.complete();
+  });
+
   test(
     'editing one endpoint keeps the other socket and routing alive',
     () async {

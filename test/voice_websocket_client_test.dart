@@ -722,6 +722,98 @@ void main() {
     expect(client.queuedMessageCount, 0);
   });
 
+  test(
+    'marks an unacknowledged socket unavailable and allows queue cancellation',
+    () async {
+      const message = 'retain this offline fixture';
+      ignoredResponsesRemaining[message] = 10;
+      final client = VoiceWebSocketClient(
+        configStore: VoiceWebSocketConfigStore(
+          supportDirectory: () async => temp,
+        ),
+        reconnectDelays: const <Duration>[],
+        readyTimeout: const Duration(seconds: 1),
+        acknowledgementTimeout: const Duration(milliseconds: 20),
+        busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+      );
+      addTearDown(client.close);
+      await client.initialize();
+      await client.saveConfig(
+        VoiceWebSocketConfig.validate(
+          host: '127.0.0.1',
+          port: server.port,
+          secret: 'synthetic-offline-secret',
+          authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+          agentNames: const <String>['Agent One'],
+        ),
+      );
+      await _waitUntil(() => client.isReady);
+
+      final admission = client.enqueueAgentMessage(
+        agent: 'Agent One',
+        message: message,
+      );
+
+      expect(admission.accepted, isTrue);
+      expect(admission.queuedMessage?.message, message);
+      expect(client.queuedMessageCount, 1);
+      await _waitUntil(
+        () =>
+            client.status == VoiceWebSocketStatus.disconnected &&
+            client.queuedMessages.single.state ==
+                VoiceWebSocketQueuedMessageState.waitingForConnection,
+      );
+      expect(client.status, VoiceWebSocketStatus.disconnected);
+      expect(client.isReady, isFalse);
+      expect(client.statusText, 'Unable to send · retrying connection');
+
+      expect(client.cancelQueuedMessage(admission.queuedMessage!.id), isTrue);
+      expect((await admission.completion!).sent, isFalse);
+      expect(client.queuedMessages, isEmpty);
+      expect(client.cancelQueuedMessage(admission.queuedMessage!.id), isFalse);
+    },
+  );
+
+  test('cancelling while connecting prevents a later socket write', () async {
+    final releaseConnection = Completer<void>();
+    final client = VoiceWebSocketClient(
+      configStore: VoiceWebSocketConfigStore.inMemory(
+        VoiceWebSocketConfig.validate(
+          host: '127.0.0.1',
+          port: server.port,
+          secret: 'synthetic-connect-cancel-secret',
+          authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+          agentNames: const <String>['Agent One'],
+        ),
+      ),
+      connector: (uri, headers) async {
+        await releaseConnection.future;
+        return WebSocket.connect(uri.toString(), headers: headers);
+      },
+      reconnectDelays: const <Duration>[],
+    );
+    addTearDown(client.close);
+    await client.initialize();
+    await _waitUntil(() => client.status == VoiceWebSocketStatus.connecting);
+
+    final admission = client.enqueueAgentMessage(
+      agent: 'Agent One',
+      message: 'never write this cancelled fixture',
+    );
+    expect(admission.accepted, isTrue);
+    expect(client.cancelQueuedMessage(admission.queuedMessage!.id), isTrue);
+    expect((await admission.completion!).sent, isFalse);
+
+    releaseConnection.complete();
+    await _waitUntil(() => client.isReady);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(
+      received.where((payload) => payload['type'] == 'message.send'),
+      isEmpty,
+    );
+  });
+
   test('queues busy commands and preserves FIFO order', () async {
     const firstMessage = 'run the first queued fixture';
     const secondMessage = 'run the second queued fixture';
