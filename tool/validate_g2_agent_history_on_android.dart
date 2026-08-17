@@ -65,7 +65,6 @@ Future<void> main() async {
           'Agent Four',
           'Agent Five',
         ],
-        useLegacyMessageShape: false,
       ),
     );
 

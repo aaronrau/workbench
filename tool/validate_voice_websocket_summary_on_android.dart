@@ -45,7 +45,6 @@ Future<void> main() async {
         secret: 'synthetic-summary-validation-secret',
         authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
         agentNames: const <String>['Agent One'],
-        useLegacyMessageShape: false,
       ),
     );
     final commandSent = await client

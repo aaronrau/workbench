@@ -86,5 +86,69 @@ void main() {
 
       expect(order, <String>['visual-1', 'gesture', 'visual-2']);
     });
+
+    test('cancels remaining visual fragments after a surface change', () async {
+      final queue = AsyncWriteQueue();
+      final firstFragmentStarted = Completer<void>();
+      final releaseFirstFragment = Completer<void>();
+      final order = <String>[];
+      var generation = 1;
+      var cancellations = 0;
+
+      final visual = queue.addBatch(
+        <Future<void> Function()>[
+          () async {
+            order.add('visual-1');
+            firstFragmentStarted.complete();
+            await releaseFirstFragment.future;
+          },
+          () async => order.add('visual-2'),
+          () async => order.add('visual-3'),
+        ],
+        priority: AsyncWritePriority.low,
+        shouldContinue: () => generation == 1,
+        onCanceled: () => cancellations++,
+      );
+      await firstFragmentStarted.future;
+
+      generation = 2;
+      final menu = queue.add(
+        () async => order.add('menu-page'),
+        priority: AsyncWritePriority.high,
+      );
+      releaseFirstFragment.complete();
+      await Future.wait(<Future<void>>[visual, menu]);
+
+      expect(order, <String>['visual-1', 'menu-page']);
+      expect(cancellations, 1);
+    });
+
+    test('rechecks a queued fragment before it starts writing', () async {
+      final queue = AsyncWriteQueue();
+      final blockerStarted = Completer<void>();
+      final releaseBlocker = Completer<void>();
+      var current = true;
+      var visualWrites = 0;
+      var cancellations = 0;
+
+      final blocker = queue.add(() async {
+        blockerStarted.complete();
+        await releaseBlocker.future;
+      });
+      await blockerStarted.future;
+      final visual = queue.addBatch(
+        <Future<void> Function()>[() async => visualWrites++],
+        priority: AsyncWritePriority.low,
+        shouldContinue: () => current,
+        onCanceled: () => cancellations++,
+      );
+
+      current = false;
+      releaseBlocker.complete();
+      await Future.wait(<Future<void>>[blocker, visual]);
+
+      expect(visualWrites, 0);
+      expect(cancellations, 1);
+    });
   });
 }

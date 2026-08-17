@@ -33,12 +33,14 @@ final class VoiceWebSocketInboundEvent {
   const VoiceWebSocketInboundEvent({
     required this.message,
     required this.kind,
+    this.endpointId,
     this.agent,
     this.requestId,
   });
 
   final String message;
   final VoiceWebSocketInboundKind kind;
+  final String? endpointId;
   final String? agent;
   final String? requestId;
 }
@@ -49,6 +51,7 @@ final class VoiceWebSocketSendResult {
     required this.agent,
     required this.message,
     required this.legacy,
+    this.endpointId,
     this.requestId,
   });
 
@@ -56,6 +59,7 @@ final class VoiceWebSocketSendResult {
   final String agent;
   final String message;
   final bool legacy;
+  final String? endpointId;
   final String? requestId;
 }
 
@@ -64,20 +68,27 @@ final class VoiceWebSocketSummaryRequestResult {
     required this.outcome,
     required this.agent,
     required this.legacy,
+    this.endpointId,
     this.requestId,
   });
 
   final VoiceWebSocketSummaryRequestOutcome outcome;
   final String? agent;
   final bool legacy;
+  final String? endpointId;
   final String? requestId;
 }
 
 final class AgentTranscriptRoute {
-  const AgentTranscriptRoute({required this.agent, required this.message});
+  const AgentTranscriptRoute({
+    required this.agent,
+    required this.message,
+    this.endpointId,
+  });
 
   final String agent;
   final String message;
+  final String? endpointId;
 }
 
 final class VoiceWebSocketClient extends ChangeNotifier {
@@ -411,80 +422,35 @@ final class VoiceWebSocketClient extends ChangeNotifier {
         sent: false,
         agent: canonicalAgent,
         message: trimmedMessage,
-        legacy: config.useLegacyMessageShape,
+        legacy: false,
       );
     }
 
-    if (!config.useLegacyMessageShape) {
-      if (deliveryMode == VoiceWebSocketDeliveryMode.immediate) {
-        return _sendImmediateModernAgentMessage(
-          agent: canonicalAgent,
-          message: trimmedMessage,
-        );
-      }
-      if (_disposed ||
-          _maximumQueuedMessages <= 0 ||
-          _outboundQueue.length >= _maximumQueuedMessages) {
-        return VoiceWebSocketSendResult(
-          sent: false,
-          agent: canonicalAgent,
-          message: trimmedMessage,
-          legacy: false,
-        );
-      }
-      final queued = _QueuedAgentMessage(
+    if (deliveryMode == VoiceWebSocketDeliveryMode.immediate) {
+      return _sendImmediateModernAgentMessage(
         agent: canonicalAgent,
         message: trimmedMessage,
-        enqueuedAt: DateTime.now(),
       );
-      _outboundQueue.addLast(queued);
-      _publishQueueStatus();
-      _requestOutboundPump();
-      return queued.completer.future;
     }
-
-    try {
-      await connect();
-    } on Object {
+    if (_disposed ||
+        _maximumQueuedMessages <= 0 ||
+        _outboundQueue.length >= _maximumQueuedMessages) {
       return VoiceWebSocketSendResult(
         sent: false,
         agent: canonicalAgent,
         message: trimmedMessage,
-        legacy: true,
+        legacy: false,
       );
     }
-    final socket = _socket;
-    if (socket == null || !isReady) {
-      return VoiceWebSocketSendResult(
-        sent: false,
-        agent: canonicalAgent,
-        message: trimmedMessage,
-        legacy: true,
-      );
-    }
-
-    try {
-      socket.add(
-        jsonEncode(<String, Object>{
-          'agent': canonicalAgent,
-          'message': trimmedMessage,
-        }),
-      );
-      _lastSentAgent = canonicalAgent;
-      return VoiceWebSocketSendResult(
-        sent: true,
-        agent: canonicalAgent,
-        message: trimmedMessage,
-        legacy: true,
-      );
-    } on Object {
-      return VoiceWebSocketSendResult(
-        sent: false,
-        agent: canonicalAgent,
-        message: trimmedMessage,
-        legacy: true,
-      );
-    }
+    final queued = _QueuedAgentMessage(
+      agent: canonicalAgent,
+      message: trimmedMessage,
+      enqueuedAt: DateTime.now(),
+    );
+    _outboundQueue.addLast(queued);
+    _publishQueueStatus();
+    _requestOutboundPump();
+    return queued.completer.future;
   }
 
   Future<VoiceWebSocketSendResult> _sendImmediateModernAgentMessage({
@@ -540,7 +506,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       return VoiceWebSocketSummaryRequestResult(
         outcome: VoiceWebSocketSummaryRequestOutcome.noSentAgent,
         agent: null,
-        legacy: config.useLegacyMessageShape,
+        legacy: false,
       );
     }
     try {
@@ -549,7 +515,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       return VoiceWebSocketSummaryRequestResult(
         outcome: VoiceWebSocketSummaryRequestOutcome.unavailable,
         agent: canonicalAgent,
-        legacy: config.useLegacyMessageShape,
+        legacy: false,
       );
     }
     final socket = _socket;
@@ -560,38 +526,30 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       return VoiceWebSocketSummaryRequestResult(
         outcome: VoiceWebSocketSummaryRequestOutcome.unavailable,
         agent: canonicalAgent,
-        legacy: config.useLegacyMessageShape,
+        legacy: false,
       );
     }
 
-    final requestId = config.useLegacyMessageShape ? null : _newRequestId();
+    final requestId = _newRequestId();
     try {
       socket.add(
-        jsonEncode(
-          config.useLegacyMessageShape
-              ? <String, Object>{
-                  'type': 'local',
-                  'agent': canonicalAgent,
-                  'message': 'progress_summary',
-                }
-              : <String, Object>{
-                  'type': 'summary.request',
-                  'request_id': requestId!,
-                  'agent': canonicalAgent,
-                },
-        ),
+        jsonEncode(<String, Object>{
+          'type': 'summary.request',
+          'request_id': requestId,
+          'agent': canonicalAgent,
+        }),
       );
       return VoiceWebSocketSummaryRequestResult(
         outcome: VoiceWebSocketSummaryRequestOutcome.sent,
         agent: canonicalAgent,
-        legacy: config.useLegacyMessageShape,
+        legacy: false,
         requestId: requestId,
       );
     } on Object {
       return VoiceWebSocketSummaryRequestResult(
         outcome: VoiceWebSocketSummaryRequestOutcome.unavailable,
         agent: canonicalAgent,
-        legacy: config.useLegacyMessageShape,
+        legacy: false,
       );
     }
   }
@@ -1214,7 +1172,15 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     _completePending(_AcknowledgementOutcome.connectionLost);
     final ready = _readyCompleter;
     if (ready != null && !ready.isCompleted) {
-      ready.completeError(StateError('The WebSocket connection closed.'));
+      if (_disposed || _manualDisconnect) {
+        // A connector can still be awaiting its HTTP upgrade when the user
+        // removes a server or the manager shuts down. Resolve that readiness
+        // waiter as a deliberate cancellation so its error cannot escape
+        // before connect() has returned the future to its caller.
+        ready.complete();
+      } else {
+        ready.completeError(StateError('The WebSocket connection closed.'));
+      }
     }
     if (reconnect && !_manualDisconnect) {
       _scheduleReconnect();

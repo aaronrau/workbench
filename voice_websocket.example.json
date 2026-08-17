@@ -1,15 +1,29 @@
 {
-  "version": 1,
-  "voiceWebSocket": {
-    "host": "127.0.0.1",
-    "port": 8787,
-    "path": "/ws",
-    "secret": "<local-secret>",
-    "authHeader": "authorizationBearer",
-    "agentNames": [
-      "Agent One",
-      "Agent Two"
-    ],
-    "useLegacyMessageShape": false
-  }
+  "version": 2,
+  "voiceWebSockets": [
+    {
+      "id": "endpoint-1",
+      "host": "192.0.2.10",
+      "port": 18787,
+      "path": "/ws",
+      "secret": "<local-secret-one>",
+      "authHeader": "authorizationBearer",
+      "agentNames": [
+        "Alpha Agent",
+        "Research Agent"
+      ]
+    },
+    {
+      "id": "endpoint-2",
+      "host": "192.0.2.20",
+      "port": 18788,
+      "path": "/ws",
+      "secret": "<local-secret-two>",
+      "authHeader": "xVoiceApiToken",
+      "agentNames": [
+        "Beta Agent",
+        "Review Agent"
+      ]
+    }
+  ]
 }

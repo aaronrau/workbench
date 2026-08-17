@@ -40,11 +40,13 @@ final class SelectedAgentTranscriptSession {
     required this.id,
     required this.agent,
     required this.source,
+    this.endpointId,
   });
 
   final String id;
   final String agent;
   final String source;
+  final String? endpointId;
   final LinkedHashMap<String, String?> _segments =
       LinkedHashMap<String, String?>();
   final Map<String, int> _segmentRevisions = <String, int>{};

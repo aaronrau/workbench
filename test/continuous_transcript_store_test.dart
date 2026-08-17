@@ -133,6 +133,34 @@ void main() {
     expect(result.actionText, 'Hey Flux send this.');
   });
 
+  test('persists one ordered conversation across 150 queued chunks', () async {
+    final assembler = TranscriptTurnAssembler(
+      store: ContinuousTranscriptStore(speechPath: temp.path),
+    );
+    TranscriptTurnAssembly? finalAssembly;
+
+    for (var index = 0; index < 150; index++) {
+      final assembly = await assembler.append(
+        conversationId: 'conversation-150-parts',
+        text: 'synthetic queued phrase $index',
+        isConversationFinal: index == 149,
+      );
+      if (index < 149) {
+        expect(assembly.actionText, isNull);
+      } else {
+        finalAssembly = assembly;
+      }
+    }
+
+    expect(finalAssembly, isNotNull);
+    expect(finalAssembly!.actionText, finalAssembly.text);
+    final lines = await File(finalAssembly.path).readAsLines();
+    expect(lines, hasLength(150));
+    expect(lines.first, 'synthetic queued phrase 0');
+    expect(lines.last, 'synthetic queued phrase 149');
+    expect(File('${finalAssembly.path}.part').existsSync(), isFalse);
+  });
+
   test('requires the complete wake word at the beginning', () {
     expect(transcriptBeginsWithWakeWord('HEY Flux, check progress.'), isTrue);
     expect(transcriptBeginsWithWakeWord('  hey, Memo, take this.'), isTrue);

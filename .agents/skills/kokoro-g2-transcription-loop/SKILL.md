@@ -31,9 +31,10 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
 2. Foreground Work Bench and use its primary connection button for a complete
    preflight cycle. If necessary, connect first; then tap **Disconnect**, wait
    for **Connect devices**, tap **Connect devices**, and wait for
-   **Disconnect** plus fresh G2 audio frame summaries. The physical runners do
-   this automatically and refuse to start playback if the app button or fresh
-   post-reconnect audio is unavailable. If the connection button is initially
+   the VAD flush-ready marker, **Disconnect**, and fresh G2 audio frame
+   summaries. The physical runners do this automatically and refuse to start
+   playback if the app button, VAD reset, or fresh post-reconnect audio is
+   unavailable. If the connection button is initially
    disabled during app startup, the runner waits for the current pipeline-ready
    marker and retries that same visible button. Late fresh audio also satisfies
    the wait immediately; it is never discarded merely because connection took
@@ -85,8 +86,9 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
    files. Do not accept a transcript-only pass. Require all of:
 
    - both host-controlled playback boundary markers were observed;
-   - the app-button disconnect/reconnect preflight completed and fresh G2 audio
-     frames arrived before computer playback;
+   - the app-button disconnect/reconnect preflight completed, VAD reset to a
+     reusable state, and fresh G2 audio frames arrived before computer
+     playback;
    - G2 audio frames continued during playback;
    - audio activity rose clearly above samples recorded before the playback
      start marker;
@@ -135,6 +137,24 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
    with dense characterization points around the nominal two-second acoustic
    split boundary. Use `--repeat 3` with selected `--case NAME` options for
    three-run boundary stability checks.
+
+   For the continuous queue/display race, run the five-minute stress case. It
+   opens the synthetic agent selector 15 seconds after computer-speaker
+   playback starts, while G2 audio remains active, and requires the history
+   display generation plus continued capture and audio after the menu opens:
+
+   ```bash
+   python3 .agents/skills/kokoro-g2-transcription-loop/scripts/kokoro_turn_suite.py \
+     --profile stress \
+     --result-timeout 180 \
+     --output-dir /tmp/workbench-kokoro-agent-menu-stress-001
+   ```
+
+   The stress case requires at least 15 ordered forced chunks in one logical
+   turn, one final endpoint/action, no Android crash marker, and the normal
+   transport, VAD, STT, queue, and transcript checks. A logged display-owner
+   transition is protocol evidence; visually inspect the physical glasses for
+   invalid pixels before accepting the display result.
 
 ## Compare STT models without acoustic confounding
 

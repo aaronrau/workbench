@@ -35,7 +35,6 @@ Future<void> main() async {
         secret: 'synthetic-queue-validation-secret',
         authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
         agentNames: const <String>['Agent One'],
-        useLegacyMessageShape: false,
       ),
     );
     final results = await Future.wait(<Future<bool>>[

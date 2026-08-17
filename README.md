@@ -140,10 +140,15 @@ expose for a true locked Hub mode.
   the live and saved note, five seconds of total silence finalizes it, and the
   G2 page keeps `Double Tap to finish` above the bounded live draft and lets
   swipe down/up page forward/back through longer notes.
-- Saves an authenticated local WebSocket endpoint, secret, upgrade-header mode,
-  and agent names under **Tools → Agent connection**. Gemma uses those names as
-  correction vocabulary, and only the corrected live transcript is matched
-  and sent after `connection.ready`. Each G2 status follows one FIFO lifecycle:
+- Saves up to eight authenticated agent servers under **Tools → Agent
+  connection**. Every server entry has a different IPv4 address plus its own
+  port, authentication secret, upgrade-header mode, status, FIFO, retry
+  lifecycle, and up to four agent names. Servers can be added and removed in
+  Settings. Agent names uniquely select their server; one failed socket never
+  blocks another. Gemma uses
+  all names as correction vocabulary, and only the corrected live transcript
+  is matched and sent after that endpoint's `connection.ready`. Each G2 status
+  follows one FIFO lifecycle:
   `Queued:` while awaiting input, `Sending:` after a leading-`Hey` queued item
   is tapped, then `Saved:` or acknowledged `Sent:` for two seconds before
   clearing. Transcript statuses and inbound server messages replace the
@@ -151,6 +156,23 @@ expose for a true locked Hub mode.
   long text to use the complete viewport and firmware scrolling. Inbound
   messages appear as serialized `Received:` items, are saved to the selected
   Files folder, and clear from the glasses after two seconds.
+
+### Multiple agent servers
+
+![Two independent agent servers in Android Settings](docs/images/agent-servers-settings.png)
+
+Each card is one independently managed server. For example:
+
+| Server | IPv4 address | Port | Authentication secret | Agent names |
+| --- | --- | ---: | --- | --- |
+| 1 | `127.0.0.2` | `18787` | its own masked secret | `Alpha Agent`, `Research Agent` |
+| 2 | `127.0.0.3` | `18788` | a different masked secret | `Beta Agent`, `Review Agent` |
+
+Use **Add server** to create another card, **Remove server** to delete one, and
+**Save servers** to apply the list. Removing or changing one server closes only
+that server's WebSocket; unchanged servers remain connected. Each server IP
+produces exactly one status dot on the main screen. The names beneath that
+server become routing buttons in the Messages tab.
 - Gives a visible `Queued:` transcript priority over the single-tap history
   selector. Tap immediately resolves a transcript without leading `Hey` to
   `Saved:`; a leading-`Hey` tap immediately changes the item to `Sending:` and
@@ -162,15 +184,19 @@ expose for a true locked Hub mode.
   `summary.result` follows the same durable `Received:` path. During a voice
   memo, double tap retains its higher-priority finish action.
 - Implements the fallback single-tap agent history selector with `Dismiss`
-  selected first, up to five agent options, and the local Memo option last.
+  selected first, a window over every configured agent, and the local Memo
+  option last.
   Each agent option starts with `[Agent] content` and may use one aligned
-  continuation row; elapsed time is not displayed. Carriage returns, newlines,
-  and repeated whitespace are collapsed to spaces before width measurement,
-  and overflow after the second row is ellipsized. Every rendered row reserves the
+  continuation row; elapsed time is not displayed. Agents with received
+  history are ordered by newest inbound message, while never-received agents
+  follow in configuration order. Carriage returns, newlines, and repeated
+  whitespace are collapsed to spaces before width measurement, and overflow
+  after the second row is ellipsized. Every rendered row reserves the
   same fixed 25-pixel pointer gutter, including two spaces after `>`, so content
   remains at the same horizontal position while selection moves. Complete
-  one- or two-row entries are windowed inside an eight-row selector, leaving
-  the ninth physical row unused so firmware scrolling cannot claim a swipe.
+  one- or two-row entries are adaptively windowed inside an eight-row selector,
+  leaving the ninth physical row unused so firmware scrolling cannot claim a
+  swipe.
   Each agent preview uses its newest
   durable message by timestamp, whether that message was sent or received.
   Agent detail pages rebuild the same durable newest-message-first sent and
@@ -237,9 +263,9 @@ expose for a true locked Hub mode.
 
 ## Connect a local agent WebSocket
 
-Open **Tools → Agent connection** and save the numeric IP address, numeric
-port, secret, upgrade authentication header, and one or more agent names. Work
-Bench connects to:
+Open **Tools → Agent connection** and add each numeric IP address, numeric port,
+secret, upgrade authentication header, and one to four unique agent names.
+Every address connects independently. For example, Work Bench connects to:
 
 ```text
 ws://127.0.0.1:8787/ws
@@ -261,12 +287,10 @@ X-Voice-Api-Token: <local-secret>
 The client sends no hello message. It waits for `connection.ready`, routes a
 complete configured agent-name match with `message.send`, correlates the
 server's `message.accepted` using `request_id`, and resumes from the last
-observed event ID after an unexpected reconnect. The optional legacy setting
-sends exactly `agent` and `message`.
+observed event ID after an unexpected reconnect.
 
 After a successful agent delivery, an ordinary G2/R1 double tap sends a
-`summary.request` for that same agent. Legacy mode sends the server's
-`local`/`progress_summary` equivalent. Changing connection configuration clears
+`summary.request` for that same agent. Changing connection configuration clears
 the in-memory last-agent selection.
 
 Agent progress and completion replies arrive as `message.progress` and
@@ -530,8 +554,8 @@ adb -s <android-serial> shell monkey \
 ```
 
 The Home status reports the selected model and qualified provider. To its
-right, the agent socket indicator shows the configured address and a text
-connection state; its dot is green only while the socket is ready.
+right, a horizontally scrollable agent socket strip shows one dot and address
+per endpoint; each dot is green only while that socket is independently ready.
 Work Bench reports STT and VAD separately under **Tools → Transcription**.
 On Android API 29 or newer, each worker first tries the vendored arm64 NNAPI
 runtime with NNAPI's reference-CPU device disabled. A silent warm-up profile

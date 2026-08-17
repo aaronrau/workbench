@@ -31,6 +31,7 @@ import 'websocket/g2_agent_history_state.dart';
 import 'websocket/selected_agent_transcript_session.dart';
 import 'websocket/voice_websocket_client.dart';
 import 'websocket/voice_websocket_config.dart';
+import 'websocket/voice_websocket_connections.dart';
 import 'websocket/websocket_message_store.dart';
 
 enum WearableGestureAction { ignore, finishMemo, requestAgentSummary }
@@ -146,8 +147,13 @@ void openSimulatedAgentSendingFixture(G2AgentHistoryState state) {
 }
 
 final class _SelectedAgentSpeechRoute {
-  const _SelectedAgentSpeechRoute({required this.agent, required this.source});
+  const _SelectedAgentSpeechRoute({
+    required this.endpointId,
+    required this.agent,
+    required this.source,
+  });
 
+  final String endpointId;
   final String agent;
   final String source;
 }
@@ -400,7 +406,7 @@ final class WearableController extends ChangeNotifier
        _agentExchangeStore = agentExchangeStore ?? AgentExchangeStore() {
     _sharedAudioExportStore.addListener(_sharedStorageChanged);
     _runtime = AppRuntimeCoordinator(log: addLog);
-    _voiceWebSocket = VoiceWebSocketClient(
+    _voiceWebSocket = VoiceWebSocketConnections(
       configStore: voiceWebSocketConfigStore,
       onInboundEvent: _handleInboundWebSocketEvent,
     );
@@ -522,7 +528,7 @@ final class WearableController extends ChangeNotifier
   final WebSocketMessageStore _webSocketMessageStore;
   final AgentExchangeStore _agentExchangeStore;
   late final AppRuntimeCoordinator _runtime;
-  late final VoiceWebSocketClient _voiceWebSocket;
+  late final VoiceWebSocketConnections _voiceWebSocket;
   late final ConversationAnalysisService _conversationAnalysis;
   late final VoiceMemoService _voiceMemo;
   late final AudioPipelineCoordinator _audioPipeline;
@@ -625,8 +631,36 @@ final class WearableController extends ChangeNotifier
   String get selectedSpeechModelName => _selectedSpeechModel.displayName;
   bool get isSwitchingSpeechModel => _audioPipeline.isSwitchingModel;
   VoiceWebSocketConfig get voiceWebSocketConfig => _voiceWebSocket.config;
-  VoiceWebSocketStatus get voiceWebSocketStatus => _voiceWebSocket.status;
-  String get voiceWebSocketStatusText => _voiceWebSocket.statusText;
+  List<VoiceWebSocketEndpointState> get voiceWebSocketEndpointStates =>
+      _voiceWebSocket.endpointStates;
+  List<VoiceWebSocketAgentTarget> get voiceWebSocketAgentTargets =>
+      _voiceWebSocket.agentTargets;
+  VoiceWebSocketStatus get voiceWebSocketStatus {
+    final states = _voiceWebSocket.endpointStates;
+    if (states.isEmpty) return VoiceWebSocketStatus.unconfigured;
+    if (states.any((state) => state.status == VoiceWebSocketStatus.ready)) {
+      return VoiceWebSocketStatus.ready;
+    }
+    if (states.any(
+      (state) => state.status == VoiceWebSocketStatus.connecting,
+    )) {
+      return VoiceWebSocketStatus.connecting;
+    }
+    if (states.any((state) => state.status == VoiceWebSocketStatus.error)) {
+      return VoiceWebSocketStatus.error;
+    }
+    return VoiceWebSocketStatus.disconnected;
+  }
+
+  String get voiceWebSocketStatusText {
+    final states = _voiceWebSocket.endpointStates;
+    if (states.isEmpty) return 'Not configured';
+    final ready = states
+        .where((state) => state.status == VoiceWebSocketStatus.ready)
+        .length;
+    return '$ready of ${states.length} connected';
+  }
+
   String? get voiceWebSocketValidationError => _voiceWebSocket.validationError;
   List<SharedConversationTurn> get conversations =>
       _sharedAudioExportStore.conversations;
@@ -724,7 +758,7 @@ final class WearableController extends ChangeNotifier
         await _agentExchangeStore.importExistingSentMessages(
           paths: await _webSocketMessageStore.savedPaths(),
           agents: _voiceWebSocket.config.agentNames,
-          legacy: _voiceWebSocket.config.useLegacyMessageShape,
+          legacy: false,
         );
       } on Object {
         addLog(
@@ -1008,7 +1042,7 @@ final class WearableController extends ChangeNotifier
         await _agentExchangeStore.importExistingSentMessages(
           paths: await _webSocketMessageStore.savedPaths(),
           agents: config.agentNames,
-          legacy: config.useLegacyMessageShape,
+          legacy: false,
         );
       } on Object {
         addLog(
@@ -1023,16 +1057,37 @@ final class WearableController extends ChangeNotifier
     addLog(
       'WebSocket',
       '[WorkBench][VoiceWebSocket] state=saved '
-          'auth=${config.authHeader.serializedName} '
-          'agents=${config.agentNames.length} '
-          'legacy=${config.useLegacyMessageShape}',
+          'connections=${config.endpoints.length} '
+          'agents=${config.agentNames.length}',
     );
     _safeNotify();
   }
 
-  Future<void> connectVoiceWebSocket() => _voiceWebSocket.connect();
+  Future<void> connectVoiceWebSocket([String? endpointId]) async {
+    if (endpointId != null) {
+      await _voiceWebSocket.connectEndpoint(endpointId);
+      return;
+    }
+    for (final state in _voiceWebSocket.endpointStates) {
+      unawaited(
+        _voiceWebSocket
+            .connectEndpoint(state.endpoint.id)
+            .catchError((Object _) {}),
+      );
+    }
+  }
 
-  Future<void> disconnectVoiceWebSocket() => _voiceWebSocket.disconnect();
+  Future<void> disconnectVoiceWebSocket([String? endpointId]) async {
+    if (endpointId != null) {
+      await _voiceWebSocket.disconnectEndpoint(endpointId);
+      return;
+    }
+    await Future.wait(
+      _voiceWebSocket.endpointStates.map(
+        (state) => _voiceWebSocket.disconnectEndpoint(state.endpoint.id),
+      ),
+    );
+  }
 
   Future<void> chooseSharedAudioFolder() async {
     final selected = await _sharedAudioExportStore.chooseFolder();
@@ -1108,10 +1163,12 @@ final class WearableController extends ChangeNotifier
       transcript.audioFileName == _sharedAudioExportStore.playingAudioFileName;
 
   Future<bool> sendDirectAgentMessage({
+    required String endpointId,
     required String agent,
     required String message,
   }) async {
     final route = _voiceWebSocket.routeTranscriptToSelectedAgent(
+      endpointId: endpointId,
       selectedAgent: agent,
       transcript: message,
     );
@@ -1119,6 +1176,7 @@ final class WearableController extends ChangeNotifier
       return false;
     }
     final result = await _voiceWebSocket.sendAgentMessageWithResult(
+      endpointId: route.endpointId!,
       agent: route.agent,
       message: route.message,
       deliveryMode: VoiceWebSocketDeliveryMode.immediate,
@@ -1302,9 +1360,13 @@ final class WearableController extends ChangeNotifier
   }
 
   void _voiceWebSocketChanged() {
+    final selectedAgent = _agentHistory.selected?.label;
+    final selectedStatus = selectedAgent == null
+        ? null
+        : _voiceWebSocket.statusForAgent(selectedAgent);
     if (_agentHistory.mode == G2AgentHistoryMode.waiting &&
-        (_voiceWebSocket.status == VoiceWebSocketStatus.disconnected ||
-            _voiceWebSocket.status == VoiceWebSocketStatus.error)) {
+        (selectedStatus == VoiceWebSocketStatus.disconnected ||
+            selectedStatus == VoiceWebSocketStatus.error)) {
       final title = _agentHistory.selected?.label ?? 'Agent';
       _agentHistoryWaitTimer?.cancel();
       _agentHistoryWaitTimer = null;
@@ -1592,7 +1654,10 @@ final class WearableController extends ChangeNotifier
       return;
     }
     final agent = _agentHistory.selectedSpeechAgent;
-    if (agent == null) {
+    final target = agent == null
+        ? null
+        : _voiceWebSocket.config.targetForAgent(agent);
+    if (agent == null || target == null) {
       _agentHistory.exitDetailListenMode();
       return;
     }
@@ -1603,6 +1668,7 @@ final class WearableController extends ChangeNotifier
           '${DateTime.now().toUtc().microsecondsSinceEpoch}-$revision',
       agent: agent,
       source: 'agent_detail',
+      endpointId: target.endpointId,
     );
     if (!_agentHistory.beginTargetedSpeech(session.id)) {
       _agentHistory.exitDetailListenMode();
@@ -1918,6 +1984,7 @@ final class WearableController extends ChangeNotifier
       return;
     }
     _selectedAgentSpeechRoutes[session.id] = _SelectedAgentSpeechRoute(
+      endpointId: session.endpointId ?? '',
       agent: session.agent,
       source: session.source,
     );
@@ -2186,6 +2253,9 @@ final class WearableController extends ChangeNotifier
           borderColor: G2Protocol.expandedTextBorderColor,
           paddingLength: G2Protocol.expandedTextPaddingLength,
           allowPageReplacement: allowPageReplacement,
+          // History owns the full-page image container. Changing this owner
+          // revokes any waveform fragments queued for the visualizer surface.
+          displayOwner: 'history',
           maximumTextRows: isSelector
               ? G2AgentHistoryState.selectorMaximumRenderedRows
               : null,
@@ -2320,6 +2390,7 @@ final class WearableController extends ChangeNotifier
             evidenceTranscript: delivery.rawTranscript,
           )
         : _voiceWebSocket.routeTranscriptToSelectedAgent(
+            endpointId: selectedRoute.endpointId,
             selectedAgent: selectedRoute.agent,
             transcript: transcript,
           );
@@ -2344,6 +2415,7 @@ final class WearableController extends ChangeNotifier
       await _glassesStatusQueue.markTranscriptSending(segmentId: segmentId);
     }
     final sendResult = await _voiceWebSocket.sendAgentMessageWithResult(
+      endpointId: route.endpointId!,
       agent: route.agent,
       message: route.message,
       deliveryMode: deliveryModeForAgentRoute(
@@ -2474,7 +2546,7 @@ final class WearableController extends ChangeNotifier
           kind: event.kind.name,
           requestId: event.requestId,
           agent: event.agent,
-          allowLegacyAgentMatch: _voiceWebSocket.config.useLegacyMessageShape,
+          allowLegacyAgentMatch: false,
         );
         final exchange = exchangeId == null
             ? null

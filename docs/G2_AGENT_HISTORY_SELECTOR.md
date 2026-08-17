@@ -28,17 +28,20 @@ agent ledger for only that agent. The
 target glasses layout contains:
 
 1. `[x]`
-2. up to five configured agent rows
+2. a moving window over every configured agent row
 3. `Memo`
 
 `[x]` is always the initially selected row. This makes opening the selector
 safe: a second tap closes it unless the user intentionally swipes to private
 content.
 
-The target workflow assumes five configured agents. If more than five are
-configured, the selector uses the five agents with the most recent
-acknowledged sends, while retaining their relative order from the saved
-configuration. The phone's Messages view remains the complete history.
+The selector accepts the complete configured list of up to 32 globally unique
+agent names. Agent rows are sorted by the newest inbound received-message
+timestamp, with the most recent first. Equal timestamps and agents without a
+received message retain saved configuration order; never-received agents
+follow agents with received history. The visible window moves as the selection
+crosses a page edge. The phone's Messages view exposes the same complete list
+as horizontally scrollable agent buttons.
 
 ## Glasses layouts
 
@@ -78,11 +81,10 @@ and ends with an ellipsis there:
      its second measured row…
 ```
 
-Complete one- or two-row entries are adaptively windowed inside the seven rows
+Complete one- or two-row entries are adaptively windowed inside seven rows
 beneath the fixed header. The ninth physical row stays unused so the firmware's
 own full-height scrolling path cannot claim the swipe. While the next entry
-fits, swipes move
-only `>`.
+fits, swipes move only `>`.
 When it does not fit, the minimum number of complete entries moves offscreen so
 the selected entry and its following context remain visible. Selection wraps
 between `[x]` and Memo, and entries are never split across viewport boundaries.
@@ -290,14 +292,12 @@ impossible until the current one is dismissed.
 
 A command becomes selectable as sent only after:
 
-- a modern `message.send` receives a positive matching `message.accepted`; or
-- a legacy command is written successfully, consistent with the existing
-  legacy contract.
+- its `message.send` receives a positive matching `message.accepted`.
 
 A rejection, acknowledgement timeout, queue expiration, configuration change,
-or failed legacy write does not replace the prior successful command.
+or failed write does not replace the prior successful command.
 
-A response belongs to a modern command only when:
+A response belongs to a command only when:
 
 - `message.progress` or `message.completed` carries the command's
   `request_id`; or
@@ -309,32 +309,16 @@ correlation is saved as normal inbound history but is not silently attached to
 the selected command. This prevents a response to older work from appearing as
 the answer to newer work.
 
-Legacy messages have no durable correlation contract. While the current app
-process is alive, a readable event may be associated with the latest live
-legacy send for the same agent. After restart, an uncorrelated legacy command
-remains visible without a fabricated response; opening history does not send a
-new request.
-
 ## Summary request behavior
 
 Agent-history selection is read-only. The separate double-tap progress shortcut
-can still send a modern summary request for the last acknowledged agent:
+can still send a summary request for the last acknowledged agent:
 
 ```json
 {
   "type": "summary.request",
   "request_id": "<unique-summary-request-id>",
   "agent": "Agent One"
-}
-```
-
-Legacy mode sends:
-
-```json
-{
-  "type": "local",
-  "agent": "Agent One",
-  "message": "progress_summary"
 }
 ```
 
@@ -407,9 +391,11 @@ exchange metadata is missing. Imported commands have no historical request ID,
 so recovery never fabricates response correlation.
 
 Changing WebSocket configuration clears the in-memory selector and pending
-summary association, but it does not clear durable agent history. The saved
-agent-name list filters which recovered records are offered by the phone and G2
-views for the newly configured server.
+summary association, but it does not clear durable agent history. The combined
+unique agent-name list filters which recovered records are offered by the phone
+and G2 views across the configured independent servers. The selector windows
+through the complete configured list rather than dropping names beyond its
+first visible page.
 
 ## Display ownership and concurrency
 
@@ -503,8 +489,10 @@ gesture-controlled ownership.
 ### Pure state tests
 
 - opening always selects `[x]`;
-- swipe up/down wraps across `[x]`, five agent options, and the final Memo
-  option;
+- swipe up/down wraps across `[x]`, every configured agent option, and the
+  final Memo option;
+- agents sort by newest received-message time, with configuration-order ties
+  and never-received agents at the end;
 - every agent starts one `[Agent] content` row, may use one aligned continuation
   row, collapses carriage returns, newlines, and repeated whitespace before
   measurement, ellipsizes further pixel overflow, and leaves the selector
@@ -566,7 +554,7 @@ gesture-controlled ownership.
 
 ### Protocol and persistence tests
 
-- only positive modern acknowledgement updates the latest agent command;
+- only a positive acknowledgement updates the latest agent command;
 - busy retry preserves the final accepted request ID;
 - selected-agent busy responses remain queued for bounded retry; rejection,
   timeout, and connection loss retain the message locally when delivery cannot
@@ -579,8 +567,7 @@ gesture-controlled ownership.
   tab and filters to only the selected agent;
 - configuration change clears live selection and pending timers;
 - restart rebuilds message history from atomic app-private message files and
-  exchange previews from app-private metadata;
-- legacy fallback never claims durable correlation it cannot prove.
+  exchange previews from app-private metadata.
 
 ### Display concurrency tests
 

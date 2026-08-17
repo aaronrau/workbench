@@ -521,6 +521,12 @@ final class VadSupervisor {
           _flushRequests.remove(requestId)?.complete();
         }
         return;
+      case 'flushed':
+        onStatus(
+          '[WorkBench][VAD] state=flushed next=ready '
+          'provider=${event['provider']} detector=recreated',
+        );
+        return;
       case 'error':
         final error = StateError('${event['message']}');
         onStatus(
@@ -900,11 +906,11 @@ void _vadWorker(Map<String, Object> bootstrap) {
       }
     }
 
-    final detector = vad;
     final selectedProvider = activeProvider;
-    if (detector == null || selectedProvider == null) {
+    if (vad == null || selectedProvider == null) {
       throw StateError('No compatible ONNX execution provider could load VAD.');
     }
+    var detector = vad;
 
     commands.listen((Object? message) {
       if (message is! Map<Object?, Object?>) {
@@ -1025,7 +1031,26 @@ void _vadWorker(Map<String, Object> bootstrap) {
             isConversationFinal: true,
             endReason: VadSegmentEndReason.flush,
           );
+          // A wearable reconnect is a new acoustic stream. Recreate the
+          // native detector instead of trusting provider-specific reset state
+          // after flush; physical G2 validation showed that a reset CPU
+          // detector could keep accepting PCM while never detecting speech.
+          final replacement = createVad(selectedProvider);
+          replacement.acceptWaveform(Float32List(512));
+          replacement.isDetected();
+          replacement.reset();
+          detector.free();
+          detector = replacement;
+          preRoll.clear();
+          rolloverOverlap.clear();
+          endpoint.reset();
+          segmentDuration.reset();
+          wordBoundary.reset();
           wasDetected = false;
+          events.send(<String, Object>{
+            'type': 'flushed',
+            'provider': selectedProvider,
+          });
           final requestId = message['requestId'];
           if (requestId is int) {
             events.send(<String, Object>{

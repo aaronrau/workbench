@@ -157,7 +157,6 @@ void main() {
       secret: 'example-secret',
       authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
       agentNames: const <String>['Agent One', 'Agent Two', 'Flux'],
-      useLegacyMessageShape: false,
     );
     await client.saveConfig(config);
     await _waitUntil(() => client.isReady);
@@ -379,7 +378,6 @@ void main() {
         secret: 'example-secret',
         authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
         agentNames: const <String>['Agent One'],
-        useLegacyMessageShape: false,
       ),
     );
     await _waitUntil(() => client.isReady);
@@ -442,7 +440,6 @@ void main() {
           secret: 'example-secret',
           authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
           agentNames: const <String>['Agent One'],
-          useLegacyMessageShape: false,
         ),
       );
       await _waitUntil(() => client.isReady);
@@ -473,51 +470,47 @@ void main() {
     },
   );
 
-  test(
-    'sends the exact legacy agent and message shape when selected',
-    () async {
-      final store = VoiceWebSocketConfigStore(
-        supportDirectory: () async => temp,
-      );
-      final client = VoiceWebSocketClient(
-        configStore: store,
-        reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
-        readyTimeout: const Duration(seconds: 1),
-      );
-      addTearDown(client.close);
-      await client.initialize();
-      await client.saveConfig(
-        VoiceWebSocketConfig.validate(
-          host: '127.0.0.1',
-          port: server.port,
-          secret: 'example-secret',
-          authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
-          agentNames: const <String>['Agent One'],
-          useLegacyMessageShape: true,
-        ),
-      );
-      await _waitUntil(() => client.isReady);
+  test('always sends acknowledged message and summary envelopes', () async {
+    final store = VoiceWebSocketConfigStore(supportDirectory: () async => temp);
+    final client = VoiceWebSocketClient(
+      configStore: store,
+      reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+      readyTimeout: const Duration(seconds: 1),
+    );
+    addTearDown(client.close);
+    await client.initialize();
+    await client.saveConfig(
+      VoiceWebSocketConfig.validate(
+        host: '127.0.0.1',
+        port: server.port,
+        secret: 'example-secret',
+        authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+        agentNames: const <String>['Agent One'],
+      ),
+    );
+    await _waitUntil(() => client.isReady);
 
-      final sent = await client.sendTranscript('Agent One, run the check');
-      await _waitUntil(() => received.isNotEmpty);
+    final sent = await client.sendTranscript('Agent One, run the check');
+    await _waitUntil(() => received.isNotEmpty);
 
-      expect(sent, isTrue);
-      expect(received.single, <String, dynamic>{
-        'agent': 'Agent One',
-        'message': 'run the check',
-      });
+    expect(sent, isTrue);
+    expect(received.single['type'], 'message.send');
+    expect(
+      received.single['request_id'],
+      isA<String>().having((value) => value.isNotEmpty, 'is not empty', isTrue),
+    );
+    expect(received.single['agent'], 'Agent One');
+    expect(received.single['message'], 'run the check');
 
-      final summary = await client.requestLastSentAgentSummary();
-      await _waitUntil(() => received.length == 2);
+    final summary = await client.requestLastSentAgentSummary();
+    await _waitUntil(() => received.length == 2);
 
-      expect(summary, VoiceWebSocketSummaryRequestOutcome.sent);
-      expect(received.last, <String, dynamic>{
-        'type': 'local',
-        'agent': 'Agent One',
-        'message': 'progress_summary',
-      });
-    },
-  );
+    expect(summary, VoiceWebSocketSummaryRequestOutcome.sent);
+    expect(received.last['type'], 'summary.request');
+    expect(received.last['request_id'], isA<String>());
+    expect(received.last['agent'], 'Agent One');
+    expect(received.last, isNot(contains('message')));
+  });
 
   test(
     'requests a summary for only the last acknowledged modern agent',
@@ -541,7 +534,6 @@ void main() {
         secret: 'example-secret',
         authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
         agentNames: const <String>['Agent One', 'Agent Two'],
-        useLegacyMessageShape: false,
       );
       await client.saveConfig(config);
       await _waitUntil(() => client.isReady);
@@ -629,7 +621,6 @@ void main() {
         secret: 'example-secret',
         authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
         agentNames: const <String>['Agent One'],
-        useLegacyMessageShape: false,
       ),
     );
     await _waitUntil(() => client.isReady);
@@ -673,7 +664,6 @@ void main() {
           secret: 'example-secret',
           authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
           agentNames: const <String>['Flux'],
-          useLegacyMessageShape: false,
         ),
       );
       await _waitUntil(() => client.isReady);
@@ -1055,6 +1045,33 @@ void main() {
     expect(await first, isFalse);
     expect(client.queuedMessageCount, 0);
   });
+
+  test(
+    'closing during a pending server upgrade is a clean cancellation',
+    () async {
+      final pendingConnection = Completer<WebSocket>();
+      final config = VoiceWebSocketConfig.validate(
+        host: '127.0.0.2',
+        port: 18787,
+        secret: 'pending-server-secret',
+        authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+        agentNames: const <String>['Pending Agent'],
+      );
+      final client = VoiceWebSocketClient(
+        configStore: VoiceWebSocketConfigStore.inMemory(config),
+        connector: (_, _) => pendingConnection.future,
+        reconnectDelays: const <Duration>[],
+      );
+
+      await client.initialize();
+      await _waitUntil(() => client.status == VoiceWebSocketStatus.connecting);
+      await client.close();
+      pendingConnection.completeError(StateError('synthetic cancellation'));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(client.status, VoiceWebSocketStatus.connecting);
+    },
+  );
 }
 
 Future<VoiceWebSocketClient> _configuredClient({
@@ -1084,7 +1101,6 @@ Future<VoiceWebSocketClient> _configuredClient({
       secret: 'example-secret',
       authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
       agentNames: agentNames,
-      useLegacyMessageShape: false,
     ),
   );
   await _waitUntil(() => client.isReady);

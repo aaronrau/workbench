@@ -6,6 +6,7 @@ import 'package:even_g2_r1_poc/src/ble/ble_models.dart';
 import 'package:even_g2_r1_poc/src/ui/home_history_panel.dart';
 import 'package:even_g2_r1_poc/src/ui/workbench_theme.dart';
 import 'package:even_g2_r1_poc/src/websocket/agent_exchange_store.dart';
+import 'package:even_g2_r1_poc/src/websocket/voice_websocket_config.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -293,7 +294,11 @@ void main() {
           isLoadingConversations: false,
           isStorageBusy: false,
           onSendAgentMessage:
-              ({required String agent, required String message}) async {
+              ({
+                required String endpointId,
+                required String agent,
+                required String message,
+              }) async {
                 sentAgent = agent;
                 sentMessage = message;
                 return true;
@@ -429,7 +434,11 @@ void main() {
           isLoadingConversations: false,
           isStorageBusy: false,
           onSendAgentMessage:
-              ({required String agent, required String message}) async => false,
+              ({
+                required String endpointId,
+                required String agent,
+                required String message,
+              }) async => false,
         ),
       ),
     );
@@ -873,6 +882,92 @@ void main() {
     expect(find.text('Conversation turn 0'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'shows all endpoint agents and does not block a second endpoint send',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final slowSend = Completer<bool>();
+      final sent = <String>[];
+      final targets = <VoiceWebSocketAgentTarget>[
+        for (final agent in const <String>['A1', 'A2', 'A3', 'A4'])
+          VoiceWebSocketAgentTarget(endpointId: 'endpoint-a', agentName: agent),
+        for (final agent in const <String>['B1', 'B2', 'B3', 'B4'])
+          VoiceWebSocketAgentTarget(endpointId: 'endpoint-b', agentName: agent),
+      ];
+
+      await tester.pumpWidget(
+        _app(
+          HomeHistoryPanel(
+            events: const <PooledLog>[],
+            conversations: const <SharedConversationTurn>[],
+            agentTargets: targets,
+            analysisEnabled: false,
+            needsEnrollment: false,
+            analysisState: 'disabled',
+            knownSpeakerCount: 0,
+            pendingConversationCount: 0,
+            isLoadingConversations: false,
+            isStorageBusy: false,
+            onSendAgentMessage:
+                ({
+                  required String endpointId,
+                  required String agent,
+                  required String message,
+                }) {
+                  sent.add('$endpointId:$agent:$message');
+                  return endpointId == 'endpoint-a'
+                      ? slowSend.future
+                      : Future<bool>.value(true);
+                },
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Messages'));
+      await tester.pumpAndSettle();
+      final chips = tester.widget<ListView>(
+        find.byKey(const ValueKey<String>('message-agent-chips')),
+      );
+      final chipDelegate = chips.childrenDelegate as SliverChildBuilderDelegate;
+      expect((chipDelegate.estimatedChildCount! + 1) ~/ 2, 9);
+
+      await tester.tap(find.byKey(const ValueKey<String>('message-agent-A1')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey<String>('direct-agent-message-field')),
+        'slow',
+      );
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      await tester.pump();
+
+      await tester.drag(
+        find.byKey(const ValueKey<String>('message-agent-chips')),
+        const Offset(-600, 0),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey<String>('message-agent-B1')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey<String>('direct-agent-message-field')),
+        'fast',
+      );
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      await tester.pumpAndSettle();
+
+      expect(sent, contains('endpoint-a:A1:slow'));
+      expect(sent, contains('endpoint-b:B1:fast'));
+      expect(find.text('Sent to B1.'), findsOneWidget);
+      expect(slowSend.isCompleted, isFalse);
+
+      slowSend.complete(true);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 SharedConversationTurn _turn({

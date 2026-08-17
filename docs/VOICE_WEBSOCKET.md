@@ -27,27 +27,38 @@ WebSocket inbound event → durable `.received.message.txt`
 
 ## Configuration
 
-**Tools → Agent connection** accepts:
+**Tools → Agent connection** is a registry of up to eight independent servers.
+Use **Add server**, **Remove server**, and **Save servers** to manage it. Each
+server accepts:
 
-- an IPv4 address containing four numeric octets;
-- a separate numeric port from 1 through 65535;
-- a masked secret stored in app-private storage;
+- a different IPv4 address containing four numeric octets;
+- its own numeric port from 1 through 65535;
+- its own masked authentication secret stored in app-private storage;
 - `Authorization: Bearer` or `X-Voice-Api-Token` upgrade authentication;
-- up to 32 case-insensitive, deduplicated agent names; and
-- an optional legacy message shape.
+- one to four case-insensitive, deduplicated agent names.
 
-Home shows the configured address to the right of the local-audio model
-status. The adjacent text distinguishes not configured, disconnected,
-connecting, connected, and error states; its dot turns green only after the
-socket receives `connection.ready`. The address remains UI-only and is
-excluded from logs.
+IP addresses and agent names are unique across all servers. A matched command
+goes only to the server that owns that name; Work Bench does not broadcast or
+fail over to another address. Home shows one horizontally scrollable
+dot-and-address item per configured server IP. Each dot turns green
+independently only after its own socket receives `connection.ready`. Addresses
+remain UI-only and are excluded from logs.
+
+Every endpoint owns its socket, stream subscription, inbound processing tail,
+acknowledgement map, outbound FIFO, retry timers, resume cursor, and connection
+generation. There is no global readiness gate or cross-endpoint queue. A
+connect failure, authentication rejection, busy response, acknowledgement
+timeout, reconnect, configuration edit, or inbound failure on one endpoint
+cannot disconnect, reorder, or delay another endpoint. Editing an endpoint
+restarts only that endpoint; unchanged sockets remain live.
 
 The path is fixed to `/ws`. The complete validated schema is in
 [`voice_websocket.example.json`](../voice_websocket.example.json). The runtime
 file is `workbench/voice_websocket.json` under the platform application-support
 directory. Atomic replacement prevents a partial save from becoming active,
 and an invalid external edit leaves the last valid in-memory configuration
-unchanged.
+unchanged. Version-1 single-server files migrate in memory to the first
+version-2 server entry and are written as version 2 on the next save.
 
 The secret is never shown in status text and is never written to Work Bench
 logs. Plain `ws://` does not encrypt its upgrade headers or messages; use it
@@ -63,6 +74,36 @@ adb -s <android-serial> reverse tcp:8787 tcp:8787
 The HTTP upgrade includes exactly one configured authentication header. Work
 Bench sends no client hello and waits for a version-1 `connection.ready`
 message before sending agent traffic.
+
+## Messages tab
+
+The Messages tab shows `All` followed by one horizontally scrollable 48dp
+agent button for every configured name across every endpoint. A selected
+button carries both the canonical agent name and its endpoint ID. Filtering,
+direct sends, drafts, sending state, and success or failure feedback are scoped
+to that destination. A pending send on one endpoint never disables another
+endpoint's agent buttons or composer. `All` continues to combine durable
+messages and transcripts from every endpoint.
+
+The G2 agent selector uses the same complete agent list and windows through all
+configured names instead of dropping names beyond its first visible page.
+
+## Docker mock validation
+
+The checked-in validation builds a temporary mock-server executable and Docker
+image, starts two authenticated `/ws` servers on different container IPs with
+different authentication secrets and agent names, confirms agent-name routing
+plus acknowledged outbound and readable inbound signals on both, stops the first
+server, and proves the second remains usable:
+
+```sh
+tool/run_multi_voice_websocket_docker_validation.sh
+```
+
+The runner gives every container, network, and image a unique task-scoped name.
+Its exit trap removes both containers, the temporary network and image, and the
+compiled temporary artifact on success and failure. The mock logs only signal
+character counts; it does not log configured names, secrets, or message bodies.
 
 The modern message envelope is:
 
@@ -95,8 +136,7 @@ in-call attempts, the command stays at the head of the bounded outbound FIFO
 and retries with the same ID. Servers must treat repeated request IDs
 idempotently: return the prior acknowledgement without delivering the agent
 command twice. An explicit non-busy `message.error` or negative
-acknowledgement is not retried. The legacy shape has no acknowledgement
-contract and therefore is not automatically retried.
+acknowledgement is not retried.
 
 An `agent_busy` error, acknowledgement timeout, or connection loss keeps the
 command in a 32-item, app-process-only FIFO. The head retries after bounded 2,
@@ -109,21 +149,9 @@ forever. Changing configuration, disconnecting, closing the client, or
 restarting the app cancels the queue; queued commands are never restored or
 surprisingly delivered in a later process.
 
-Legacy mode sends only:
-
-```json
-{
-  "agent": "Agent One",
-  "message": "pull the latest changes"
-}
-```
-
-Because that shape has no request correlation contract, Work Bench treats a
-successful socket write as sent.
-
 ## Double-tap progress request
 
-After a modern command receives a positive `message.accepted`, Work Bench
+After a command receives a positive `message.accepted`, Work Bench
 retains that command's canonical agent name in app-process memory. A G2/R1
 double tap outside an active voice memo sends:
 
@@ -132,16 +160,6 @@ double tap outside an active voice memo sends:
   "type": "summary.request",
   "request_id": "<unique-request-id>",
   "agent": "Agent One"
-}
-```
-
-When legacy mode is selected, the equivalent request is:
-
-```json
-{
-  "type": "local",
-  "agent": "Agent One",
-  "message": "progress_summary"
 }
 ```
 
@@ -164,8 +182,8 @@ inbound events. Voice memo finalization retains priority over this action.
 
 When no transcript is visibly `Queued:`, the single-tap interaction expands
 progress lookup into a gesture-controlled selector with `Dismiss` selected
-first, up to five one-line agent rows, and the local Memo row last. Tapping an
-agent loads every exchange retained for it in the bounded ledger and lists each
+first, a moving window over all configured agent rows, and the local Memo row
+last. Tapping an agent loads every exchange retained for it in the bounded ledger and lists each
 message as `[HH:mm] Message`; swipe up/down pages through the complete content
 without a network request.
 Every successfully indexed inbound response for that open agent reloads the
@@ -316,7 +334,7 @@ misheard agent name and command body only after the raw leading attention word
 is present. The raw and corrected files remain separate. Explicitly disabling
 correction permits the live raw transcript to route as a documented fallback.
 
-The item resolves to `Sent:` only after a positive modern acknowledgement.
+The item resolves to `Sent:` only after a positive acknowledgement.
 Every other outcome resolves to `Saved:`. The terminal state remains visible
 for two seconds, exits the full-height page back to the visualizer, and then
 yields to the latest deferred inbound item. If an inbound event arrives before the

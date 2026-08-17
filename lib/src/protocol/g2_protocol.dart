@@ -1500,15 +1500,45 @@ final class AsyncWriteQueue {
   /// A higher-priority operation can run between fragments instead of waiting
   /// for an entire bitmap transfer. G2 transport packets carry a sync ID, so
   /// the firmware can reassemble an interleaved one-packet text update while
-  /// the lower-priority image transfer remains in progress.
+  /// the lower-priority image transfer remains in progress. A caller that is
+  /// changing the destination display surface must provide [shouldContinue];
+  /// queued fragments are checked again immediately before execution so an
+  /// old bitmap can never resume against a new image container.
   Future<void> addBatch(
     Iterable<Future<void> Function()> operations, {
     AsyncWritePriority priority = AsyncWritePriority.normal,
     Duration interOperationDelay = Duration.zero,
+    bool Function()? shouldContinue,
+    void Function()? onCanceled,
   }) async {
     final items = operations.toList(growable: false);
+    var canceled = false;
+
+    void cancel() {
+      if (canceled) {
+        return;
+      }
+      canceled = true;
+      onCanceled?.call();
+    }
+
     for (var index = 0; index < items.length; index++) {
-      await add(items[index], priority: priority);
+      if (!(shouldContinue?.call() ?? true)) {
+        cancel();
+        return;
+      }
+      await add(() async {
+        // A fragment can spend time queued behind another write. Re-check at
+        // execution so a surface transition can revoke a stale image batch.
+        if (!(shouldContinue?.call() ?? true)) {
+          cancel();
+          return;
+        }
+        await items[index]();
+      }, priority: priority);
+      if (canceled) {
+        return;
+      }
       if (interOperationDelay > Duration.zero && index + 1 < items.length) {
         await Future<void>.delayed(interOperationDelay);
       }

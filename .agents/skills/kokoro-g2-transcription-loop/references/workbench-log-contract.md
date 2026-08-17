@@ -11,7 +11,9 @@ its primary button through a complete connected → **Disconnect** →
 **Connect devices** → connected cycle. If the app starts disconnected, connect
 it first and then perform that full cycle. Do not call Android BLE APIs or app
 internals as a shortcut. Playback remains blocked until at least two fresh G2
-audio summaries arrive after the final reconnect. Preserve
+audio summaries arrive after the final reconnect. The expected disconnect must
+also recreate the native VAD detector and report its flush-ready marker before
+the reconnect begins. Preserve
 `connection-preflight.log` and `connection-preflight.json` with the trial.
 
 ```text
@@ -21,6 +23,7 @@ audio summaries arrive after the final reconnect. Preserve
 [WorkBench][Test] state=connection_disconnect_ready case=preflight
 [WorkBench][Test] state=connection_audio_wait case=preflight
 [WorkBench][Test] state=connection_reconnect_ready case=preflight
+[WorkBench][VAD] state=flushed next=ready provider=<provider> detector=recreated
 ```
 
 The initial-connect markers are conditional when the app already receives live
@@ -29,6 +32,19 @@ fresh audio that arrives during that wait takes precedence and continues the
 cycle immediately. Initial G2 audio can precede completion of the app's
 connection action; retry the visible **Disconnect** control until the expected
 disconnect marker arrives instead of bypassing the button.
+
+The agent-menu stress case additionally requires these markers while playback
+and capture continue:
+
+```text
+[WorkBench][DebugSelector] state=opened fixture=<integer> rows=<integer>
+[WorkBench][G2Display] state=generation_changed generation=<integer> owner=history pulse_in_flight=<true|false>
+```
+
+After the selector opens, at least one fresh G2 audio summary and capture
+streaming marker must follow. The run fails on an Android fatal-exception,
+native fatal-signal, or package ANR marker. These logs do not replace visual
+inspection of the physical glasses for invalid pixels.
 
 The host runner brackets every acoustic stimulus with markers written through
 Android's `log` command:
@@ -145,11 +161,18 @@ Existing audio summaries are also accepted:
 ## Recovery markers
 
 ```text
+[WorkBench][VAD] state=flushed next=ready provider=<provider> detector=recreated
 [WorkBench][Transcription] state=restarting attempt=<integer>
 [WorkBench][Transcription] state=ready recovered=true
 [WorkBench][Bluetooth] state=disconnected expected=<true|false>
 [WorkBench][Bluetooth] state=connected recovered=true
 ```
+
+The physical preflight must observe `VAD state=flushed next=ready` with
+`detector=recreated` after the expected app-button disconnect and before
+reconnecting. It then requires fresh post-reconnect G2 audio summaries.
+Computer-speaker playback is blocked if either the recreated-detector marker
+or fresh audio is absent; an old ready marker is not a substitute.
 
 The app may also report an audio-only recovery without cycling Bluetooth:
 

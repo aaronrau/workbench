@@ -97,6 +97,19 @@ class ScoringTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.test_marker("unbounded", "preflight")
 
+    def test_disconnect_preflight_requires_vad_flush_readiness(self) -> None:
+        self.assertIsNotNone(
+            MODULE.VAD_FLUSHED_RE.search(
+                "[WorkBench][VAD] state=flushed next=ready "
+                "provider=cpu detector=recreated"
+            )
+        )
+        self.assertIsNone(
+            MODULE.VAD_FLUSHED_RE.search(
+                "[WorkBench][VAD] state=flushed next=ready provider=cpu"
+            )
+        )
+
     def test_late_audio_wins_while_waiting_for_pipeline_ready(self) -> None:
         marker = MODULE.test_marker("connection_audio_wait", "initial_connect")
         with tempfile.TemporaryDirectory() as temporary:

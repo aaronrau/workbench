@@ -1,6 +1,7 @@
 import 'agent_exchange_store.dart';
 import '../protocol/g2_text_layout.dart';
 import 'selected_agent_transcript_session.dart';
+import 'voice_websocket_config.dart';
 
 enum G2AgentHistoryMode { closed, selector, waiting, detail }
 
@@ -27,7 +28,7 @@ final class G2AgentHistoryEntry {
 }
 
 final class G2AgentHistoryState {
-  static const int maximumAgents = 5;
+  static const int maximumAgents = VoiceWebSocketConfig.maximumAgentNames;
   static const int selectorEntryMaximumLines = 2;
   // Keep the selector shorter than the physical nine-row text surface. A
   // full-height text frame can enter the firmware's own scrolling path while

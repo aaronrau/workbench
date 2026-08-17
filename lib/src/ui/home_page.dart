@@ -6,7 +6,7 @@ import '../ble/ble_models.dart';
 import '../startup/startup_state.dart';
 import '../util/hex.dart';
 import '../wearable_controller.dart';
-import '../websocket/voice_websocket_client.dart';
+import '../websocket/voice_websocket_connections.dart';
 import 'app_version_label.dart';
 import 'conversation_analysis_settings.dart';
 import 'home_history_panel.dart';
@@ -213,9 +213,7 @@ final class _HomePageState extends State<HomePage> {
           ),
           const SizedBox(width: 8),
           VoiceWebSocketHomeStatus(
-            host: controller.voiceWebSocketConfig.host,
-            port: controller.voiceWebSocketConfig.port,
-            status: controller.voiceWebSocketStatus,
+            states: controller.voiceWebSocketEndpointStates,
           ),
           if (startup.phase == StartupPhase.failed)
             IconButton(
@@ -431,6 +429,7 @@ final class _HomePageState extends State<HomePage> {
         voiceMemos: controller.voiceMemos,
         messages: controller.sharedWebSocketMessages,
         agentNames: controller.voiceWebSocketConfig.agentNames,
+        agentTargets: controller.voiceWebSocketAgentTargets,
         agentMessages: controller.agentMessages,
         transcriptions: controller.sharedTranscripts,
         supportsSharedFolder: controller.supportsSharedAudioFolder,
@@ -536,14 +535,13 @@ final class _HomePageState extends State<HomePage> {
             const SizedBox(height: 16),
             VoiceWebSocketSettings(
               config: controller.voiceWebSocketConfig,
-              status: controller.voiceWebSocketStatus,
-              statusText: controller.voiceWebSocketStatusText,
+              endpointStates: controller.voiceWebSocketEndpointStates,
               validationError: controller.voiceWebSocketValidationError,
               busy: _busy,
               onSave: (config) =>
                   _run(() => controller.saveVoiceWebSocketConfig(config)),
-              onConnect: () => _run(controller.connectVoiceWebSocket),
-              onDisconnect: () => _run(controller.disconnectVoiceWebSocket),
+              onConnect: controller.connectVoiceWebSocket,
+              onDisconnect: controller.disconnectVoiceWebSocket,
             ),
           ],
         ),
@@ -907,9 +905,7 @@ final class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 8),
             const VoiceWebSocketHomeStatus(
-              host: '192.0.2.10',
-              port: 8787,
-              status: VoiceWebSocketStatus.ready,
+              states: <VoiceWebSocketEndpointState>[],
             ),
             const SizedBox(height: 16),
             Text('Peer views', style: theme.textTheme.titleSmall),

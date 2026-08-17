@@ -117,6 +117,7 @@ final class G2Connection {
   bool _nativeMenuOpen = false;
   bool _awaitingNativeMenuOpenConfirm = false;
   int _generation = 0;
+  int _displayGeneration = 0;
   int _batteryHeartbeatCount = 0;
   int _controlledPageRendersInFlight = 0;
 
@@ -177,6 +178,7 @@ final class G2Connection {
     if (!target.isComplete) {
       throw StateError('A G2 pair requires both the left and right lens.');
     }
+    _beginDisplayGeneration('connection');
     _target = target;
     _manualDisconnect = true;
     await _teardownLinks();
@@ -511,26 +513,60 @@ final class G2Connection {
     _onChanged();
   }
 
-  Future<void> _createPage(String content) async {
+  int _beginDisplayGeneration(String owner) {
+    _displayGeneration++;
+    _pulseTimer?.cancel();
+    _pulseTimer = null;
+    _pulseUpdatePending = false;
+    _log(
+      'G2 display',
+      '[WorkBench][G2Display] state=generation_changed '
+          'generation=$_displayGeneration owner=$owner '
+          'pulse_in_flight=$_pulseUpdateInFlight',
+    );
+    return _displayGeneration;
+  }
+
+  bool _isDisplayGenerationCurrent(int generation) =>
+      generation == _displayGeneration;
+
+  Future<void> _createPage(String content, {int? displayGeneration}) async {
+    final generation =
+        displayGeneration ?? _beginDisplayGeneration('visualizer');
     if (_memoDisplayActive) {
-      await _createMemoPage();
+      await _createMemoPage(displayGeneration: generation);
       return;
     }
     if (_fullPageTextActive) {
-      await _createFullPageText(content);
+      await _createFullPageText(content, displayGeneration: generation);
       return;
     }
+    bool isCurrent() =>
+        _isDisplayGenerationCurrent(generation) &&
+        !_memoDisplayActive &&
+        !_fullPageTextActive;
     await _sendPayload(
       G2Ids.serviceEvenHub,
       _protocol.createTextPage(''),
       reserveFlag: true,
+      shouldContinue: isCurrent,
     );
+    if (!isCurrent()) {
+      return;
+    }
     await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (!isCurrent()) {
+      return;
+    }
     await _sendPayload(
       G2Ids.serviceEvenHub,
       _protocol.rebuildAudioVisualizerPage(gesture: content),
       reserveFlag: true,
+      shouldContinue: isCurrent,
     );
+    if (!isCurrent()) {
+      return;
+    }
     _lastPageContent = content;
     _pageCreated = true;
     pageSessionStatus = 'audio visualizer page created';
@@ -601,6 +637,7 @@ final class G2Connection {
     int paddingLength = G2Protocol.fullPageTextPaddingLength,
     bool allowPageReplacement = true,
     int? maximumTextRows,
+    String displayOwner = 'status',
   }) async {
     final nextFrame = G2PageRenderFrame.validate(
       content: content,
@@ -644,6 +681,9 @@ final class G2Connection {
       );
       return;
     }
+    final displayGeneration = _beginDisplayGeneration(displayOwner);
+    bool isCurrent() =>
+        _isDisplayGenerationCurrent(displayGeneration) && _fullPageTextActive;
     // This controlled replacement makes any previously scheduled recovery
     // obsolete. Lifecycle events emitted by this rebuild may schedule a new
     // one, which is cancelled only after the replacement fully settles.
@@ -683,7 +723,13 @@ final class G2Connection {
     try {
       if (renderAction == G2PageRenderAction.replacePage) {
         _fullPageTextActive = true;
-        await _createFullPageText(content);
+        await _createFullPageText(
+          content,
+          displayGeneration: displayGeneration,
+        );
+        if (!isCurrent()) {
+          return;
+        }
         completed = _pageCreated;
       } else {
         // Detail pages are pre-paginated on the phone. Keep the page and its
@@ -695,10 +741,20 @@ final class G2Connection {
           _protocol.updateText(content),
           reserveFlag: true,
           priority: AsyncWritePriority.high,
+          shouldContinue: isCurrent,
         );
+        if (!isCurrent()) {
+          return;
+        }
         _lastPageContent = content;
-        if (await _sendFullPageTextIndicator(settleAfterRebuild: false)) {
-          _finishControlledPageRebuild('full-page text upgraded');
+        if (await _sendFullPageTextIndicator(
+          settleAfterRebuild: false,
+          displayGeneration: displayGeneration,
+        )) {
+          _finishControlledPageRebuild(
+            'full-page text upgraded',
+            displayGeneration: displayGeneration,
+          );
           completed = true;
         }
       }
@@ -724,6 +780,7 @@ final class G2Connection {
     if (!_fullPageTextActive) {
       return;
     }
+    final displayGeneration = _beginDisplayGeneration('visualizer');
     _fullPageTextActive = false;
     _fullPageTextIndicatorActive = false;
     _fullPageTextPageIndex = 0;
@@ -737,11 +794,18 @@ final class G2Connection {
       return;
     }
     _pageCreated = false;
-    await _createPage('');
+    await _createPage('', displayGeneration: displayGeneration);
     _log('G2 TX', 'Full-page text closed and audio visualizer restored');
   }
 
-  Future<void> _createFullPageText(String content) async {
+  Future<void> _createFullPageText(
+    String content, {
+    int? displayGeneration,
+  }) async {
+    final generation =
+        displayGeneration ?? _beginDisplayGeneration('full_page');
+    bool isCurrent() =>
+        _isDisplayGenerationCurrent(generation) && _fullPageTextActive;
     if (!_pageCreated) {
       await _sendPayload(
         G2Ids.serviceEvenHub,
@@ -756,8 +820,15 @@ final class G2Connection {
         ),
         reserveFlag: true,
         priority: AsyncWritePriority.high,
+        shouldContinue: isCurrent,
       );
+      if (!isCurrent()) {
+        return;
+      }
       await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (!isCurrent()) {
+        return;
+      }
     }
     await _sendPayload(
       G2Ids.serviceEvenHub,
@@ -772,18 +843,33 @@ final class G2Connection {
       ),
       reserveFlag: true,
       priority: AsyncWritePriority.high,
+      shouldContinue: isCurrent,
     );
+    if (!isCurrent()) {
+      return;
+    }
     _lastPageContent = content;
-    if (await _sendFullPageTextIndicator(settleAfterRebuild: true)) {
-      _finishControlledPageRebuild('full-page text created');
+    if (await _sendFullPageTextIndicator(
+      settleAfterRebuild: true,
+      displayGeneration: generation,
+    )) {
+      _finishControlledPageRebuild(
+        'full-page text created',
+        displayGeneration: generation,
+      );
     }
   }
 
   Future<bool> _sendFullPageTextIndicator({
     required bool settleAfterRebuild,
+    required int displayGeneration,
   }) async {
+    bool isCurrent() =>
+        _isDisplayGenerationCurrent(displayGeneration) &&
+        isConnected &&
+        _fullPageTextActive;
     if (!_fullPageTextIndicatorActive) {
-      return isConnected && _fullPageTextActive;
+      return isCurrent();
     }
     final pageIndex = _fullPageTextPageIndex;
     final pageCount = _fullPageTextPageCount;
@@ -793,7 +879,7 @@ final class G2Connection {
     if (settleAfterRebuild) {
       await Future<void>.delayed(_pageReplacementSettleInterval);
     }
-    if (!isConnected ||
+    if (!isCurrent() ||
         !_fullPageTextActive ||
         !_fullPageTextIndicatorActive ||
         pageIndex != _fullPageTextPageIndex ||
@@ -809,12 +895,18 @@ final class G2Connection {
       pageCount: pageCount,
     );
     final bitmapMetadata = G2Protocol.validateDetailPageIndicatorBitmap(bitmap);
+    var canceled = false;
     await _sendPayload(
       G2Ids.serviceEvenHub,
       _protocol.updateDetailPageIndicatorImage(bitmap),
       reserveFlag: true,
       priority: AsyncWritePriority.high,
+      shouldContinue: isCurrent,
+      onCanceled: () => canceled = true,
     );
+    if (canceled || !isCurrent()) {
+      return false;
+    }
     _log(
       'G2 TX',
       'Detail page thumb sent (${pageIndex + 1}/$pageCount; '
@@ -826,7 +918,13 @@ final class G2Connection {
     return true;
   }
 
-  void _finishControlledPageRebuild(String status) {
+  void _finishControlledPageRebuild(
+    String status, {
+    required int displayGeneration,
+  }) {
+    if (!_isDisplayGenerationCurrent(displayGeneration)) {
+      return;
+    }
     // Lifecycle exits produced by our own page replacement may have scheduled
     // recovery while the write was in flight. The completed rebuild already
     // owns the foreground, so that recovery is stale and must not race a
@@ -886,6 +984,7 @@ final class G2Connection {
     if (!_memoDisplayActive) {
       return;
     }
+    final displayGeneration = _beginDisplayGeneration('visualizer');
     _memoDisplayActive = false;
     _memoDisplayNote = '';
     _memoDisplayStatus = '';
@@ -897,27 +996,41 @@ final class G2Connection {
       return;
     }
     _pageCreated = false;
-    await _createPage('');
+    await _createPage('', displayGeneration: displayGeneration);
     _log('G2 TX', 'Memo page closed and the audio visualizer was restored');
   }
 
-  Future<void> _createMemoPage() async {
+  Future<void> _createMemoPage({int? displayGeneration}) async {
+    final generation = displayGeneration ?? _beginDisplayGeneration('memo');
     _fullPageTextActive = false;
+    bool isCurrent() =>
+        _isDisplayGenerationCurrent(generation) && _memoDisplayActive;
     if (!_pageCreated) {
       await _sendPayload(
         G2Ids.serviceEvenHub,
         _protocol.createTextPage(_currentMemoPage),
         reserveFlag: true,
         priority: AsyncWritePriority.high,
+        shouldContinue: isCurrent,
       );
+      if (!isCurrent()) {
+        return;
+      }
       await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (!isCurrent()) {
+        return;
+      }
     }
     await _sendPayload(
       G2Ids.serviceEvenHub,
       _protocol.rebuildTextPage(_currentMemoPage),
       reserveFlag: true,
       priority: AsyncWritePriority.high,
+      shouldContinue: isCurrent,
     );
+    if (!isCurrent()) {
+      return;
+    }
     _lastPageContent = _currentMemoPage;
     _pageCreated = true;
     pageSessionStatus = 'memo page created';
@@ -1321,12 +1434,16 @@ final class G2Connection {
     bool left = false,
     bool right = true,
     AsyncWritePriority priority = AsyncWritePriority.normal,
+    bool Function()? shouldContinue,
+    void Function()? onCanceled,
   }) {
     return _writePackets(
       _protocol.frame(service, payload, reserveFlag: reserveFlag),
       left: left,
       right: right,
       priority: priority,
+      shouldContinue: shouldContinue,
+      onCanceled: onCanceled,
     );
   }
 
@@ -1335,13 +1452,31 @@ final class G2Connection {
     required bool left,
     required bool right,
     AsyncWritePriority priority = AsyncWritePriority.normal,
+    bool Function()? shouldContinue,
+    void Function()? onCanceled,
   }) async {
     final writes = <Future<void>>[];
     if (left) {
-      writes.add(_enqueueLensPackets(_left, packets, priority: priority));
+      writes.add(
+        _enqueueLensPackets(
+          _left,
+          packets,
+          priority: priority,
+          shouldContinue: shouldContinue,
+          onCanceled: onCanceled,
+        ),
+      );
     }
     if (right) {
-      writes.add(_enqueueLensPackets(_right, packets, priority: priority));
+      writes.add(
+        _enqueueLensPackets(
+          _right,
+          packets,
+          priority: priority,
+          shouldContinue: shouldContinue,
+          onCanceled: onCanceled,
+        ),
+      );
     }
     await Future.wait(writes);
   }
@@ -1350,6 +1485,8 @@ final class G2Connection {
     _Lens lens,
     List<Uint8List> packets, {
     required AsyncWritePriority priority,
+    bool Function()? shouldContinue,
+    void Function()? onCanceled,
   }) {
     final characteristic = lens.write;
     if (characteristic == null) {
@@ -1365,6 +1502,8 @@ final class G2Connection {
       ],
       priority: priority,
       interOperationDelay: const Duration(milliseconds: 8),
+      shouldContinue: shouldContinue,
+      onCanceled: onCanceled,
     );
   }
 
@@ -2406,6 +2545,13 @@ final class G2Connection {
     }
     _pulseUpdateInFlight = true;
     try {
+      final displayGeneration = _displayGeneration;
+      bool isCurrent() =>
+          _isDisplayGenerationCurrent(displayGeneration) &&
+          _pageCreated &&
+          !_memoDisplayActive &&
+          !_fullPageTextActive &&
+          !terminalModeEnabled;
       final streaming = audioEnabled && lastAudioAt != null;
       final signature = streaming
           ? G2Bitmap.audioActivityPulseState(audioActivityLevel) + 1
@@ -2422,13 +2568,24 @@ final class G2Connection {
         height: G2Protocol.visualizerPulseHeight,
       );
       final stopwatch = Stopwatch()..start();
+      var canceled = false;
       await _sendPayload(
         G2Ids.serviceEvenHub,
         _protocol.updateImage(bitmap),
         reserveFlag: true,
         priority: AsyncWritePriority.low,
+        shouldContinue: isCurrent,
+        onCanceled: () => canceled = true,
       );
       stopwatch.stop();
+      if (canceled || !isCurrent()) {
+        _log(
+          'G2 display',
+          '[WorkBench][G2Display] state=visual_canceled '
+              'generation=$displayGeneration current=$_displayGeneration',
+        );
+        return;
+      }
       _lastPulseUpdateAt = DateTime.now();
       _lastPulseSignature = signature;
       lastPulseWriteDurationMs = stopwatch.elapsedMilliseconds;
@@ -2612,6 +2769,7 @@ final class G2Connection {
   Future<void> disconnect() async {
     _manualDisconnect = true;
     _generation++;
+    _beginDisplayGeneration('disconnected');
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _pageRestoreTimer?.cancel();

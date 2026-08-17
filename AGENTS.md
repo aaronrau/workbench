@@ -259,6 +259,15 @@ final transcript. A missing agent match, unavailable server, failed upgrade,
 negative acknowledgement, timeout, or reconnect must never block capture, VAD,
 STT, correction, file export, or access to the original transcript.
 
+- Treat every configured endpoint as an independent runtime. Each owns its
+  socket, subscription, inbound tail, acknowledgement map, FIFO, timers,
+  generation, resume cursor, and connection state. Never introduce a global
+  ready gate, send queue, retry timer, or ordered inbound tail across endpoints.
+- Route only by a globally unique complete configured agent name. Send only to
+  the endpoint that owns that name; never broadcast or fail over to another
+  endpoint. An endpoint failure or configuration edit must not disconnect,
+  delay, reorder, disable, or clear another endpoint's work or UI controls.
+
 - Keep runtime `voice_websocket.json` app-private and ignored. Commit only the
   generic `voice_websocket.example.json`.
 - Never log the configured IP address, secret, upgrade headers, request body,
@@ -277,9 +286,8 @@ STT, correction, file export, or access to the original transcript.
   restart. A restored job may finish its local files, but only a transcript
   captured and corrected live in the current process may send a command.
 - Require the matching `message.accepted` response before changing the G2
-  transcript prefix from `Saved:` to `Sent:`. Legacy messages have no
-  acknowledgement contract and may report sent only after a successful socket
-  write.
+  transcript prefix from `Saved:` to `Sent:`. Every outgoing agent message uses
+  this acknowledgement contract.
 - Keep an acknowledgement timeout or connection loss in the bounded live FIFO
   and reuse its request ID across ambiguous retries. Only a positive
   acknowledgement, explicit non-busy rejection, queue expiry, configuration

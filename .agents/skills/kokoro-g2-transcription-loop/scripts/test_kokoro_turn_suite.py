@@ -115,6 +115,96 @@ class TurnSuiteTest(unittest.TestCase):
         )
         self.assertEqual(boundaries["gap_2100ms_split"].expected_turns, 2)
 
+    def test_stress_profile_opens_agent_menu_during_five_minute_audio(self) -> None:
+        stress = MODULE.STRESS_CASES[0]
+        args = MODULE.parser().parse_args(
+            ["--output-dir", "/tmp/test-suite", "--profile", "stress"]
+        )
+
+        self.assertEqual(args.profile, ["stress"])
+        self.assertEqual(stress.name, "continuous_agent_menu_stress")
+        self.assertEqual(stress.repeat_count, 5)
+        self.assertEqual(stress.minimum_chunks, 15)
+        self.assertEqual(stress.selector_at_seconds, 15.0)
+
+    def test_agent_selector_stress_targets_the_foreground_activity(self) -> None:
+        command = MODULE.agent_selector_command(["adb", "-s", "device"], 2)
+
+        self.assertEqual(command[4:7], ["am", "start", "-n"])
+        self.assertIn(
+            f"{MODULE.loop.APP_PACKAGE}/.MainActivity",
+            command,
+        )
+        self.assertNotIn("broadcast", command)
+        self.assertEqual(command[-3:], ["--ei", "selector_fixture", "2"])
+        with self.assertRaises(ValueError):
+            MODULE.agent_selector_command(["adb"], 4)
+
+    def test_stress_case_requires_audio_and_capture_after_menu_open(self) -> None:
+        case = MODULE.TurnCase(
+            name="menu-stress-unit",
+            utterances=("Synthetic fixture",),
+            silence_seconds=0.0,
+            expected_turns=0,
+            score_transcript=False,
+            selector_at_seconds=1.0,
+        )
+        start = MODULE.loop.playback_marker("playback_start", case.name)
+        end = MODULE.loop.playback_marker("playback_end", case.name)
+        log = "\n".join(
+            [
+                line(
+                    0.0,
+                    "[Even G2/R1][Audio] 32.0 kbit/s • "
+                    "100 frames/s • level 5/255",
+                ),
+                line(0.5, start),
+                line(
+                    1.0,
+                    "[Even G2/R1][Audio] 32.0 kbit/s • "
+                    "100 frames/s • level 90/255",
+                ),
+                line(
+                    1.5,
+                    "[WorkBench][DebugSelector] "
+                    "state=opened fixture=0 rows=4",
+                ),
+                line(
+                    1.6,
+                    "[WorkBench][G2Display] state=generation_changed "
+                    "generation=8 owner=history pulse_in_flight=true",
+                ),
+                line(
+                    2.0,
+                    "[Even G2/R1][Audio] 32.0 kbit/s • "
+                    "100 frames/s • level 80/255",
+                ),
+                line(
+                    2.5,
+                    "[WorkBench][Capture] state=streaming sequence=200",
+                ),
+                line(3.0, end),
+            ]
+        )
+
+        result = MODULE.analyze_case(
+            case,
+            log,
+            baseline_count=1,
+            max_wer=0.25,
+            min_activity_rise=30,
+            min_frames_per_second=90,
+            playback_start_marker=start,
+            playback_end_marker=end,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertTrue(result.checks["agent_menu_opened"])
+        self.assertTrue(result.checks["history_owns_display_generation"])
+        self.assertTrue(result.checks["audio_continued_in_agent_menu"])
+        self.assertTrue(result.checks["capture_continued_in_agent_menu"])
+        self.assertTrue(result.checks["no_android_crash_marker"])
+
     def test_center_clip_has_exact_requested_length(self) -> None:
         pcm = bytes(range(100))
         clipped = MODULE._center_clip_pcm(pcm, sample_rate=10, seconds=2)

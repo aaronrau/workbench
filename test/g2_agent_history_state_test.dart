@@ -13,7 +13,7 @@ void main() {
         '${local.minute.toString().padLeft(2, '0')}]';
   }
 
-  test('opens with [x] first, five agents, and Memo last', () {
+  test('keeps every configured agent available in the windowed selector', () {
     final state = G2AgentHistoryState();
     state.open(
       agents: const <String>[
@@ -37,16 +37,17 @@ void main() {
     );
 
     expect(state.mode, G2AgentHistoryMode.selector);
-    expect(state.entries, hasLength(7));
+    expect(state.entries, hasLength(8));
     expect(state.selected?.kind, G2AgentHistoryEntryKind.dismiss);
     expect(state.entries[1].label, 'Pike');
+    expect(state.entries[6].label, 'Agent Six');
     expect(state.entries.last.kind, G2AgentHistoryEntryKind.memo);
     expect(
       state.render(),
       startsWith(' >  [x] - Swipe to Select\n     [Pike] validate'),
     );
     final rows = state.render().split('\n');
-    expect(rows, hasLength(7));
+    expect(rows, hasLength(8));
     expect(rows.last, '     Memo - Remember the synthetic validation result.');
     expect(state.render(), contains('[x] - Swipe to Select'));
 
@@ -737,33 +738,27 @@ void main() {
         '${flatMessage.substring(0, 140)}\n${flatMessage.substring(141)}';
     final state = G2AgentHistoryState()
       ..open(
-        agents: const <String>[
-          'Agent One',
-          'Agent Two',
-          'Agent Three',
-          'Agent Four',
-          'Agent Five',
+        agents: <String>[
+          for (var index = 1; index <= 8; index++) 'Agent $index',
         ],
         exchanges: const <AgentExchangeView>[],
         messages: <AgentMessageView>[
           AgentMessageView(
             id: 'recent-received',
-            agent: 'Agent One',
+            agent: 'Agent 1',
             direction: AgentMessageDirection.received,
             message: recentMessage,
             updatedAt: sentAt,
           ),
         ],
-        memo: 'synthetic memo',
       );
 
     final rows = state.render().split('\n');
     expect(rows, hasLength(G2AgentHistoryState.selectorMaximumRenderedRows));
-    expect(rows.length, lessThan(G2TextLayout.history.maximumVisibleRows));
-    expect(rows[1], startsWith('     [Agent One] status'));
+    expect(rows[1], startsWith('     [Agent 1] status'));
     expect(rows[2], startsWith('     '));
     expect(rows[2], endsWith('…'));
-    expect(rows.last, '     Memo - synthetic memo');
+    expect(rows.skip(1).every((row) => row.trim().isNotEmpty), isTrue);
     for (final row in rows) {
       expect(
         G2TextLayout.history.textWidth(row),
@@ -772,13 +767,97 @@ void main() {
     }
   });
 
-  test('selector pages complete two-line blocks in both directions', () {
-    final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
+  test('selector pages when complete two-row entries overflow', () {
+    final longMessage = List<String>.filled(40, 'synthetic-content').join(' ');
+    const agents = <String>[
+      'Agent One',
+      'Agent Two',
+      'Agent Three',
+      'Agent Four',
+      'Agent Five',
+      'Agent Six',
+      'Agent Seven',
+      'Agent Eight',
+    ];
     final state = G2AgentHistoryState()
       ..open(
-        agents: const <String>['Flux', 'Pike', 'Vale', 'Brock'],
+        agents: agents,
         exchanges: <AgentExchangeView>[
-          for (final agent in <String>['Flux', 'Pike', 'Vale', 'Brock'])
+          for (var index = 0; index < agents.length; index++)
+            AgentExchangeView(
+              id: 'agent-${index + 1}',
+              agent: agents[index],
+              message: '$longMessage $index',
+              sentAt: sentAt.add(Duration(minutes: index)),
+              legacy: false,
+            ),
+        ],
+        memo: longMessage,
+      );
+
+    final firstPage = state.render().split('\n');
+    expect(
+      firstPage.length,
+      lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
+    );
+    expect(firstPage.first, ' >  [x] - Swipe to Select');
+    expect(firstPage.any((line) => line.contains('Agent Three')), isTrue);
+    expect(firstPage.any((line) => line.contains('Agent Four')), isFalse);
+    expect(firstPage.any((line) => line.contains('Agent Seven')), isFalse);
+    expect(firstPage.any((line) => line.contains('Agent Eight')), isFalse);
+    expect(firstPage.any((line) => line.contains('Memo -')), isFalse);
+
+    for (var index = 0; index < 7; index++) {
+      state.selectNext();
+    }
+    final firstBoundary = state.render().split('\n');
+    expect(firstBoundary[1], startsWith('     [Agent Six] '));
+    expect(firstBoundary, contains(startsWith(' >  [Agent Seven] ')));
+    expect(firstBoundary.any((line) => line.contains('[Agent One] ')), isFalse);
+    expect(
+      firstBoundary.any((line) => line.contains('[Agent Eight] ')),
+      isTrue,
+    );
+    expect(firstBoundary.any((line) => line.contains('Memo -')), isFalse);
+
+    state.selectNext();
+    final secondBoundary = state.render().split('\n');
+    expect(secondBoundary[1], startsWith('     [Agent Seven] '));
+    expect(secondBoundary, contains(startsWith(' >  [Agent Eight] ')));
+    expect(secondBoundary, contains(startsWith('     Memo -')));
+    expect(
+      secondBoundary.length,
+      lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
+    );
+    expect(secondBoundary.first, '     [x] - Swipe to Select');
+    expect(secondBoundary.join('\n'), isNot(contains(RegExp(r'\d+/\d+'))));
+    expect(
+      secondBoundary.any((line) => line.contains('[Agent One] ')),
+      isFalse,
+    );
+    expect(
+      secondBoundary.any((line) => line.contains('[Agent Two] ')),
+      isFalse,
+    );
+  });
+
+  test('selector moves cursor while blocks fit and scrolls at the edge', () {
+    final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
+    const agents = <String>[
+      'Flux',
+      'Pike',
+      'Vale',
+      'Brock',
+      'Nova',
+      'Reed',
+      'Jade',
+      'Moss',
+    ];
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: agents,
+        exchanges: <AgentExchangeView>[
+          for (final agent in agents)
             AgentExchangeView(
               id: agent.toLowerCase(),
               agent: agent,
@@ -790,44 +869,59 @@ void main() {
         memo: longMessage,
       );
 
-    final forwardWindows = <String>{state.render()};
-    for (var index = 0; index < state.entries.length - 1; index++) {
-      state.selectNext();
-      final rendered = state.render();
-      forwardWindows.add(rendered);
-      expect(
-        rendered.split('\n').length,
-        lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
-      );
-      final selected = state.selected!;
-      final selectedText = selected.kind == G2AgentHistoryEntryKind.agent
-          ? '[${selected.label}] '
-          : '${selected.label} -';
-      expect(rendered, contains(' >  $selectedText'));
-    }
-    expect(state.selected?.label, 'Memo');
-    expect(forwardWindows.length, greaterThan(3));
-    expect(state.render(), isNot(contains(RegExp(r'\d+/\d+'))));
-
-    for (var index = 0; index < state.entries.length - 2; index++) {
-      state.selectPrevious();
-      final rendered = state.render();
-      expect(
-        rendered.split('\n').length,
-        lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
-      );
-      expect(rendered, contains(' >  [${state.selected!.label}] '));
-    }
+    state.selectNext();
     expect(state.selected?.label, 'Flux');
+    expect(state.render().split('\n')[1], startsWith(' >  [Flux] '));
+
+    state.selectNext();
+    expect(state.selected?.label, 'Pike');
+    expect(state.render().split('\n')[1], startsWith('     [Flux] '));
+    expect(state.render(), contains(' >  [Pike] '));
+    expect(state.render(), contains('[Vale] '));
+
+    state.selectNext();
+    expect(state.selected?.label, 'Vale');
+    expect(state.render().split('\n')[1], startsWith('     [Pike] '));
+    expect(state.render(), contains(' >  [Vale] '));
+
+    for (var index = 0; index < 4; index++) {
+      state.selectNext();
+    }
+    expect(state.selected?.label, 'Jade');
+    expect(state.render().split('\n')[1], startsWith('     [Reed] '));
+    expect(state.render(), isNot(contains('[Flux] ')));
+    expect(state.render(), contains(' >  [Jade] '));
+    expect(state.render(), contains('[Moss] '));
+    expect(state.render(), isNot(contains('Memo -')));
+
+    state.selectNext();
+    expect(state.selected?.label, 'Moss');
+    expect(state.render().split('\n')[1], startsWith('     [Jade] '));
+    expect(state.render(), contains(' >  [Moss] '));
+    expect(state.render(), contains('Memo -'));
+
+    state.selectPrevious();
+    expect(state.selected?.label, 'Jade');
+    expect(state.render(), contains(' >  [Jade] '));
+    expect(state.render(), isNot(contains(RegExp(r'\d+/\d+'))));
   });
 
   test('mixed one- and two-line entries page without splitting blocks', () {
     final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
+    const agents = <String>[
+      'Flux',
+      'Pike',
+      'Vale',
+      'Brock',
+      'Nova',
+      'Reed',
+      'Jade',
+    ];
     final state = G2AgentHistoryState()
       ..open(
-        agents: const <String>['Flux', 'Pike', 'Vale', 'Brock', 'Nova'],
+        agents: agents,
         exchanges: <AgentExchangeView>[
-          for (final agent in <String>['Flux', 'Pike', 'Vale', 'Brock', 'Nova'])
+          for (final agent in agents)
             AgentExchangeView(
               id: agent.toLowerCase(),
               agent: agent,
@@ -841,19 +935,20 @@ void main() {
         memo: longMessage,
       );
 
-    for (var index = 0; index < 5; index++) {
+    for (var index = 0; index < agents.length; index++) {
       state.selectNext();
     }
-    expect(state.selected?.label, 'Nova');
+    expect(state.selected?.label, 'Jade');
     expect(state.render(), isNot(contains('[Flux] ')));
-    expect(state.render(), contains(' >  [Nova] '));
+    expect(state.render(), contains(' >  [Jade] '));
     expect(state.render(), contains('Memo -'));
     final shifted = state.render().split('\n');
     expect(
       shifted.length,
       lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
     );
-    expect(shifted[1], startsWith('     [Vale] '));
+    expect(shifted[1], startsWith('     [Brock] '));
+    expect(shifted.join('\n'), isNot(contains('[Flux] ')));
     expect(shifted, contains(startsWith('     Memo -')));
   });
 

@@ -7,12 +7,17 @@ import '../audio/shared_audio_export_store.dart';
 import '../audio/voice_memo_models.dart';
 import '../ble/ble_models.dart';
 import '../websocket/agent_exchange_store.dart';
+import '../websocket/voice_websocket_config.dart';
 import 'workbench_theme.dart';
 
 enum HomeHistoryTab { events, messages, conversations }
 
 typedef DirectAgentMessageSender =
-    Future<bool> Function({required String agent, required String message});
+    Future<bool> Function({
+      required String endpointId,
+      required String agent,
+      required String message,
+    });
 
 final class HomeHistoryPanel extends StatefulWidget {
   const HomeHistoryPanel({
@@ -31,6 +36,7 @@ final class HomeHistoryPanel extends StatefulWidget {
     required this.isStorageBusy,
     this.messages = const <SharedWebSocketMessage>[],
     this.agentNames = const <String>[],
+    this.agentTargets = const <VoiceWebSocketAgentTarget>[],
     this.agentMessages = const <AgentMessageView>[],
     this.transcriptions = const <SharedTranscript>[],
     this.supportsSharedFolder = false,
@@ -68,6 +74,7 @@ final class HomeHistoryPanel extends StatefulWidget {
   final bool isStorageBusy;
   final List<SharedWebSocketMessage> messages;
   final List<String> agentNames;
+  final List<VoiceWebSocketAgentTarget> agentTargets;
   final List<AgentMessageView> agentMessages;
   final List<SharedTranscript> transcriptions;
   final bool supportsSharedFolder;
@@ -106,10 +113,11 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   bool _isLoadingConversationsForTab = false;
   bool _messagesLoadedOnce = false;
   bool _conversationsLoadedOnce = false;
-  bool _isSendingAgentMessage = false;
-  bool _agentSendSucceeded = false;
-  String? _selectedMessageAgent;
-  String? _agentSendStatus;
+  final Set<String> _sendingAgentKeys = <String>{};
+  final Map<String, String> _agentDrafts = <String, String>{};
+  final Map<String, String> _agentSendStatuses = <String, String>{};
+  final Set<String> _successfulAgentSends = <String>{};
+  VoiceWebSocketAgentTarget? _selectedMessageAgent;
   final TextEditingController _agentMessageController = TextEditingController();
   final FocusNode _agentMessageFocusNode = FocusNode();
 
@@ -136,13 +144,12 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     }
     final selectedAgent = _selectedMessageAgent;
     if (selectedAgent != null &&
-        !widget.agentNames.any(
-          (agent) => agent.toLowerCase() == selectedAgent.toLowerCase(),
+        !_configuredAgentTargets().any(
+          (target) => target.key == selectedAgent.key,
         )) {
       _agentMessageFocusNode.unfocus();
       _selectedMessageAgent = null;
       _agentMessageController.clear();
-      _agentSendStatus = null;
     }
     if (oldWidget.conversations.length != widget.conversations.length ||
         oldWidget.voiceMemos.length != widget.voiceMemos.length) {
@@ -343,7 +350,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   }
 
   Widget _buildMessages(BuildContext context) {
-    final agents = _configuredAgents();
+    final agents = _configuredAgentTargets();
     final selectedAgent = _selectedMessageAgent;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -363,22 +370,18 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                     label: const Text('All'),
                     selected: selectedAgent == null,
                     showCheckmark: false,
-                    onSelected: _isSendingAgentMessage
-                        ? null
-                        : (_) => _selectMessageAgent(null),
+                    onSelected: (_) => _selectMessageAgent(null),
                   );
                 }
                 final agent = agents[index - 1];
-                final selected =
-                    selectedAgent?.toLowerCase() == agent.toLowerCase();
+                final selected = selectedAgent?.key == agent.key;
                 return ChoiceChip(
-                  key: ValueKey<String>('message-agent-$agent'),
-                  label: Text(agent),
+                  key: ValueKey<String>('message-agent-${agent.agentName}'),
+                  label: Text(agent.agentName),
                   selected: selected,
                   showCheckmark: false,
-                  onSelected: _isSendingAgentMessage
-                      ? null
-                      : (value) => _selectMessageAgent(value ? agent : null),
+                  onSelected: (value) =>
+                      _selectMessageAgent(value ? agent : null),
                 );
               },
             ),
@@ -568,8 +571,14 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     );
   }
 
-  Widget _buildAgentMessages(BuildContext context, String agent) {
+  Widget _buildAgentMessages(
+    BuildContext context,
+    VoiceWebSocketAgentTarget target,
+  ) {
     final theme = Theme.of(context);
+    final agent = target.agentName;
+    final sending = _sendingAgentKeys.contains(target.key);
+    final sendStatus = _agentSendStatuses[target.key];
     final messages =
         widget.agentMessages
             .where(
@@ -582,7 +591,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
           });
     final visibleCount = min(_visibleMessageCount, messages.length);
     final canSend =
-        !_isSendingAgentMessage &&
+        !sending &&
         _agentMessageController.text.trim().isNotEmpty &&
         widget.onSendAgentMessage != null;
     return Column(
@@ -600,7 +609,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
           key: const ValueKey<String>('direct-agent-message-field'),
           controller: _agentMessageController,
           focusNode: _agentMessageFocusNode,
-          enabled: !_isSendingAgentMessage,
+          enabled: !sending,
           minLines: 1,
           maxLines: 3,
           textInputAction: TextInputAction.send,
@@ -615,8 +624,9 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
           ),
           onChanged: (_) {
             setState(() {
-              _agentSendStatus = null;
-              _agentSendSucceeded = false;
+              _agentDrafts[target.key] = _agentMessageController.text;
+              _agentSendStatuses.remove(target.key);
+              _successfulAgentSends.remove(target.key);
             });
           },
           onSubmitted: (_) {
@@ -625,14 +635,14 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             }
           },
         ),
-        if (_agentSendStatus case final String status) ...<Widget>[
+        if (sendStatus case final String status) ...<Widget>[
           const SizedBox(height: 8),
           Semantics(
             liveRegion: true,
             child: Text(
               status,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: _agentSendSucceeded
+                color: _successfulAgentSends.contains(target.key)
                     ? theme.colorScheme.onSurface
                     : theme.colorScheme.error,
               ),
@@ -748,29 +758,40 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     );
   }
 
-  List<String> _configuredAgents() {
+  List<VoiceWebSocketAgentTarget> _configuredAgentTargets() {
     final seen = <String>{};
-    return widget.agentNames
-        .map((agent) => agent.trim())
-        .where((agent) => agent.isNotEmpty && seen.add(agent.toLowerCase()))
+    final configured = widget.agentTargets.isNotEmpty
+        ? widget.agentTargets
+        : widget.agentNames.map(
+            (agent) =>
+                VoiceWebSocketAgentTarget(endpointId: '', agentName: agent),
+          );
+    return configured
+        .where(
+          (target) =>
+              target.agentName.trim().isNotEmpty && seen.add(target.key),
+        )
         .toList(growable: false);
   }
 
-  void _selectMessageAgent(String? agent) {
+  void _selectMessageAgent(VoiceWebSocketAgentTarget? agent) {
+    final prior = _selectedMessageAgent;
+    if (prior != null) {
+      _agentDrafts[prior.key] = _agentMessageController.text;
+    }
     if (agent == null) {
       _agentMessageFocusNode.unfocus();
     }
     setState(() {
       _selectedMessageAgent = agent;
       _visibleMessageCount = _messagePageSize;
-      _agentMessageController.clear();
-      _agentSendStatus = null;
-      _agentSendSucceeded = false;
+      _agentMessageController.text = agent == null
+          ? ''
+          : _agentDrafts[agent.key] ?? '';
     });
     if (agent != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted &&
-            _selectedMessageAgent?.toLowerCase() == agent.toLowerCase()) {
+        if (mounted && _selectedMessageAgent?.key == agent.key) {
           _agentMessageFocusNode.requestFocus();
         }
       });
@@ -778,21 +799,28 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   }
 
   Future<void> _sendSelectedAgentMessage() async {
-    final agent = _selectedMessageAgent;
+    final target = _selectedMessageAgent;
     final sender = widget.onSendAgentMessage;
     final message = _agentMessageController.text.trim();
-    if (agent == null || sender == null || message.isEmpty) {
+    if (target == null ||
+        sender == null ||
+        message.isEmpty ||
+        _sendingAgentKeys.contains(target.key)) {
       return;
     }
     FocusManager.instance.primaryFocus?.unfocus();
     setState(() {
-      _isSendingAgentMessage = true;
-      _agentSendStatus = null;
-      _agentSendSucceeded = false;
+      _sendingAgentKeys.add(target.key);
+      _agentSendStatuses.remove(target.key);
+      _successfulAgentSends.remove(target.key);
     });
     var sent = false;
     try {
-      sent = await sender(agent: agent, message: message);
+      sent = await sender(
+        endpointId: target.endpointId,
+        agent: target.agentName,
+        message: message,
+      );
     } on Object {
       sent = false;
     }
@@ -800,13 +828,17 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
       return;
     }
     setState(() {
-      _isSendingAgentMessage = false;
-      _agentSendSucceeded = sent;
+      _sendingAgentKeys.remove(target.key);
       if (sent) {
-        _agentMessageController.clear();
-        _agentSendStatus = 'Sent to $agent.';
+        _successfulAgentSends.add(target.key);
+        _agentDrafts[target.key] = '';
+        _agentSendStatuses[target.key] = 'Sent to ${target.agentName}.';
+        if (_selectedMessageAgent?.key == target.key) {
+          _agentMessageController.clear();
+        }
       } else {
-        _agentSendStatus = 'Could not send to $agent. Check the connection.';
+        _agentSendStatuses[target.key] =
+            'Could not send to ${target.agentName}. Check the connection.';
       }
     });
   }

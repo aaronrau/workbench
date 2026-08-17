@@ -68,6 +68,10 @@ TEST_MARKER_TAG = "WorkBenchTest"
 EXPECTED_DISCONNECT_RE = re.compile(
     r"\[WorkBench\]\[Bluetooth\]\s+state=disconnected\s+expected=true"
 )
+VAD_FLUSHED_RE = re.compile(
+    r"\[WorkBench\]\[VAD\]\s+state=flushed\s+next=ready\b"
+    r".*\bdetector=recreated\b"
+)
 PIPELINE_READY_RE = re.compile(
     r"\[WorkBench\]\[Pipeline\]\s+state=ready\b"
 )
@@ -835,6 +839,7 @@ def run_connection_preflight(
     report: dict[str, object] = {
         "method": "app_button_disconnect_reconnect",
         "ready": False,
+        "vad_flushed": False,
         "audio_summary_samples": 0,
         "stage": "launch",
     }
@@ -951,6 +956,18 @@ def run_connection_preflight(
             raise RuntimeError(
                 "Work Bench app button did not complete the disconnect"
             )
+        report["stage"] = "vad_flush"
+        vad_flushed = _wait_for_log_pattern(
+            log_path,
+            reconnect_marker,
+            VAD_FLUSHED_RE,
+            timeout_seconds=timeout_seconds,
+        )
+        if not vad_flushed:
+            raise RuntimeError(
+                "Work Bench VAD did not reset after the disconnect"
+            )
+        report["vad_flushed"] = True
         emit_android_test_marker(
             adb_prefix,
             "connection_disconnect_ready",

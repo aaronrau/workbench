@@ -56,6 +56,8 @@ class TurnCase:
     repeat_count: int = 1
     score_transcript: bool = True
     minimum_chunks: int = 1
+    selector_at_seconds: float | None = None
+    selector_fixture: int = 0
 
     @property
     def expected_transcripts(self) -> tuple[str, ...]:
@@ -261,6 +263,18 @@ DURATION_CASES = (
     ),
 )
 
+STRESS_CASES = (
+    TurnCase(
+        name="continuous_agent_menu_stress",
+        utterances=LONG_UTTERANCES,
+        silence_seconds=0.1,
+        expected_turns=1,
+        repeat_count=5,
+        minimum_chunks=15,
+        selector_at_seconds=15.0,
+    ),
+)
+
 BOUNDARY_PHRASES = (
     "The red book is on the table",
     "The blue lamp is by the window",
@@ -300,7 +314,7 @@ BOUNDARY_CASES = (
     _boundary_case(5000, 2),
 )
 
-ALL_CASES = CASES + DURATION_CASES + BOUNDARY_CASES
+ALL_CASES = CASES + DURATION_CASES + BOUNDARY_CASES + STRESS_CASES
 
 TIMESTAMP_RE = re.compile(
     r"^(?P<timestamp>\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})"
@@ -353,6 +367,20 @@ FINAL_RE = re.compile(
 UI_CLEAR_RE = re.compile(
     r"\[WorkBench\]\[TranscriptUI\] state=cleared "
     r"reason=speech_started segment=(?P<id>\S+)"
+)
+SELECTOR_OPEN_RE = re.compile(
+    r"\[WorkBench\]\[DebugSelector\] state=opened fixture=(?P<fixture>\d+)"
+)
+HISTORY_DISPLAY_RE = re.compile(
+    r"\[WorkBench\]\[G2Display\] state=generation_changed\b"
+    r".*\bowner=history\b"
+)
+CAPTURE_STREAMING_RE = re.compile(
+    r"\[WorkBench\]\[Capture\] state=streaming\b"
+)
+ANDROID_CRASH_RE = re.compile(
+    r"FATAL EXCEPTION|Fatal signal\s+\d+|ANR in "
+    + re.escape(loop.APP_PACKAGE)
 )
 
 
@@ -778,6 +806,43 @@ def analyze_case(
         ),
         **audio_checks,
     }
+    if case.selector_at_seconds is not None:
+        selector_line = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if (
+                    (match := SELECTOR_OPEN_RE.search(line)) is not None
+                    and int(match.group("fixture")) == case.selector_fixture
+                )
+            ),
+            None,
+        )
+        case_checks.update(
+            {
+                "agent_menu_opened": selector_line is not None,
+                "history_owns_display_generation": any(
+                    HISTORY_DISPLAY_RE.search(line) for line in lines
+                ),
+                "audio_continued_in_agent_menu": (
+                    selector_line is not None
+                    and any(
+                        loop.AUDIO_RE.search(line)
+                        for line in lines[selector_line + 1 :]
+                    )
+                ),
+                "capture_continued_in_agent_menu": (
+                    selector_line is not None
+                    and any(
+                        CAPTURE_STREAMING_RE.search(line)
+                        for line in lines[selector_line + 1 :]
+                    )
+                ),
+                "no_android_crash_marker": not ANDROID_CRASH_RE.search(
+                    scored_log
+                ),
+            }
+        )
     return CaseResult(
         name=case.name,
         silence_seconds=case.silence_seconds,
@@ -920,6 +985,27 @@ def set_computer_volume(wpctl: str, volume: float) -> None:
     )
 
 
+def agent_selector_command(
+    adb_prefix: list[str],
+    fixture: int,
+) -> list[str]:
+    if fixture not in range(4):
+        raise ValueError("Agent selector fixture must be between 0 and 3")
+    return [
+        *adb_prefix,
+        "shell",
+        "am",
+        "start",
+        "-n",
+        f"{loop.APP_PACKAGE}/.MainActivity",
+        "-a",
+        f"{loop.APP_PACKAGE}.SHOW_AGENT_SELECTOR_FIXTURE",
+        "--ei",
+        "selector_fixture",
+        str(fixture),
+    ]
+
+
 def run_case(
     case: TurnCase,
     output_dir: Path,
@@ -959,7 +1045,52 @@ def run_case(
             case.name,
         )
         try:
-            subprocess.run([args.player, str(playback)], check=True)
+            player = subprocess.Popen([args.player, str(playback)])
+            try:
+                if case.selector_at_seconds is not None:
+                    selector_deadline = (
+                        time.monotonic() + case.selector_at_seconds
+                    )
+                    while (
+                        player.poll() is None
+                        and time.monotonic() < selector_deadline
+                    ):
+                        time.sleep(
+                            max(
+                                0.0,
+                                min(
+                                    0.1,
+                                    selector_deadline - time.monotonic(),
+                                ),
+                            )
+                        )
+                    if player.poll() is not None:
+                        raise RuntimeError(
+                            "Computer-speaker playback ended before the "
+                            "agent menu stress action"
+                        )
+                    subprocess.run(
+                        agent_selector_command(
+                            adb_prefix,
+                            case.selector_fixture,
+                        ),
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                    )
+                return_code = player.wait()
+                if return_code != 0:
+                    raise subprocess.CalledProcessError(
+                        return_code,
+                        [args.player, str(playback)],
+                    )
+            finally:
+                if player.poll() is None:
+                    player.terminate()
+                    try:
+                        player.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        player.kill()
+                        player.wait(timeout=5)
         finally:
             loop.emit_android_test_marker(
                 adb_prefix,
@@ -1002,6 +1133,12 @@ def run_case(
             "playback_path": loop.PLAYBACK_PATH,
             "computer_volume": args.computer_volume,
             "inter_utterance_silence_seconds": case.silence_seconds,
+            "agent_menu_at_seconds": case.selector_at_seconds,
+            "agent_menu_fixture": (
+                case.selector_fixture
+                if case.selector_at_seconds is not None
+                else None
+            ),
             "stimulus": loop.wav_manifest(stimulus),
             "playback": loop.wav_manifest(playback),
         },
@@ -1058,7 +1195,7 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument(
         "--profile",
         action="append",
-        choices=("core", "duration", "boundary", "all"),
+        choices=("core", "duration", "boundary", "stress", "all"),
         help="Case group to run; defaults to core and may be repeated",
     )
     root.add_argument(
@@ -1142,10 +1279,11 @@ def main() -> int:
                 "core": CASES,
                 "duration": DURATION_CASES,
                 "boundary": BOUNDARY_CASES,
+                "stress": STRESS_CASES,
             }
             selected = [
                 case
-                for profile in ("core", "duration", "boundary")
+                for profile in ("core", "duration", "boundary", "stress")
                 if profile in profiles
                 for case in profile_cases[profile]
             ]
