@@ -228,12 +228,22 @@ folder. Playback uses the content URI rather than copying audio back into
 private storage. The native bridge maintains app-private SQLite indexes of
 agent messages, ordinary transcripts, and conversation turns. A normal
 **Messages** selection queries SQLite instead of reopening every shared text
-document. Every successful app export updates the index incrementally. The
-first selection after upgrading or changing folders performs a one-time
-shared-folder import; the explicit refresh action performs a full
-reconciliation for files changed by another app. The shared WAV/TXT files
-remain the interoperable source of truth, and playback still uses their content
-URIs.
+document. Every successful app export updates the index incrementally and then
+writes one of two rotating `workbench-history-cache-*.sqlite3` recovery
+snapshots to the selected folder. A snapshot contains only history rows; live
+SQLite sidecars, cache metadata, and export fingerprints remain private. After
+reinstall, the user reselects the same folder and the newest size-bounded,
+integrity-checked snapshot seeds the private index. The first selection after
+upgrading or changing folders performs a one-time shared-folder import; the
+explicit refresh action performs a full reconciliation for files changed by
+another app. The shared WAV/TXT files remain the interoperable source of truth,
+and playback still uses their content URIs.
+
+The same folder holds two narrowly scoped recovery documents outside SQLite:
+`workbench-agent-servers.json` contains server fields but no secret, while
+`workbench-speaker-signatures.wbprofiles` contains sensitive validated speaker
+profile data. Server recovery always requires the secret again. Speaker
+signatures never enter readable conversation text or the SQLite history index.
 
 The same private database records successful export fingerprints. Background
 recovery sync skips unchanged files that are still present in the native

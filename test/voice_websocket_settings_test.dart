@@ -229,4 +229,72 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('restores shared server fields but requires the secret', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildWorkBenchTheme(),
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: VoiceWebSocketSettings(
+              config: VoiceWebSocketConfig.defaults,
+              restoredSettings: const VoiceWebSocketSharedSettings(
+                endpoints: <VoiceWebSocketSharedEndpointSettings>[
+                  VoiceWebSocketSharedEndpointSettings(
+                    id: 'server-one',
+                    host: '192.0.2.10',
+                    port: 8787,
+                    authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+                    agentNames: <String>['Flux'],
+                  ),
+                ],
+              ),
+              endpointStates: const <VoiceWebSocketEndpointState>[],
+              busy: false,
+              onSave: (_) async {},
+              onConnect: (_) async {},
+              onDisconnect: (_) async {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.textContaining('restored from the shared folder'), findsOne);
+    final ip = tester.widget<EditableText>(
+      find.descendant(
+        of: find.byKey(const Key('voice-websocket-ip')),
+        matching: find.byType(EditableText),
+      ),
+    );
+    final secret = tester.widget<EditableText>(
+      find.descendant(
+        of: find.byKey(const Key('voice-websocket-secret')),
+        matching: find.byType(EditableText),
+      ),
+    );
+    final agents = tester.widget<EditableText>(
+      find.descendant(
+        of: find.byKey(const Key('voice-websocket-agents')),
+        matching: find.byType(EditableText),
+      ),
+    );
+    expect(ip.controller.text, '192.0.2.10');
+    expect(secret.controller.text, isEmpty);
+    expect(agents.controller.text, 'Flux');
+    expect(find.widgetWithText(OutlinedButton, 'Connect server'), findsOne);
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.widgetWithText(OutlinedButton, 'Connect server'),
+          )
+          .onPressed,
+      isNull,
+    );
+  });
 }

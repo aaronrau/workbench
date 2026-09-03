@@ -537,6 +537,7 @@ final class _HomePageState extends State<HomePage> {
             const SizedBox(height: 16),
             VoiceWebSocketSettings(
               config: controller.voiceWebSocketConfig,
+              restoredSettings: controller.restoredVoiceWebSocketSettings,
               endpointStates: controller.voiceWebSocketEndpointStates,
               validationError: controller.voiceWebSocketValidationError,
               busy: _busy,

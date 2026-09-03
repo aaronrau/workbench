@@ -576,6 +576,8 @@ final class WearableController extends ChangeNotifier
   String? _announcedFinalizedMemoId;
   String? _agentMessageError;
   List<AgentMessageView> _agentMessages = const <AgentMessageView>[];
+  VoiceWebSocketSharedSettings _restoredVoiceWebSocketSettings =
+      VoiceWebSocketSharedSettings.empty;
   SpeechModelDefinition _selectedSpeechModel = defaultSpeechModel();
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
@@ -633,6 +635,8 @@ final class WearableController extends ChangeNotifier
   String get selectedSpeechModelName => _selectedSpeechModel.displayName;
   bool get isSwitchingSpeechModel => _audioPipeline.isSwitchingModel;
   VoiceWebSocketConfig get voiceWebSocketConfig => _voiceWebSocket.config;
+  VoiceWebSocketSharedSettings get restoredVoiceWebSocketSettings =>
+      _restoredVoiceWebSocketSettings;
   List<VoiceWebSocketEndpointState> get voiceWebSocketEndpointStates =>
       _voiceWebSocket.endpointStates;
   List<VoiceWebSocketAgentTarget> get voiceWebSocketAgentTargets =>
@@ -755,6 +759,9 @@ final class WearableController extends ChangeNotifier
             'action=check_app_storage',
         isError: true,
       );
+    }
+    if (_sharedAudioExportStore.hasSharedFolder) {
+      await _syncSharedAgentServerSettings();
     }
     if (_agentExchangeStoreReady &&
         _voiceWebSocket.config.agentNames.isNotEmpty) {
@@ -1041,6 +1048,26 @@ final class WearableController extends ChangeNotifier
   Future<void> saveVoiceWebSocketConfig(VoiceWebSocketConfig config) async {
     await _closeAgentHistory(clearDisplay: true);
     await _voiceWebSocket.saveConfig(config);
+    _restoredVoiceWebSocketSettings = VoiceWebSocketSharedSettings.empty;
+    if (_sharedAudioExportStore.hasSharedFolder) {
+      try {
+        await _sharedAudioExportStore.writeAgentServerSettings(
+          VoiceWebSocketSharedSettings.fromConfig(config).encode(),
+        );
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceWebSocket] state=shared_settings_saved '
+              'connections=${config.endpoints.length} secret=false',
+        );
+      } on Object {
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceWebSocket] state=shared_settings_save_failed '
+              'private_config=retained secret=false',
+          isError: true,
+        );
+      }
+    }
     if (_agentExchangeStoreReady) {
       try {
         await _agentExchangeStore.importExistingSentMessages(
@@ -1103,6 +1130,8 @@ final class WearableController extends ChangeNotifier
       '[WorkBench][SharedStorage] state=selected access=persisted',
     );
     _safeNotify();
+    await _syncSharedAgentServerSettings();
+    await _conversationAnalysis.syncSharedRecovery();
     await _audioPipeline.syncSharedCorrectionInstructions();
     await _audioPipeline.syncSharedAudioExport();
     await _syncWebSocketMessages();
@@ -1110,11 +1139,81 @@ final class WearableController extends ChangeNotifier
 
   Future<void> clearSharedAudioFolder() async {
     await _sharedAudioExportStore.clearFolder();
+    _restoredVoiceWebSocketSettings = VoiceWebSocketSharedSettings.empty;
     addLog(
       'Storage',
       '[WorkBench][SharedStorage] state=cleared fallback=app_private',
     );
     _safeNotify();
+  }
+
+  Future<void> _syncSharedAgentServerSettings() async {
+    if (!_sharedAudioExportStore.hasSharedFolder) {
+      return;
+    }
+    final privateConfig = _voiceWebSocket.config;
+    try {
+      if (privateConfig.endpoints.isNotEmpty) {
+        await _sharedAudioExportStore.writeAgentServerSettings(
+          VoiceWebSocketSharedSettings.fromConfig(privateConfig).encode(),
+        );
+        _restoredVoiceWebSocketSettings = VoiceWebSocketSharedSettings.empty;
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceWebSocket] state=shared_settings_saved '
+              'connections=${privateConfig.endpoints.length} secret=false',
+        );
+        return;
+      }
+      final raw = await _sharedAudioExportStore.readAgentServerSettings();
+      if (raw == null || raw.trim().isEmpty) {
+        final agentNames = await _sharedAudioExportStore.suggestAgentNames();
+        if (agentNames.isEmpty) {
+          _restoredVoiceWebSocketSettings = VoiceWebSocketSharedSettings.empty;
+          return;
+        }
+        final inferred = VoiceWebSocketSharedSettings(
+          endpoints: <VoiceWebSocketSharedEndpointSettings>[
+            VoiceWebSocketSharedEndpointSettings(
+              id: 'endpoint-1',
+              host: '127.0.0.1',
+              port: 8787,
+              authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+              agentNames: agentNames,
+            ),
+          ],
+        );
+        await _sharedAudioExportStore.writeAgentServerSettings(
+          inferred.encode(),
+        );
+        _restoredVoiceWebSocketSettings = inferred;
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceWebSocket] state=shared_settings_inferred '
+              'connections=1 agents=${agentNames.length} secret=false '
+              'action=verify_server_and_enter_secret',
+        );
+        _safeNotify();
+        return;
+      }
+      final restored = VoiceWebSocketSharedSettings.decode(raw);
+      _restoredVoiceWebSocketSettings = restored;
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=shared_settings_restored '
+            'connections=${restored.endpoints.length} secret=false '
+            'action=enter_secret',
+      );
+      _safeNotify();
+    } on Object {
+      _restoredVoiceWebSocketSettings = VoiceWebSocketSharedSettings.empty;
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=shared_settings_restore_failed '
+            'private_config=unchanged secret=false',
+        isError: true,
+      );
+    }
   }
 
   Future<void> refreshSharedMessages({bool reconcileShared = false}) async {

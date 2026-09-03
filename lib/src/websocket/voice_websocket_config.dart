@@ -493,6 +493,188 @@ final class VoiceWebSocketConfig {
   int get hashCode => Object.hashAll(endpoints);
 }
 
+/// Secret-free server settings that can safely live in the user-selected
+/// shared folder. A restored endpoint is an editor draft until the user
+/// supplies its secret and saves the private runtime configuration.
+final class VoiceWebSocketSharedEndpointSettings {
+  const VoiceWebSocketSharedEndpointSettings({
+    required this.id,
+    required this.host,
+    required this.port,
+    required this.authHeader,
+    required this.agentNames,
+  });
+
+  factory VoiceWebSocketSharedEndpointSettings.fromConfig(
+    VoiceWebSocketEndpointConfig endpoint,
+  ) => VoiceWebSocketSharedEndpointSettings(
+    id: endpoint.id,
+    host: endpoint.host,
+    port: endpoint.port,
+    authHeader: endpoint.authHeader,
+    agentNames: List<String>.unmodifiable(endpoint.agentNames),
+  );
+
+  factory VoiceWebSocketSharedEndpointSettings.fromJson(Object? value) {
+    const expectedKeys = <String>{
+      'id',
+      'host',
+      'port',
+      'path',
+      'authHeader',
+      'agentNames',
+    };
+    if (value is! Map<String, dynamic> ||
+        !setEquals(value.keys.toSet(), expectedKeys)) {
+      throw const FormatException(
+        'Shared agent-server settings contain unsupported fields.',
+      );
+    }
+    final id = value['id'];
+    final host = value['host'];
+    final port = value['port'];
+    final path = value['path'];
+    final authHeader = value['authHeader'];
+    final agentNames = value['agentNames'];
+    if (id is! String ||
+        host is! String ||
+        port is! int ||
+        path != VoiceWebSocketConfig.websocketPath ||
+        agentNames is! List<dynamic>) {
+      throw const FormatException(
+        'Shared agent-server settings have invalid value types.',
+      );
+    }
+    return VoiceWebSocketSharedEndpointSettings(
+      id: VoiceWebSocketConfig.validateEndpointId(id),
+      host: VoiceWebSocketConfig.validateIpv4(host),
+      port: _validateSharedPort(port),
+      authHeader: VoiceWebSocketAuthHeader.parse(authHeader),
+      agentNames: List<String>.unmodifiable(
+        VoiceWebSocketConfig.validateAgentNames(
+          agentNames.map((name) {
+            if (name is! String) {
+              throw const FormatException('Every agent name must be text.');
+            }
+            return name;
+          }),
+        ),
+      ),
+    );
+  }
+
+  final String id;
+  final String host;
+  final int port;
+  final VoiceWebSocketAuthHeader authHeader;
+  final List<String> agentNames;
+
+  Map<String, Object> toJson() => <String, Object>{
+    'id': id,
+    'host': host,
+    'port': port,
+    'path': VoiceWebSocketConfig.websocketPath,
+    'authHeader': authHeader.serializedName,
+    'agentNames': agentNames,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is VoiceWebSocketSharedEndpointSettings &&
+      other.id == id &&
+      other.host == host &&
+      other.port == port &&
+      other.authHeader == authHeader &&
+      listEquals(other.agentNames, agentNames);
+
+  @override
+  int get hashCode =>
+      Object.hash(id, host, port, authHeader, Object.hashAll(agentNames));
+
+  static int _validateSharedPort(int value) {
+    if (value < 1 || value > 65535) {
+      throw const FormatException('Port must be between 1 and 65535.');
+    }
+    return value;
+  }
+}
+
+final class VoiceWebSocketSharedSettings {
+  const VoiceWebSocketSharedSettings({required this.endpoints});
+
+  static const int schemaVersion = 1;
+  static const empty = VoiceWebSocketSharedSettings(
+    endpoints: <VoiceWebSocketSharedEndpointSettings>[],
+  );
+
+  factory VoiceWebSocketSharedSettings.fromConfig(
+    VoiceWebSocketConfig config,
+  ) => VoiceWebSocketSharedSettings(
+    endpoints: List<VoiceWebSocketSharedEndpointSettings>.unmodifiable(
+      config.endpoints.map(VoiceWebSocketSharedEndpointSettings.fromConfig),
+    ),
+  );
+
+  factory VoiceWebSocketSharedSettings.decode(String value) {
+    final decoded = jsonDecode(value);
+    if (decoded is! Map<String, dynamic> ||
+        !setEquals(decoded.keys.toSet(), const <String>{
+          'version',
+          'agentServers',
+        }) ||
+        decoded['version'] != schemaVersion ||
+        decoded['agentServers'] is! List<dynamic>) {
+      throw const FormatException(
+        'Shared agent-server settings have an unsupported format.',
+      );
+    }
+    final endpoints = (decoded['agentServers']! as List<dynamic>)
+        .map(VoiceWebSocketSharedEndpointSettings.fromJson)
+        .toList(growable: false);
+    if (endpoints.length > VoiceWebSocketConfig.maximumEndpointCount) {
+      throw const FormatException('Add no more than 8 servers.');
+    }
+    final ids = <String>{};
+    final hosts = <String>{};
+    final agents = <String>{};
+    for (final endpoint in endpoints) {
+      if (!ids.add(endpoint.id)) {
+        throw const FormatException('Every server must have a unique ID.');
+      }
+      if (!hosts.add(endpoint.host)) {
+        throw const FormatException(
+          'Each server must use a different IP address.',
+        );
+      }
+      for (final agent in endpoint.agentNames) {
+        if (!agents.add(agent.toLowerCase())) {
+          throw FormatException(
+            'Agent name "$agent" is already assigned to another server.',
+          );
+        }
+      }
+    }
+    return VoiceWebSocketSharedSettings(
+      endpoints: List<VoiceWebSocketSharedEndpointSettings>.unmodifiable(
+        endpoints,
+      ),
+    );
+  }
+
+  final List<VoiceWebSocketSharedEndpointSettings> endpoints;
+
+  String encode() =>
+      '${const JsonEncoder.withIndent('  ').convert(<String, Object>{'version': schemaVersion, 'agentServers': endpoints.map((endpoint) => endpoint.toJson()).toList()})}\n';
+
+  @override
+  bool operator ==(Object other) =>
+      other is VoiceWebSocketSharedSettings &&
+      listEquals(other.endpoints, endpoints);
+
+  @override
+  int get hashCode => Object.hashAll(endpoints);
+}
+
 final class VoiceWebSocketConfigStore extends ChangeNotifier {
   VoiceWebSocketConfigStore({
     Future<Directory> Function() supportDirectory =

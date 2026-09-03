@@ -16,11 +16,13 @@ final class VoiceWebSocketSettings extends StatefulWidget {
     required this.onSave,
     required this.onConnect,
     required this.onDisconnect,
+    this.restoredSettings = VoiceWebSocketSharedSettings.empty,
     this.validationError,
     super.key,
   });
 
   final VoiceWebSocketConfig config;
+  final VoiceWebSocketSharedSettings restoredSettings;
   final List<VoiceWebSocketEndpointState> endpointStates;
   final String? validationError;
   final bool busy;
@@ -51,7 +53,9 @@ final class _VoiceWebSocketSettingsState extends State<VoiceWebSocketSettings> {
   @override
   void didUpdateWidget(VoiceWebSocketSettings oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!_isEditing && widget.config != oldWidget.config) {
+    if (!_isEditing &&
+        (widget.config != oldWidget.config ||
+            widget.restoredSettings != oldWidget.restoredSettings)) {
       _replaceEditors(widget.config);
     }
   }
@@ -63,7 +67,11 @@ final class _VoiceWebSocketSettingsState extends State<VoiceWebSocketSettings> {
       }
     }
     _editors = config.endpoints.isEmpty
-        ? <_EndpointEditor>[_newEditor()]
+        ? widget.restoredSettings.endpoints.isEmpty
+              ? <_EndpointEditor>[_newEditor()]
+              : widget.restoredSettings.endpoints
+                    .map(_EndpointEditor.fromSharedSettings)
+                    .toList(growable: true)
         : config.endpoints
               .map(_EndpointEditor.fromConfig)
               .toList(growable: true);
@@ -168,6 +176,15 @@ final class _VoiceWebSocketSettingsState extends State<VoiceWebSocketSettings> {
           'an agent name selects its server.',
           style: theme.textTheme.bodyMedium,
         ),
+        if (widget.config.endpoints.isEmpty &&
+            widget.restoredSettings.endpoints.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 8),
+          Text(
+            'Server settings restored from the shared folder. Enter each '
+            'secret, then save to reconnect.',
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
         const SizedBox(height: 12),
         Form(
           key: _formKey,
@@ -455,6 +472,17 @@ final class _EndpointEditor {
         agents: config.agentNames.join('\n'),
         authHeader: config.authHeader,
       );
+
+  factory _EndpointEditor.fromSharedSettings(
+    VoiceWebSocketSharedEndpointSettings settings,
+  ) => _EndpointEditor(
+    id: settings.id,
+    host: settings.host,
+    port: settings.port,
+    secret: '',
+    agents: settings.agentNames.join('\n'),
+    authHeader: settings.authHeader,
+  );
 
   factory _EndpointEditor.blank(String id) => _EndpointEditor(
     id: id,

@@ -85,6 +85,12 @@ unbounded builds. Each new app-private conversation turn also retains its
 normalized voice signature so later `You` enrollment can reconcile the turn
 even after its temporary non-primary profile leaves the active bank. Voice
 signatures are never placed in the shared-folder text export or SQLite index.
+When a shared folder is selected, the validated bounded profile bank plus its
+enabled state and match threshold is also mirrored to the dedicated sensitive
+`workbench-speaker-signatures.wbprofiles` recovery document. This document is
+sensitive biometric data even though it is not a readable conversation export;
+protect or delete it with the same care as the selected folder. A reinstall
+imports it only when no app-private profile bank exists.
 
 ## Output and history
 
@@ -101,7 +107,11 @@ text, start/end milliseconds, match confidence, primary/overlap flags, and
 update time. The **Conversation** tab renders primary `You` turns on the right
 and other speakers on the left as aligned text with grayscale speaker markers.
 The text file is also exported to the selected shared folder when one is
-available.
+available. If the exact app-private conversation index is missing after an
+older reinstall, Work Bench parses those readable `.conversation.txt` blocks
+back into display-only SQLite rows. Recovered rows retain speaker labels,
+timings, and text; unavailable historical confidence and per-turn signatures
+are not invented.
 
 Tools exposes one **Reset speaker identification** action; there is no reset
 control in the Conversation tab. The action removes only the primary voice

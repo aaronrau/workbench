@@ -490,4 +490,37 @@ void main() {
       expect(profilesAfterPrimaryReset.single.isPrimary, isFalse);
     },
   );
+
+  test('speaker signature recovery round trips validated profile data', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final recovery = ConversationProfileRecovery(
+      profiles: <SpeakerProfile>[
+        SpeakerProfile(
+          id: 'primary-user',
+          label: 'You',
+          embedding: const <double>[1, 0],
+          signatures: const <List<double>>[
+            <double>[1, 0],
+          ],
+          sampleCount: 1,
+          createdAt: now,
+          updatedAt: now,
+          isPrimary: true,
+        ),
+      ],
+      enabled: true,
+      speakerMatchThreshold: defaultSpeakerSignatureMatchThreshold,
+    );
+
+    final restored = ConversationProfileRecovery.decode(recovery.encode());
+
+    expect(restored.enabled, isTrue);
+    expect(restored.profiles, hasLength(1));
+    expect(restored.profiles.single.isPrimary, isTrue);
+    expect(restored.profiles.single.embedding, <double>[1, 0]);
+    expect(
+      restored.speakerMatchThreshold,
+      defaultSpeakerSignatureMatchThreshold,
+    );
+  });
 }

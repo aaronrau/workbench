@@ -111,7 +111,10 @@ expose for a true locked Hub mode.
 - Lets Android users choose a shared device folder for Files-visible speech
   WAVs plus separate `.raw.txt`, `.corrected.txt`, and optional
   `.conversation.txt` transcripts. The existing **Messages** tab continues to
-  show agent messages, original/corrected transcripts, and WAV playback.
+  show agent messages, original/corrected transcripts, and WAV playback. Two
+  rotating, integrity-checked SQLite snapshots in that folder can seed the
+  private history index after reinstall; the individual WAV/TXT records remain
+  authoritative.
 - Offers disabled-by-default speaker diarization under **Tools → Conversation
   analysis**. The first clear sentence enrolls `You`; new voices receive saved
   labels. A supervised isolate reuses the finalized VAD WAV and runs its own
@@ -283,6 +286,14 @@ or:
 ```text
 X-Voice-Api-Token: <local-secret>
 ```
+
+When a shared folder is selected, Work Bench also writes
+`workbench-agent-servers.json`. It contains endpoint IDs, addresses, ports,
+authentication modes, and agent names, but never a secret. After reinstall,
+selecting the folder prefills those fields and requires each secret before the
+server can be saved or connected. If an older folder predates this file, Work
+Bench can recover likely agent names from labeled received-message records and
+creates a loopback/8787 draft that must be verified before use.
 
 The client sends no hello message. It waits for `connection.ready`, routes a
 complete configured agent-name match with `message.send`, correlates the

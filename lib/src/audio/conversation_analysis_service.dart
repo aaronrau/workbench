@@ -110,7 +110,24 @@ final class ConversationAnalysisService {
     try {
       await _recordStore.initialize();
       _speakerMatchThreshold = await _preferences.loadSpeakerMatchThreshold();
-      final storedProfiles = await _recordStore.loadProfiles();
+      var storedProfiles = await _recordStore.loadProfiles();
+      bool? recoveredEnabled;
+      if (storedProfiles.isEmpty) {
+        final recovery = await _readSharedRecovery();
+        if (recovery != null && recovery.profiles.isNotEmpty) {
+          storedProfiles = recovery.profiles;
+          _speakerMatchThreshold = recovery.speakerMatchThreshold;
+          recoveredEnabled = recovery.enabled;
+          await _preferences.saveSpeakerMatchThreshold(_speakerMatchThreshold);
+          await _preferences.saveEnabled(recovery.enabled);
+          await _recordStore.saveProfiles(storedProfiles);
+          log(
+            'Conversation',
+            '[WorkBench][Conversation] state=signatures_restored '
+                'profiles=${storedProfiles.length}',
+          );
+        }
+      }
       _profiles = retainBoundedSpeakerProfiles(storedProfiles);
       if (storedProfiles.length != _profiles.length) {
         await _recordStore.saveProfiles(_profiles);
@@ -124,7 +141,8 @@ final class ConversationAnalysisService {
       await _applySpeakerMatchThresholdToPrimary();
       await _reconcilePrimarySpeakerHistoryIfNeeded();
       _jobs.addAll(await _recordStore.loadPendingJobs());
-      enabled = await _preferences.loadEnabled();
+      enabled = recoveredEnabled ?? await _preferences.loadEnabled();
+      await _backupSharedRecovery();
       if (!enabled) {
         state = 'disabled';
         onChanged();
@@ -157,6 +175,7 @@ final class ConversationAnalysisService {
     enabled = value;
     error = null;
     await _preferences.saveEnabled(value);
+    await _backupSharedRecovery();
     if (!value) {
       _idleWorkerReleaseTimer?.cancel();
       _idleWorkerReleaseTimer = null;
@@ -210,6 +229,7 @@ final class ConversationAnalysisService {
     await _preferences.saveSpeakerMatchThreshold(normalized);
     _speakerMatchThreshold = normalized;
     await _applySpeakerMatchThresholdToPrimary();
+    await _backupSharedRecovery();
     log(
       'Conversation',
       '[WorkBench][Conversation] state=threshold_saved '
@@ -240,7 +260,7 @@ final class ConversationAnalysisService {
     error = null;
     onChanged();
     try {
-      await _recordStore.saveProfiles(_profiles);
+      await _saveProfilesAndBackup();
       log(
         'Conversation',
         '[WorkBench][Conversation] state=speaker_identification_reset '
@@ -255,6 +275,40 @@ final class ConversationAnalysisService {
     } finally {
       onChanged();
     }
+  }
+
+  /// Synchronizes the sensitive speaker profile recovery after the user
+  /// selects a shared folder. Existing app-private profiles always win.
+  Future<void> syncSharedRecovery() async {
+    if (!_initialized || _disposed) {
+      return;
+    }
+    if (_profiles.isNotEmpty) {
+      await _backupSharedRecovery();
+      return;
+    }
+    final recovery = await _readSharedRecovery();
+    if (recovery == null || recovery.profiles.isEmpty) {
+      return;
+    }
+    _profiles = retainBoundedSpeakerProfiles(recovery.profiles);
+    _speakerMatchThreshold = recovery.speakerMatchThreshold;
+    enabled = recovery.enabled;
+    await _preferences.saveSpeakerMatchThreshold(_speakerMatchThreshold);
+    await _preferences.saveEnabled(enabled);
+    await _recordStore.saveProfiles(_profiles);
+    _enrollmentRequested = enabled && needsEnrollment;
+    _minimumEnrollmentSegmentMicros = _enrollmentRequested
+        ? _nowMicros()
+        : null;
+    state = enabled ? _idleState : 'disabled';
+    error = null;
+    log(
+      'Conversation',
+      '[WorkBench][Conversation] state=signatures_restored '
+          'profiles=${_profiles.length}',
+    );
+    onChanged();
   }
 
   /// Called after VAD has atomically finalized the speech WAV.
@@ -445,7 +499,7 @@ final class ConversationAnalysisService {
         _enrollmentRequested = false;
         _minimumEnrollmentSegmentMicros = null;
       }
-      await _recordStore.saveProfiles(_profiles);
+      await _saveProfilesAndBackup();
       await _reconcilePrimarySpeakerHistoryIfNeeded();
       if (!result.enrollment) {
         final retained = await _recordStore.retainRecord(result.record);
@@ -557,7 +611,7 @@ final class ConversationAnalysisService {
         (profile) => !profile.isPrimary && !equivalentIds.contains(profile.id),
       ),
     ]);
-    await _recordStore.saveProfiles(_profiles);
+    await _saveProfilesAndBackup();
     log(
       'Conversation',
       '[WorkBench][Conversation] state=history_reconciled '
@@ -579,7 +633,62 @@ final class ConversationAnalysisService {
       signatureMatchThreshold: _speakerMatchThreshold,
     );
     _profiles = retainBoundedSpeakerProfiles(updated);
+    await _saveProfilesAndBackup();
+  }
+
+  Future<void> _saveProfilesAndBackup() async {
     await _recordStore.saveProfiles(_profiles);
+    await _backupSharedRecovery();
+  }
+
+  Future<ConversationProfileRecovery?> _readSharedRecovery() async {
+    if (!_sharedAudioExportStore.hasSharedFolder) {
+      return null;
+    }
+    try {
+      final bytes = await _sharedAudioExportStore
+          .readSpeakerSignatureRecovery();
+      if (bytes == null || bytes.isEmpty) {
+        return null;
+      }
+      return ConversationProfileRecovery.decode(bytes);
+    } on Object {
+      log(
+        'Conversation',
+        '[WorkBench][Conversation] state=signature_restore_failed '
+            'private_profiles=unchanged',
+        isError: true,
+      );
+      return null;
+    }
+  }
+
+  Future<void> _backupSharedRecovery() async {
+    if (!_sharedAudioExportStore.hasSharedFolder || _profiles.isEmpty) {
+      return;
+    }
+    try {
+      final recovery = ConversationProfileRecovery(
+        profiles: _profiles,
+        enabled: enabled,
+        speakerMatchThreshold: _speakerMatchThreshold,
+      );
+      await _sharedAudioExportStore.writeSpeakerSignatureRecovery(
+        recovery.encode(),
+      );
+      log(
+        'Conversation',
+        '[WorkBench][Conversation] state=signatures_backed_up '
+            'profiles=${_profiles.length}',
+      );
+    } on Object {
+      log(
+        'Conversation',
+        '[WorkBench][Conversation] state=signature_backup_failed '
+            'private_profiles=retained',
+        isError: true,
+      );
+    }
   }
 
   void _removeJob(String segmentId) {

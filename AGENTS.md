@@ -247,6 +247,12 @@ WebSocket delivery.
 - Preserve the original WAV and primary transcript regardless of conversation
   analysis availability or outcome. A conversation failure must not change
   the primary transcript, correction eligibility, routing, or delivery state.
+- When a shared folder is selected, keep the validated speaker profile bank,
+  enabled state, and match threshold in the dedicated sensitive
+  `workbench-speaker-signatures.wbprofiles` recovery document. Never log its
+  contents or place voice signatures in readable conversation exports or the
+  SQLite history index. Existing app-private profiles win over shared recovery;
+  import shared signatures only when the private profile bank is absent.
 - Keep regression coverage proving primary STT dispatch is immediate even when
   conversation dispatch is slow or fails. During physical validation, compare
   timestamped primary and conversation worker markers and reject any build in
@@ -270,6 +276,11 @@ STT, correction, file export, or access to the original transcript.
 
 - Keep runtime `voice_websocket.json` app-private and ignored. Commit only the
   generic `voice_websocket.example.json`.
+- Mirror only secret-free endpoint fields to the selected folder as
+  `workbench-agent-servers.json`: endpoint ID, IP, port, fixed path,
+  authentication-header mode, and agent names. Never include any secret. On
+  recovery, use those fields only to prefill the editor and require the user to
+  enter every secret before saving or connecting.
 - Never log the configured IP address, secret, upgrade headers, request body,
   transcript text, inbound message text, server session ID, or request ID.
   Logs may contain only connection state, selected authentication mode, agent
@@ -304,13 +315,17 @@ STT, correction, file export, or access to the original transcript.
   with the reserved `.sent.message.txt` or `.received.message.txt` suffix, and
   export both to the selected shared folder. Keep message persistence and G2
   display independent so a failure in either consumer cannot block the other.
-- Treat the app-private SQLite history database only as a performance index.
-  Keep the atomic app-private records and shared Files-visible WAV/TXT files as
-  durable sources. Update the index after every successful export, import the
-  selected folder once after migration or folder change, and reserve a full
-  document-provider rescan for explicit user refresh and cache recovery. Keep
-  export fingerprints app-private and skip an unchanged indexed file during
-  recovery sync; never make a bulk export block a cached history read.
+- Treat the live app-private SQLite history database only as a performance
+  index. Keep the atomic app-private records and shared Files-visible WAV/TXT
+  files as authoritative durable sources. Also rotate two validated SQLite
+  recovery snapshots in the selected shared folder after index updates; copy
+  only reconstructable history rows, never export fingerprints or live SQLite
+  sidecars, and restore only a size-bounded, integrity-checked snapshot after
+  the user reselects that folder. Import the selected folder once after
+  migration or folder change, and reserve a full document-provider rescan for
+  explicit user refresh and cache recovery. Keep export fingerprints
+  app-private and skip an unchanged indexed file during recovery sync; never
+  make a bulk export block a cached history read.
 - Keep every G2 BLE write bounded. Transcript and inbound-message text uses
   high priority, visual waveform writes use low priority, and a stalled write
   must time out so later FIFO statuses can still reach and clear from G2.

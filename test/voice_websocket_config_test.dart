@@ -220,4 +220,64 @@ void main() {
       ),
     );
   });
+
+  test('shared settings round trip without a secret', () {
+    final privateConfig = VoiceWebSocketConfig.validate(
+      id: 'server-one',
+      host: '192.0.2.10',
+      port: 8787,
+      secret: 'never-export-this-secret',
+      authHeader: VoiceWebSocketAuthHeader.voiceApiToken,
+      agentNames: const <String>['Agent One', 'Flux'],
+    );
+
+    final encoded = VoiceWebSocketSharedSettings.fromConfig(
+      privateConfig,
+    ).encode();
+    final restored = VoiceWebSocketSharedSettings.decode(encoded);
+
+    expect(encoded, isNot(contains('never-export-this-secret')));
+    expect(encoded, isNot(contains('"secret"')));
+    expect(restored.endpoints, hasLength(1));
+    expect(restored.endpoints.single.host, '192.0.2.10');
+    expect(restored.endpoints.single.port, 8787);
+    expect(restored.endpoints.single.agentNames, <String>['Agent One', 'Flux']);
+    expect(
+      restored.endpoints.single.authHeader,
+      VoiceWebSocketAuthHeader.voiceApiToken,
+    );
+  });
+
+  test('shared settings reject a secret field', () {
+    expect(
+      () => VoiceWebSocketSharedSettings.decode(
+        jsonEncode(<String, Object>{
+          'version': 1,
+          'agentServers': <Object>[
+            <String, Object>{
+              'id': 'server-one',
+              'host': '192.0.2.10',
+              'port': 8787,
+              'path': '/ws',
+              'authHeader': 'authorizationBearer',
+              'agentNames': <String>['Flux'],
+              'secret': 'must-not-be-here',
+            },
+          ],
+        }),
+      ),
+      throwsFormatException,
+    );
+
+    expect(
+      () => VoiceWebSocketSharedSettings.decode(
+        jsonEncode(<String, Object>{
+          'version': 1,
+          'agentServers': <Object>[],
+          'secret': 'must-not-be-here',
+        }),
+      ),
+      throwsFormatException,
+    );
+  });
 }

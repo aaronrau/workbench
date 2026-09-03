@@ -17,8 +17,10 @@ import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.Executors
+import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -47,6 +49,13 @@ class MainActivity : FlutterActivity() {
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
+        private const val HISTORY_SNAPSHOT_MIME_TYPE = "application/vnd.sqlite3"
+        private const val MAX_HISTORY_SNAPSHOT_BYTES = 128L * 1024L * 1024L
+        private val HISTORY_SNAPSHOT_FILE_NAMES =
+            listOf(
+                "workbench-history-cache-a.sqlite3",
+                "workbench-history-cache-b.sqlite3",
+            )
         private const val RUNTIME_DIAGNOSTIC_PREFERENCES =
             "workbench_runtime_diagnostics"
         private const val LAST_REPORTED_EXIT_TIMESTAMP =
@@ -54,6 +63,13 @@ class MainActivity : FlutterActivity() {
         internal const val CORRECTION_PROMPT_FILE_NAME =
             "workbench-correction-prompt.txt"
         private const val MAX_CORRECTION_PROMPT_CHARACTERS = 10_000
+        private const val AGENT_SERVER_SETTINGS_FILE_NAME =
+            "workbench-agent-servers.json"
+        private const val MAX_AGENT_SERVER_SETTINGS_CHARACTERS = 65_536
+        private const val SPEAKER_SIGNATURE_RECOVERY_FILE_NAME =
+            "workbench-speaker-signatures.wbprofiles"
+        private const val MAX_SPEAKER_SIGNATURE_RECOVERY_BYTES =
+            2 * 1024 * 1024
         private const val CHOOSE_DIRECTORY_REQUEST = 4201
     }
 
@@ -233,6 +249,45 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
                     writeCorrectionInstructions(instructions, result)
+                }
+                "readAgentServerSettings" ->
+                    readAgentServerSettings(result)
+                "writeAgentServerSettings" -> {
+                    val settings = call.argument<String>("settings")
+                    if (settings == null) {
+                        result.error(
+                            "missing_server_settings",
+                            "Agent server settings are required.",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
+                    writeAgentServerSettings(settings, result)
+                }
+                "readSpeakerSignatureRecovery" ->
+                    readSpeakerSignatureRecovery(result)
+                "writeSpeakerSignatureRecovery" -> {
+                    val recovery = call.argument<ByteArray>("recovery")
+                    if (recovery == null) {
+                        result.error(
+                            "missing_speaker_recovery",
+                            "Speaker signature recovery data is required.",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
+                    writeSpeakerSignatureRecovery(recovery, result)
+                }
+                "suggestAgentNames" -> {
+                    historyExecutor.execute {
+                        val names =
+                            try {
+                                sharedHistoryCache.suggestAgentNamesFromMessages()
+                            } catch (_: Exception) {
+                                emptyList()
+                            }
+                        runOnUiThread { result.success(names) }
+                    }
                 }
                 "listTranscriptions" ->
                     listTranscriptions(
@@ -473,15 +528,32 @@ class MainActivity : FlutterActivity() {
             contentResolver.takePersistableUriPermission(uri, flags)
             val preferences =
                 getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
-            if (preferences.getString(STORAGE_DIRECTORY_URI, null) != uri.toString()) {
+            val directoryChanged =
+                preferences.getString(STORAGE_DIRECTORY_URI, null) != uri.toString()
+            if (directoryChanged) {
                 preferences.edit().remove(STORAGE_DOCUMENT_INDEX).apply()
-                sharedHistoryCache.reset()
             }
             releaseStoredDirectory(except = uri)
             preferences.edit()
                 .putString(STORAGE_DIRECTORY_URI, uri.toString())
                 .apply()
-            result.success(directoryMessage(uri))
+            val directoryMessage = directoryMessage(uri)
+            storageExecutor.execute {
+                try {
+                    if (directoryChanged) {
+                        sharedHistoryCache.reset()
+                        restoreSharedHistorySnapshot(uri)
+                    }
+                } catch (_: Exception) {
+                    Log.w(
+                        "WorkBench",
+                        "[WorkBench][SharedStorage] " +
+                            "state=history_snapshot_restore_failed " +
+                            "fallback=durable_files",
+                    )
+                }
+                runOnUiThread { result.success(directoryMessage) }
+            }
         } catch (_: Exception) {
             result.error(
                 "directory_access",
@@ -599,6 +671,7 @@ class MainActivity : FlutterActivity() {
                         exported++
                     }
                 }
+                writeSharedHistorySnapshot(directory, reason = "export")
                 runOnUiThread { result.success(exported) }
             } catch (_: Exception) {
                 runOnUiThread {
@@ -685,6 +758,163 @@ class MainActivity : FlutterActivity() {
                     "fallback=shared_scan",
             )
         }
+    }
+
+    private fun queueSharedHistorySnapshot(
+        directory: Uri,
+        reason: String,
+    ) {
+        storageExecutor.execute {
+            writeSharedHistorySnapshot(directory, reason)
+        }
+    }
+
+    private fun writeSharedHistorySnapshot(
+        directory: Uri,
+        reason: String,
+    ) {
+        val localSnapshot = File(cacheDir, "workbench-history-cache.sqlite3")
+        try {
+            val counts = sharedHistoryCache.writeRecoverySnapshot(localSnapshot)
+            val slots =
+                HISTORY_SNAPSHOT_FILE_NAMES.map { name ->
+                    val document =
+                        indexedDocument(directory, name)
+                            ?: findChild(directory, name)
+                            ?: predictableExternalStorageChild(directory, name)
+                    HistorySnapshotSlot(
+                        name = name,
+                        document = document,
+                        modifiedAtMillis =
+                            document?.let(::documentLastModified) ?: Long.MIN_VALUE,
+                    )
+                }
+            val slot =
+                slots.firstOrNull { it.document == null }
+                    ?: slots.minBy { it.modifiedAtMillis }
+            val rootDocument =
+                DocumentsContract.buildDocumentUriUsingTree(
+                    directory,
+                    DocumentsContract.getTreeDocumentId(directory),
+                )
+            val target =
+                slot.document
+                    ?: DocumentsContract.createDocument(
+                        contentResolver,
+                        rootDocument,
+                        HISTORY_SNAPSHOT_MIME_TYPE,
+                        slot.name,
+                    )
+                    ?: throw IllegalStateException(
+                        "The document provider rejected the history snapshot.",
+                    )
+            localSnapshot.inputStream().use { input ->
+                contentResolver.openOutputStream(target, "wt")?.use { output ->
+                    input.copyTo(output)
+                    output.flush()
+                } ?: throw IllegalStateException(
+                    "The document provider rejected the history snapshot write.",
+                )
+            }
+            rememberDocument(slot.name, target)
+            Log.i(
+                "WorkBench",
+                "[WorkBench][SharedStorage] state=history_snapshot_saved " +
+                    "reason=$reason transcripts=${counts.transcripts} " +
+                    "messages=${counts.messages} " +
+                    "conversation_turns=${counts.conversationTurns}",
+            )
+        } catch (_: Exception) {
+            Log.w(
+                "WorkBench",
+                "[WorkBench][SharedStorage] state=history_snapshot_failed " +
+                    "reason=$reason fallback=durable_files",
+            )
+        } finally {
+            localSnapshot.delete()
+            File("${localSnapshot.path}.part").delete()
+        }
+    }
+
+    private fun restoreSharedHistorySnapshot(directory: Uri): Boolean {
+        val candidates =
+            HISTORY_SNAPSHOT_FILE_NAMES
+                .mapNotNull { name ->
+                    val document =
+                        indexedDocument(directory, name)
+                            ?: findChild(directory, name)
+                            ?: predictableExternalStorageChild(directory, name)
+                    document?.let {
+                        HistorySnapshotSlot(
+                            name = name,
+                            document = it,
+                            modifiedAtMillis = documentLastModified(it),
+                        )
+                    }
+                }.sortedByDescending { it.modifiedAtMillis }
+        for ((index, candidate) in candidates.withIndex()) {
+            val localSnapshot =
+                File(cacheDir, "workbench-history-restore-$index.sqlite3")
+            try {
+                copyHistorySnapshotToLocal(candidate.document!!, localSnapshot)
+                val counts =
+                    sharedHistoryCache.restoreRecoverySnapshot(localSnapshot)
+                rememberDocument(candidate.name, candidate.document)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] state=history_snapshot_restored " +
+                        "transcripts=${counts.transcripts} " +
+                        "messages=${counts.messages} " +
+                        "conversation_turns=${counts.conversationTurns}",
+                )
+                return true
+            } catch (_: Exception) {
+                Log.w(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] state=history_snapshot_rejected " +
+                        "slot=${index + 1}",
+                )
+            } finally {
+                localSnapshot.delete()
+            }
+        }
+        Log.i(
+            "WorkBench",
+            "[WorkBench][SharedStorage] state=history_snapshot_absent " +
+                "fallback=durable_files",
+        )
+        return false
+    }
+
+    private fun copyHistorySnapshotToLocal(
+        document: Uri,
+        target: File,
+    ) {
+        if (target.exists() && !target.delete()) {
+            throw IllegalStateException("Could not replace a local snapshot.")
+        }
+        contentResolver.openInputStream(document)?.use { input ->
+            target.outputStream().use { output ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var copied = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) {
+                        break
+                    }
+                    copied += count
+                    if (copied > MAX_HISTORY_SNAPSHOT_BYTES) {
+                        throw IllegalArgumentException(
+                            "The history snapshot exceeds the size limit.",
+                        )
+                    }
+                    output.write(buffer, 0, count)
+                }
+                output.flush()
+            }
+        } ?: throw IllegalStateException(
+            "The document provider rejected the history snapshot read.",
+        )
     }
 
     private fun sharedDocumentIsCurrent(
@@ -862,6 +1092,354 @@ class MainActivity : FlutterActivity() {
         return trimmed
     }
 
+    private fun readAgentServerSettings(result: MethodChannel.Result) {
+        val directory = storedDirectoryUri()
+        if (directory == null) {
+            result.error(
+                "directory_unavailable",
+                "Choose the shared save folder again.",
+                null,
+            )
+            return
+        }
+        storageExecutor.execute {
+            try {
+                val document =
+                    indexedDocument(directory, AGENT_SERVER_SETTINGS_FILE_NAME)
+                        ?: findChild(directory, AGENT_SERVER_SETTINGS_FILE_NAME)
+                        ?: predictableExternalStorageChild(
+                            directory,
+                            AGENT_SERVER_SETTINGS_FILE_NAME,
+                        )
+                val settings = document?.let(::readTranscriptText)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] " +
+                        "state=agent_server_settings_read " +
+                        "found=${document != null}",
+                )
+                runOnUiThread { result.success(settings) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "server_settings_read_failed",
+                        "Could not read the shared agent server settings.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun writeAgentServerSettings(
+        settings: String,
+        result: MethodChannel.Result,
+    ) {
+        val validated = validateAgentServerSettings(settings)
+        if (validated == null) {
+            result.error(
+                "invalid_server_settings",
+                "Agent server settings are invalid or contain a secret.",
+                null,
+            )
+            return
+        }
+        val directory = storedDirectoryUri()
+        if (directory == null) {
+            result.error(
+                "directory_unavailable",
+                "Choose the shared save folder again.",
+                null,
+            )
+            return
+        }
+        storageExecutor.execute {
+            try {
+                val rootDocument =
+                    DocumentsContract.buildDocumentUriUsingTree(
+                        directory,
+                        DocumentsContract.getTreeDocumentId(directory),
+                    )
+                val document =
+                    indexedDocument(directory, AGENT_SERVER_SETTINGS_FILE_NAME)
+                        ?: findChild(directory, AGENT_SERVER_SETTINGS_FILE_NAME)
+                        ?: predictableExternalStorageChild(
+                            directory,
+                            AGENT_SERVER_SETTINGS_FILE_NAME,
+                        )
+                        ?: DocumentsContract.createDocument(
+                            contentResolver,
+                            rootDocument,
+                            "application/json",
+                            AGENT_SERVER_SETTINGS_FILE_NAME,
+                        )
+                        ?: throw IllegalStateException(
+                            "The document provider rejected the server settings.",
+                        )
+                contentResolver.openOutputStream(document, "wt")?.use { output ->
+                    output.writer(Charsets.UTF_8).use { writer ->
+                        writer.write(validated)
+                        writer.write("\n")
+                        writer.flush()
+                    }
+                } ?: throw IllegalStateException(
+                    "The document provider is not writable.",
+                )
+                rememberDocument(AGENT_SERVER_SETTINGS_FILE_NAME, document)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] " +
+                        "state=agent_server_settings_saved secret=false",
+                )
+                runOnUiThread { result.success(null) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "server_settings_write_failed",
+                        "Could not save the shared agent server settings.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun validateAgentServerSettings(value: String): String? {
+        val trimmed = value.trim()
+        if (trimmed.isEmpty() ||
+            trimmed.length > MAX_AGENT_SERVER_SETTINGS_CHARACTERS
+        ) {
+            return null
+        }
+        return try {
+            val root = JSONObject(trimmed)
+            if (root.length() != 2 ||
+                root.optInt("version", -1) != 1 ||
+                !root.has("agentServers")
+            ) {
+                return null
+            }
+            val servers = root.getJSONArray("agentServers")
+            if (servers.length() > 8) {
+                return null
+            }
+            val ids = mutableSetOf<String>()
+            val hosts = mutableSetOf<String>()
+            val agents = mutableSetOf<String>()
+            val allowedKeys =
+                setOf(
+                    "id",
+                    "host",
+                    "port",
+                    "path",
+                    "authHeader",
+                    "agentNames",
+                )
+            for (index in 0 until servers.length()) {
+                val server = servers.getJSONObject(index)
+                val keys = server.keys().asSequence().toSet()
+                if (keys != allowedKeys) {
+                    return null
+                }
+                val id = server.getString("id").trim()
+                val host = server.getString("host").trim()
+                val port = server.getInt("port")
+                val path = server.getString("path")
+                val auth = server.getString("authHeader")
+                if (!id.matches(Regex("^[A-Za-z0-9_-]{1,64}$")) ||
+                    !isValidIpv4(host) ||
+                    port !in 1..65535 ||
+                    path != "/ws" ||
+                    auth !in setOf(
+                        "authorizationBearer",
+                        "xVoiceApiToken",
+                    ) ||
+                    !ids.add(id) ||
+                    !hosts.add(host)
+                ) {
+                    return null
+                }
+                val names = server.getJSONArray("agentNames")
+                if (names.length() !in 1..4) {
+                    return null
+                }
+                for (nameIndex in 0 until names.length()) {
+                    val name = names.getString(nameIndex).trim()
+                    if (name.isEmpty() ||
+                        name.length > 64 ||
+                        name.any { it.code < 0x20 || it.code == 0x7f } ||
+                        !agents.add(name.lowercase())
+                    ) {
+                        return null
+                    }
+                }
+            }
+            trimmed
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun isValidIpv4(value: String): Boolean {
+        val parts = value.split('.')
+        if (parts.size != 4) {
+            return false
+        }
+        return parts.all { part ->
+            val number = part.toIntOrNull()
+            part.isNotEmpty() &&
+                part.length <= 3 &&
+                part.all(Char::isDigit) &&
+                number != null &&
+                number in 0..255
+        }
+    }
+
+    private fun readSpeakerSignatureRecovery(result: MethodChannel.Result) {
+        val directory = storedDirectoryUri()
+        if (directory == null) {
+            result.error(
+                "directory_unavailable",
+                "Choose the shared save folder again.",
+                null,
+            )
+            return
+        }
+        storageExecutor.execute {
+            try {
+                val document =
+                    indexedDocument(
+                        directory,
+                        SPEAKER_SIGNATURE_RECOVERY_FILE_NAME,
+                    )
+                        ?: findChild(
+                            directory,
+                            SPEAKER_SIGNATURE_RECOVERY_FILE_NAME,
+                        )
+                        ?: predictableExternalStorageChild(
+                            directory,
+                            SPEAKER_SIGNATURE_RECOVERY_FILE_NAME,
+                        )
+                val recovery =
+                    document?.let { source ->
+                        contentResolver.openInputStream(source)?.use { input ->
+                            val output = ByteArrayOutputStream()
+                            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                            var total = 0
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) {
+                                    break
+                                }
+                                total += count
+                                if (total >
+                                    MAX_SPEAKER_SIGNATURE_RECOVERY_BYTES
+                                ) {
+                                    throw IllegalArgumentException(
+                                        "Speaker recovery data is too large.",
+                                    )
+                                }
+                                output.write(buffer, 0, count)
+                            }
+                            output.toByteArray()
+                        }
+                    }
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] " +
+                        "state=speaker_signatures_read " +
+                        "found=${document != null}",
+                )
+                runOnUiThread { result.success(recovery) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "speaker_recovery_read_failed",
+                        "Could not read the shared speaker signature recovery.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun writeSpeakerSignatureRecovery(
+        recovery: ByteArray,
+        result: MethodChannel.Result,
+    ) {
+        if (recovery.isEmpty() ||
+            recovery.size > MAX_SPEAKER_SIGNATURE_RECOVERY_BYTES
+        ) {
+            result.error(
+                "invalid_speaker_recovery",
+                "Speaker signature recovery data has an invalid size.",
+                null,
+            )
+            return
+        }
+        val directory = storedDirectoryUri()
+        if (directory == null) {
+            result.error(
+                "directory_unavailable",
+                "Choose the shared save folder again.",
+                null,
+            )
+            return
+        }
+        storageExecutor.execute {
+            try {
+                val rootDocument =
+                    DocumentsContract.buildDocumentUriUsingTree(
+                        directory,
+                        DocumentsContract.getTreeDocumentId(directory),
+                    )
+                val document =
+                    indexedDocument(
+                        directory,
+                        SPEAKER_SIGNATURE_RECOVERY_FILE_NAME,
+                    )
+                        ?: findChild(
+                            directory,
+                            SPEAKER_SIGNATURE_RECOVERY_FILE_NAME,
+                        )
+                        ?: predictableExternalStorageChild(
+                            directory,
+                            SPEAKER_SIGNATURE_RECOVERY_FILE_NAME,
+                        )
+                        ?: DocumentsContract.createDocument(
+                            contentResolver,
+                            rootDocument,
+                            "application/octet-stream",
+                            SPEAKER_SIGNATURE_RECOVERY_FILE_NAME,
+                        )
+                        ?: throw IllegalStateException(
+                            "The document provider rejected speaker recovery.",
+                        )
+                contentResolver.openOutputStream(document, "wt")?.use { output ->
+                    output.write(recovery)
+                    output.flush()
+                } ?: throw IllegalStateException(
+                    "The document provider is not writable.",
+                )
+                rememberDocument(SPEAKER_SIGNATURE_RECOVERY_FILE_NAME, document)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] " +
+                        "state=speaker_signatures_saved profiles=private",
+                )
+                runOnUiThread { result.success(null) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "speaker_recovery_write_failed",
+                        "Could not save the shared speaker signature recovery.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
     private fun listTranscriptions(
         result: MethodChannel.Result,
         reconcileShared: Boolean,
@@ -883,10 +1461,23 @@ class MainActivity : FlutterActivity() {
                         !sharedHistoryCache.hasTranscriptSnapshot()
                     ) {
                         try {
-                            readSharedTranscriptions(directory).also {
-                                sharedHistoryCache.replaceTranscripts(it)
-                                source = "shared"
-                            }
+                            val scanned = readSharedTranscriptions(directory)
+                            sharedHistoryCache.replaceTranscripts(scanned)
+                            val recoveredConversationTurns =
+                                sharedHistoryCache
+                                    .reconcileConversationTurnsFromTranscripts()
+                            Log.i(
+                                "WorkBench",
+                                "[WorkBench][Conversation] " +
+                                    "state=shared_text_reconciled " +
+                                    "turns=$recoveredConversationTurns",
+                            )
+                            queueSharedHistorySnapshot(
+                                directory,
+                                reason = "transcript_scan",
+                            )
+                            source = "shared"
+                            sharedHistoryCache.listTranscripts()
                         } catch (error: Exception) {
                             val cached = sharedHistoryCache.listTranscripts()
                             if (cached.isEmpty()) {
@@ -1082,9 +1673,6 @@ class MainActivity : FlutterActivity() {
                     "updatedAtMillis" to entry.updatedAtMillis,
                 ),
             )
-            if (results.size == SharedHistoryCache.MAX_VISIBLE_TRANSCRIPTS) {
-                break
-            }
         }
         Log.i(
             "WorkBench",
@@ -1119,10 +1707,14 @@ class MainActivity : FlutterActivity() {
                         !sharedHistoryCache.hasMessageSnapshot()
                     ) {
                         try {
-                            readSharedMessages(directory).also {
-                                sharedHistoryCache.replaceMessages(it)
-                                source = "shared"
-                            }
+                            val scanned = readSharedMessages(directory)
+                            sharedHistoryCache.replaceMessages(scanned)
+                            queueSharedHistorySnapshot(
+                                directory,
+                                reason = "message_scan",
+                            )
+                            source = "shared"
+                            sharedHistoryCache.listMessages()
                         } catch (error: Exception) {
                             val cached = sharedHistoryCache.listMessages()
                             if (cached.isEmpty()) {
@@ -1160,6 +1752,12 @@ class MainActivity : FlutterActivity() {
         historyExecutor.execute {
             try {
                 sharedHistoryCache.replaceConversationTurns(turns)
+                storedDirectoryUri()?.let { directory ->
+                    queueSharedHistorySnapshot(
+                        directory,
+                        reason = "conversation_index",
+                    )
+                }
                 Log.i(
                     "WorkBench",
                     "[WorkBench][Conversation] state=indexed " +
@@ -1181,7 +1779,26 @@ class MainActivity : FlutterActivity() {
     private fun listConversations(result: MethodChannel.Result) {
         historyExecutor.execute {
             try {
-                val entries = sharedHistoryCache.listConversationTurns()
+                var entries = sharedHistoryCache.listConversationTurns()
+                if (entries.isEmpty()) {
+                    val recovered =
+                        sharedHistoryCache
+                            .reconcileConversationTurnsFromTranscripts()
+                    if (recovered > 0) {
+                        storedDirectoryUri()?.let { directory ->
+                            queueSharedHistorySnapshot(
+                                directory,
+                                reason = "conversation_recovery",
+                            )
+                        }
+                        entries = sharedHistoryCache.listConversationTurns()
+                        Log.i(
+                            "WorkBench",
+                            "[WorkBench][Conversation] " +
+                                "state=shared_text_reconciled turns=$recovered",
+                        )
+                    }
+                }
                 Log.i(
                     "WorkBench",
                     "[WorkBench][Conversation] state=list_ready " +
@@ -1307,9 +1924,6 @@ class MainActivity : FlutterActivity() {
                     "updatedAtMillis" to entry.updatedAtMillis,
                 ),
             )
-            if (results.size == SharedHistoryCache.MAX_VISIBLE_MESSAGES) {
-                break
-            }
         }
         return results
     }
@@ -1562,3 +2176,9 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 }
+
+private data class HistorySnapshotSlot(
+    val name: String,
+    val document: Uri?,
+    val modifiedAtMillis: Long,
+)

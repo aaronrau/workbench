@@ -87,6 +87,10 @@ final class SharedConversationTurn {
 final class SharedAudioExportStore extends ChangeNotifier {
   static const String correctionPromptFileName =
       'workbench-correction-prompt.txt';
+  static const String agentServerSettingsFileName =
+      'workbench-agent-servers.json';
+  static const String speakerSignatureRecoveryFileName =
+      'workbench-speaker-signatures.wbprofiles';
   static const int maximumVisibleTranscripts = 100;
   static const int maximumVisibleMessages = 100;
   static const int maximumVisibleConversationTurns = 100;
@@ -273,6 +277,52 @@ final class SharedAudioExportStore extends ChangeNotifier {
       'writeCorrectionInstructions',
       <String, Object>{'instructions': instructions},
     );
+  }
+
+  Future<String?> readAgentServerSettings() async {
+    if (!_isAndroid || folder == null) {
+      return null;
+    }
+    return _channel.invokeMethod<String>('readAgentServerSettings');
+  }
+
+  Future<void> writeAgentServerSettings(String settings) async {
+    if (!_isAndroid || folder == null) {
+      throw StateError('Choose a shared folder before saving server settings.');
+    }
+    await _channel.invokeMethod<void>(
+      'writeAgentServerSettings',
+      <String, Object>{'settings': settings},
+    );
+  }
+
+  Future<Uint8List?> readSpeakerSignatureRecovery() async {
+    if (!_isAndroid || folder == null) {
+      return null;
+    }
+    return _channel.invokeMethod<Uint8List>('readSpeakerSignatureRecovery');
+  }
+
+  Future<void> writeSpeakerSignatureRecovery(Uint8List recovery) async {
+    if (!_isAndroid || folder == null) {
+      throw StateError(
+        'Choose a shared folder before saving speaker signatures.',
+      );
+    }
+    await _channel.invokeMethod<void>(
+      'writeSpeakerSignatureRecovery',
+      <String, Object>{'recovery': recovery},
+    );
+  }
+
+  Future<List<String>> suggestAgentNames() async {
+    if (!_isAndroid || folder == null) {
+      return const <String>[];
+    }
+    final names =
+        await _channel.invokeMethod<List<Object?>>('suggestAgentNames') ??
+        const <Object?>[];
+    return names.whereType<String>().toList(growable: false);
   }
 
   Future<void> refreshTranscriptions({bool reconcileShared = false}) async {

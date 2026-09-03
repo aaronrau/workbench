@@ -2,6 +2,7 @@ package dev.opensourceglasses.even_g2_r1_poc
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.DatabaseUtils
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.io.File
@@ -23,6 +24,8 @@ internal class SharedHistoryCache(
     companion object {
         private const val DATABASE_NAME = "workbench_shared_history.db"
         private const val DATABASE_VERSION = 4
+        private const val RECOVERY_SNAPSHOT_VERSION = 1
+        private const val MAX_RECOVERY_SNAPSHOT_BYTES = 128L * 1024L * 1024L
 
         private const val TABLE_META = "cache_meta"
         private const val TABLE_TRANSCRIPTS = "transcripts"
@@ -33,9 +36,40 @@ internal class SharedHistoryCache(
         private const val META_TRANSCRIPTS_SNAPSHOT = "transcripts_snapshot"
         private const val META_MESSAGES_SNAPSHOT = "messages_snapshot"
         private const val MAX_TEXT_CHARACTERS = 65_536
+        private const val RECOVERED_SPEAKER_PREFIX = "shared-text:"
         internal const val MAX_VISIBLE_TRANSCRIPTS = 100
         internal const val MAX_VISIBLE_MESSAGES = 100
         internal const val MAX_VISIBLE_CONVERSATION_TURNS = 100
+        private val TRANSCRIPT_COLUMNS =
+            arrayOf(
+                "transcript_id",
+                "raw_text",
+                "legacy_text",
+                "corrected_text",
+                "audio_file_name",
+                "updated_at_millis",
+            )
+        private val MESSAGE_COLUMNS =
+            arrayOf(
+                "message_id",
+                "direction",
+                "message_text",
+                "updated_at_millis",
+            )
+        private val CONVERSATION_COLUMNS =
+            arrayOf(
+                "turn_id",
+                "conversation_id",
+                "speaker_id",
+                "speaker_label",
+                "turn_text",
+                "start_ms",
+                "end_ms",
+                "confidence",
+                "is_primary",
+                "is_overlap",
+                "updated_at_millis",
+            )
     }
 
     override fun onCreate(database: SQLiteDatabase) {
@@ -113,6 +147,7 @@ internal class SharedHistoryCache(
         }
     }
 
+    @Synchronized
     fun reset() {
         writableDatabase.runInTransaction {
             delete(TABLE_META, null, null)
@@ -123,16 +158,20 @@ internal class SharedHistoryCache(
         }
     }
 
+    @Synchronized
     fun invalidateSnapshots() {
         writableDatabase.delete(TABLE_META, null, null)
     }
 
+    @Synchronized
     fun hasTranscriptSnapshot(): Boolean =
         hasSnapshot(META_TRANSCRIPTS_SNAPSHOT)
 
+    @Synchronized
     fun hasMessageSnapshot(): Boolean =
         hasSnapshot(META_MESSAGES_SNAPSHOT)
 
+    @Synchronized
     fun replaceTranscripts(entries: List<Map<String, Any?>>) {
         writableDatabase.runInTransaction {
             delete(TABLE_TRANSCRIPTS, null, null)
@@ -173,6 +212,114 @@ internal class SharedHistoryCache(
         }
     }
 
+    /**
+     * Rebuilds display-only speaker turns from shared `.conversation.txt`
+     * exports when the original app-private JSON/index is unavailable.
+     *
+     * Exact native rows win whenever they still exist. The readable export
+     * does not contain voice signatures or match confidence, so recovered
+     * rows deliberately use stable synthetic speaker IDs and zero confidence.
+     */
+    @Synchronized
+    fun reconcileConversationTurnsFromTranscripts(): Int {
+        var recovered = 0
+        writableDatabase.runInTransaction {
+            query(
+                TABLE_TRANSCRIPTS,
+                arrayOf(
+                    "transcript_id",
+                    "raw_text",
+                    "legacy_text",
+                    "updated_at_millis",
+                ),
+                "transcript_id LIKE ?",
+                arrayOf("%.conversation"),
+                null,
+                null,
+                null,
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val transcriptId = cursor.getString(0)
+                    val conversationId =
+                        transcriptId.removeSuffix(".conversation")
+                    if (conversationId.isEmpty() ||
+                        hasExactConversationTurns(this, conversationId)
+                    ) {
+                        continue
+                    }
+                    delete(
+                        TABLE_CONVERSATIONS,
+                        "conversation_id = ? AND speaker_id LIKE ?",
+                        arrayOf(
+                            conversationId,
+                            "$RECOVERED_SPEAKER_PREFIX%",
+                        ),
+                    )
+                    val text =
+                        if (!cursor.isNull(1)) {
+                            cursor.getString(1)
+                        } else if (!cursor.isNull(2)) {
+                            cursor.getString(2)
+                        } else {
+                            ""
+                        }
+                    val updatedAtMillis = cursor.getLong(3)
+                    for ((index, turn) in parseSharedConversation(text)
+                        .withIndex()) {
+                        val speakerKey =
+                            turn.speakerLabel
+                                .lowercase()
+                                .replace(Regex("[^a-z0-9]+"), "_")
+                                .trim('_')
+                                .ifEmpty { "speaker" }
+                        insertWithOnConflict(
+                            TABLE_CONVERSATIONS,
+                            null,
+                            ContentValues().apply {
+                                put(
+                                    "turn_id",
+                                    "$conversationId-shared-${index + 1}",
+                                )
+                                put("conversation_id", conversationId)
+                                put(
+                                    "speaker_id",
+                                    "$RECOVERED_SPEAKER_PREFIX$speakerKey",
+                                )
+                                put("speaker_label", turn.speakerLabel)
+                                put(
+                                    "turn_text",
+                                    turn.text.take(MAX_TEXT_CHARACTERS),
+                                )
+                                put("start_ms", turn.startMs)
+                                put("end_ms", turn.endMs)
+                                put("confidence", 0.0)
+                                put(
+                                    "is_primary",
+                                    if (turn.speakerLabel == "You") 1 else 0,
+                                )
+                                put(
+                                    "is_overlap",
+                                    if (turn.speakerLabel ==
+                                        "Overlapping speakers"
+                                    ) {
+                                        1
+                                    } else {
+                                        0
+                                    },
+                                )
+                                put("updated_at_millis", updatedAtMillis)
+                            },
+                            SQLiteDatabase.CONFLICT_REPLACE,
+                        )
+                        recovered++
+                    }
+                }
+            }
+        }
+        return recovered
+    }
+
+    @Synchronized
     fun replaceMessages(entries: List<Map<String, Any?>>) {
         writableDatabase.runInTransaction {
             delete(TABLE_MESSAGES, null, null)
@@ -207,6 +354,7 @@ internal class SharedHistoryCache(
         }
     }
 
+    @Synchronized
     fun listTranscripts(): List<Map<String, Any?>> {
         val entries = mutableListOf<Map<String, Any?>>()
         readableDatabase.query(
@@ -243,6 +391,7 @@ internal class SharedHistoryCache(
         return entries
     }
 
+    @Synchronized
     fun listMessages(): List<Map<String, Any?>> {
         val entries = mutableListOf<Map<String, Any?>>()
         readableDatabase.query(
@@ -274,6 +423,43 @@ internal class SharedHistoryCache(
         return entries
     }
 
+    @Synchronized
+    fun suggestAgentNamesFromMessages(): List<String> {
+        data class Candidate(var count: Int = 0, var newest: Long = 0)
+
+        val candidates = mutableMapOf<String, Candidate>()
+        val labels = mutableMapOf<String, String>()
+        val prefix = Regex("^\\s*([A-Za-z][A-Za-z0-9 _-]{0,63}):(?:\\s|$)")
+        readableDatabase.query(
+            TABLE_MESSAGES,
+            arrayOf("message_text", "updated_at_millis"),
+            "direction = ?",
+            arrayOf("received"),
+            null,
+            null,
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val match = prefix.find(cursor.getString(0)) ?: continue
+                val label = match.groupValues[1].trim()
+                val key = label.lowercase()
+                val candidate = candidates.getOrPut(key) { Candidate() }
+                candidate.count++
+                candidate.newest = maxOf(candidate.newest, cursor.getLong(1))
+                labels.putIfAbsent(key, label)
+            }
+        }
+        return candidates.entries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, Candidate>> {
+                    it.value.count
+                }.thenByDescending { it.value.newest }
+                    .thenBy { it.key },
+            ).take(4)
+            .mapNotNull { labels[it.key] }
+    }
+
+    @Synchronized
     fun replaceConversationTurns(entries: List<Map<String, Any?>>) {
         val conversationIds =
             entries
@@ -348,6 +534,7 @@ internal class SharedHistoryCache(
         }
     }
 
+    @Synchronized
     fun listConversationTurns(): List<Map<String, Any?>> {
         val entries = mutableListOf<Map<String, Any?>>()
         readableDatabase.query(
@@ -394,6 +581,7 @@ internal class SharedHistoryCache(
         return entries
     }
 
+    @Synchronized
     fun indexExportedFile(source: File) {
         val classified = classify(source.name) ?: return
         val modifiedAt =
@@ -472,6 +660,7 @@ internal class SharedHistoryCache(
         }
     }
 
+    @Synchronized
     fun isCurrentExport(source: File): Boolean {
         readableDatabase.query(
             TABLE_EXPORTS,
@@ -489,6 +678,7 @@ internal class SharedHistoryCache(
         }
     }
 
+    @Synchronized
     fun hasExportRecord(fileName: String): Boolean {
         readableDatabase.query(
             TABLE_EXPORTS,
@@ -504,6 +694,7 @@ internal class SharedHistoryCache(
         }
     }
 
+    @Synchronized
     fun markExported(source: File) {
         writableDatabase.insertWithOnConflict(
             TABLE_EXPORTS,
@@ -516,6 +707,220 @@ internal class SharedHistoryCache(
             SQLiteDatabase.CONFLICT_REPLACE,
         )
     }
+
+    /**
+     * Writes a self-contained recovery database without exposing the live
+     * SQLite file to a document provider. Export fingerprints and cache-only
+     * metadata stay app-private; only reconstructable history rows are copied.
+     */
+    @Synchronized
+    fun writeRecoverySnapshot(target: File): SharedHistorySnapshotCounts {
+        target.parentFile?.let { parent ->
+            check(parent.isDirectory || parent.mkdirs()) {
+                "Could not create the recovery snapshot directory."
+            }
+        }
+        val partial = File("${target.path}.part")
+        if (partial.exists() && !partial.delete()) {
+            throw IllegalStateException("Could not replace a partial snapshot.")
+        }
+        val snapshot = SQLiteDatabase.openOrCreateDatabase(partial, null)
+        val counts: SharedHistorySnapshotCounts
+        try {
+            createRecoverySnapshotTables(snapshot)
+            snapshot.version = RECOVERY_SNAPSHOT_VERSION
+            snapshot.beginTransaction()
+            try {
+                counts =
+                    SharedHistorySnapshotCounts(
+                        transcripts =
+                            copyTable(
+                                source = readableDatabase,
+                                target = snapshot,
+                                table = TABLE_TRANSCRIPTS,
+                                columns = TRANSCRIPT_COLUMNS,
+                            ),
+                        messages =
+                            copyTable(
+                                source = readableDatabase,
+                                target = snapshot,
+                                table = TABLE_MESSAGES,
+                                columns = MESSAGE_COLUMNS,
+                            ),
+                        conversationTurns =
+                            copyTable(
+                                source = readableDatabase,
+                                target = snapshot,
+                                table = TABLE_CONVERSATIONS,
+                                columns = CONVERSATION_COLUMNS,
+                            ),
+                    )
+                snapshot.setTransactionSuccessful()
+            } finally {
+                snapshot.endTransaction()
+            }
+            requireHealthyRecoverySnapshot(snapshot)
+        } finally {
+            snapshot.close()
+        }
+        if (target.exists() && !target.delete()) {
+            partial.delete()
+            throw IllegalStateException("Could not replace the recovery snapshot.")
+        }
+        if (!partial.renameTo(target)) {
+            partial.delete()
+            throw IllegalStateException("Could not publish the recovery snapshot.")
+        }
+        return counts
+    }
+
+    /** Merges a validated recovery snapshot into the app-private cache. */
+    @Synchronized
+    fun restoreRecoverySnapshot(source: File): SharedHistorySnapshotCounts {
+        require(source.isFile && source.length() in 1..MAX_RECOVERY_SNAPSHOT_BYTES) {
+            "The recovery snapshot has an invalid size."
+        }
+        val snapshot =
+            SQLiteDatabase.openDatabase(
+                source.path,
+                null,
+                SQLiteDatabase.OPEN_READONLY,
+            )
+        try {
+            requireHealthyRecoverySnapshot(snapshot)
+            val counts =
+                SharedHistorySnapshotCounts(
+                    transcripts = countRows(snapshot, TABLE_TRANSCRIPTS),
+                    messages = countRows(snapshot, TABLE_MESSAGES),
+                    conversationTurns = countRows(snapshot, TABLE_CONVERSATIONS),
+                )
+            writableDatabase.runInTransaction {
+                copyTable(
+                    source = snapshot,
+                    target = this,
+                    table = TABLE_TRANSCRIPTS,
+                    columns = TRANSCRIPT_COLUMNS,
+                )
+                copyTable(
+                    source = snapshot,
+                    target = this,
+                    table = TABLE_MESSAGES,
+                    columns = MESSAGE_COLUMNS,
+                )
+                copyTable(
+                    source = snapshot,
+                    target = this,
+                    table = TABLE_CONVERSATIONS,
+                    columns = CONVERSATION_COLUMNS,
+                )
+                markSnapshot(this, META_TRANSCRIPTS_SNAPSHOT)
+                markSnapshot(this, META_MESSAGES_SNAPSHOT)
+            }
+            return counts
+        } finally {
+            snapshot.close()
+        }
+    }
+
+    private fun createRecoverySnapshotTables(database: SQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE $TABLE_TRANSCRIPTS (
+                transcript_id TEXT PRIMARY KEY NOT NULL,
+                raw_text TEXT,
+                legacy_text TEXT,
+                corrected_text TEXT,
+                audio_file_name TEXT,
+                updated_at_millis INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        database.execSQL(
+            """
+            CREATE TABLE $TABLE_MESSAGES (
+                message_id TEXT PRIMARY KEY NOT NULL,
+                direction TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                updated_at_millis INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        createConversationTable(database)
+    }
+
+    private fun requireHealthyRecoverySnapshot(database: SQLiteDatabase) {
+        require(database.version == RECOVERY_SNAPSHOT_VERSION) {
+            "Unsupported recovery snapshot version."
+        }
+        database.rawQuery("PRAGMA quick_check(1)", null).use { cursor ->
+            require(cursor.moveToFirst() && cursor.getString(0) == "ok") {
+                "Recovery snapshot integrity validation failed."
+            }
+        }
+        // Querying every expected column rejects unrelated or incomplete
+        // SQLite files before any row reaches the private cache.
+        database.query(
+            TABLE_TRANSCRIPTS,
+            TRANSCRIPT_COLUMNS,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "0",
+        ).close()
+        database.query(
+            TABLE_MESSAGES,
+            MESSAGE_COLUMNS,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "0",
+        ).close()
+        database.query(
+            TABLE_CONVERSATIONS,
+            CONVERSATION_COLUMNS,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "0",
+        ).close()
+    }
+
+    private fun copyTable(
+        source: SQLiteDatabase,
+        target: SQLiteDatabase,
+        table: String,
+        columns: Array<String>,
+    ): Int {
+        var copied = 0
+        source.query(table, columns, null, null, null, null, null).use { cursor ->
+            while (cursor.moveToNext()) {
+                val values = ContentValues()
+                DatabaseUtils.cursorRowToContentValues(cursor, values)
+                target.insertWithOnConflict(
+                    table,
+                    null,
+                    values,
+                    SQLiteDatabase.CONFLICT_REPLACE,
+                )
+                copied++
+            }
+        }
+        return copied
+    }
+
+    private fun countRows(
+        database: SQLiteDatabase,
+        table: String,
+    ): Int =
+        DatabaseUtils.queryNumEntries(database, table)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
 
     private fun hasSnapshot(key: String): Boolean {
         readableDatabase.query(
@@ -530,6 +935,68 @@ internal class SharedHistoryCache(
         ).use { cursor ->
             return cursor.moveToFirst() && cursor.getInt(0) == 1
         }
+    }
+
+    private fun hasExactConversationTurns(
+        database: SQLiteDatabase,
+        conversationId: String,
+    ): Boolean {
+        database.query(
+            TABLE_CONVERSATIONS,
+            arrayOf("turn_id"),
+            "conversation_id = ? AND speaker_id NOT LIKE ?",
+            arrayOf(conversationId, "$RECOVERED_SPEAKER_PREFIX%"),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            return cursor.moveToFirst()
+        }
+    }
+
+    private fun parseSharedConversation(
+        value: String,
+    ): List<RecoveredConversationTurn> {
+        val turns = mutableListOf<RecoveredConversationTurn>()
+        val blocks = value.replace("\r\n", "\n").trim().split(Regex("\n{2,}"))
+        val header =
+            Regex(
+                "^(.+?) \\[([0-9]+(?:\\.[0-9]+)?)\\s*[–-]\\s*" +
+                    "([0-9]+(?:\\.[0-9]+)?)\\]$",
+            )
+        for (block in blocks) {
+            val lines = block.lines()
+            if (lines.size < 2) {
+                continue
+            }
+            val match = header.matchEntire(lines.first().trim()) ?: continue
+            val speakerLabel = match.groupValues[1].trim()
+            val startMs =
+                (match.groupValues[2].toDoubleOrNull()?.times(1000.0))
+                    ?.toLong()
+            val endMs =
+                (match.groupValues[3].toDoubleOrNull()?.times(1000.0))
+                    ?.toLong()
+            val text = lines.drop(1).joinToString("\n").trim()
+            if (speakerLabel.isEmpty() ||
+                startMs == null ||
+                endMs == null ||
+                endMs <= startMs ||
+                text.isEmpty()
+            ) {
+                continue
+            }
+            turns.add(
+                RecoveredConversationTurn(
+                    speakerLabel = speakerLabel,
+                    text = text,
+                    startMs = startMs,
+                    endMs = endMs,
+                ),
+            )
+        }
+        return turns
     }
 
     private fun createConversationTable(database: SQLiteDatabase) {
@@ -631,6 +1098,19 @@ internal class SharedHistoryCache(
         return output.toString().trim()
     }
 }
+
+internal data class SharedHistorySnapshotCounts(
+    val transcripts: Int,
+    val messages: Int,
+    val conversationTurns: Int,
+)
+
+private data class RecoveredConversationTurn(
+    val speakerLabel: String,
+    val text: String,
+    val startMs: Long,
+    val endMs: Long,
+)
 
 private data class SharedHistoryFile(
     val id: String,

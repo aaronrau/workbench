@@ -137,6 +137,58 @@ void main() {
     );
   });
 
+  test(
+    'reads and writes shared recovery settings without interpretation',
+    () async {
+      String? savedServerSettings;
+      Uint8List? savedSignatures;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        return switch (call.method) {
+          'currentDirectory' => <String, Object>{'displayName': 'Shared'},
+          'readAgentServerSettings' => '{"version":1,"agentServers":[]}',
+          'writeAgentServerSettings' => () {
+            savedServerSettings =
+                (call.arguments as Map<Object?, Object?>)['settings'] as String;
+            return null;
+          }(),
+          'readSpeakerSignatureRecovery' => Uint8List.fromList(<int>[1, 2, 3]),
+          'writeSpeakerSignatureRecovery' => () {
+            savedSignatures =
+                (call.arguments as Map<Object?, Object?>)['recovery']
+                    as Uint8List;
+            return null;
+          }(),
+          'suggestAgentNames' => <Object?>['Flux'],
+          _ => fail('Unexpected method ${call.method}'),
+        };
+      });
+      final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+      addTearDown(store.dispose);
+      await store.initialize();
+
+      expect(
+        await store.readAgentServerSettings(),
+        '{"version":1,"agentServers":[]}',
+      );
+      await store.writeAgentServerSettings('server-settings');
+      expect(savedServerSettings, 'server-settings');
+      expect(await store.readSpeakerSignatureRecovery(), <int>[1, 2, 3]);
+      await store.writeSpeakerSignatureRecovery(
+        Uint8List.fromList(<int>[4, 5]),
+      );
+      expect(savedSignatures, <int>[4, 5]);
+      expect(await store.suggestAgentNames(), <String>['Flux']);
+      expect(
+        SharedAudioExportStore.agentServerSettingsFileName,
+        'workbench-agent-servers.json',
+      );
+      expect(
+        SharedAudioExportStore.speakerSignatureRecoveryFileName,
+        'workbench-speaker-signatures.wbprofiles',
+      );
+    },
+  );
+
   test('clears shared folder access', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {

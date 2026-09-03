@@ -60,6 +60,15 @@ and an invalid external edit leaves the last valid in-memory configuration
 unchanged. Version-1 single-server files migrate in memory to the first
 version-2 server entry and are written as version 2 on the next save.
 
+The selected shared folder receives a separate
+`workbench-agent-servers.json` recovery document containing only endpoint IDs,
+IP addresses, ports, `/ws`, authentication-header modes, and agent names. Its
+schema rejects a `secret` field. When the private runtime file is absent, these
+rows prefill Tools but remain disconnected until the user enters every secret
+and saves. Folders created by earlier builds can infer up to four likely agent
+names from labeled received-message prefixes and create a loopback/8787 draft;
+the user must verify that inferred endpoint before saving.
+
 The secret is never shown in status text and is never written to Work Bench
 logs. Plain `ws://` does not encrypt its upgrade headers or messages; use it
 only over a trusted local connection. Android loopback addresses the phone. A
@@ -399,9 +408,12 @@ and their playable WAV files. Its configured-agent chips filter exact
 correlated sent/received history and expose the direct-send field described
 above. The separate **Conversation** tab contains only optional
 speaker-attributed turns. Normal tab loads use the app-private SQLite history
-indexes; the explicit refresh action reconciles external shared-folder edits.
-A persistence or export failure never blocks the G2 display or WebSocket
-receive loop.
+indexes; two rotating, integrity-checked SQLite recovery snapshots are also
+saved in the selected shared folder after index updates. Reselecting the folder
+after reinstall can seed the private index from the newest valid snapshot, and
+the explicit refresh action reconciles the authoritative external WAV/TXT
+files. A persistence, snapshot, or export failure never blocks the G2 display
+or WebSocket receive loop.
 
 If G2 is temporarily disconnected, Work Bench retains the FIFO. A terminal
 two-second hold starts only after that terminal state was written successfully.

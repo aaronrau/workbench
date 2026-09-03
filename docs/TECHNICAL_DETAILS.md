@@ -283,8 +283,8 @@ batches and refreshes only while that text tab is selected.
   markers only in Conversation.
 - `android/.../MainActivity.kt` — scoped Android document-tree access,
   transcript enumeration, and content-URI media playback.
-- `android/.../SharedHistoryCache.kt` — app-private SQLite index for shared
-  files and speaker-attributed conversation turns.
+- `android/.../SharedHistoryCache.kt` — app-private SQLite index plus validated
+  shared-folder recovery snapshots for history and speaker-attributed turns.
 - `android/.../BleConnectionService.kt` — Android foreground service and wake
   lock.
 - `android/.../WorkBenchApplication.kt` — native BLE cancellation safety.

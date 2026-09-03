@@ -1,9 +1,80 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
 import 'conversation_models.dart';
+
+final class ConversationProfileRecovery {
+  const ConversationProfileRecovery({
+    required this.profiles,
+    required this.enabled,
+    required this.speakerMatchThreshold,
+  });
+
+  static const int schemaVersion = 1;
+  static const int maximumBytes = 2 * 1024 * 1024;
+
+  factory ConversationProfileRecovery.decode(Uint8List bytes) {
+    if (bytes.isEmpty || bytes.length > maximumBytes) {
+      throw const FormatException(
+        'The speaker signature recovery has an invalid size.',
+      );
+    }
+    final decoded = jsonDecode(utf8.decode(bytes, allowMalformed: false));
+    if (decoded is! Map<String, dynamic> ||
+        decoded['version'] != schemaVersion ||
+        decoded['profiles'] is! List<dynamic> ||
+        decoded['enabled'] is! bool ||
+        decoded['speakerMatchThreshold'] is! num) {
+      throw const FormatException(
+        'The speaker signature recovery has an unsupported format.',
+      );
+    }
+    final threshold = (decoded['speakerMatchThreshold']! as num).toDouble();
+    if (!isAdjustableSpeakerSignatureThreshold(threshold)) {
+      throw const FormatException(
+        'The recovered speaker match threshold is invalid.',
+      );
+    }
+    final profiles = (decoded['profiles']! as List<dynamic>)
+        .map((value) {
+          if (value is! Map<String, dynamic>) {
+            throw const FormatException(
+              'The recovered speaker profile is invalid.',
+            );
+          }
+          return SpeakerProfile.fromJson(value);
+        })
+        .toList(growable: false);
+    return ConversationProfileRecovery(
+      profiles: List<SpeakerProfile>.unmodifiable(profiles),
+      enabled: decoded['enabled']! as bool,
+      speakerMatchThreshold: normalizeAdjustableSpeakerSignatureThreshold(
+        threshold,
+      ),
+    );
+  }
+
+  final List<SpeakerProfile> profiles;
+  final bool enabled;
+  final double speakerMatchThreshold;
+
+  Uint8List encode() {
+    final value = const JsonEncoder.withIndent('  ').convert(<String, Object>{
+      'version': schemaVersion,
+      'profiles': profiles.map((profile) => profile.toJson()).toList(),
+      'enabled': enabled,
+      'speakerMatchThreshold': speakerMatchThreshold,
+    });
+    final bytes = Uint8List.fromList(utf8.encode('$value\n'));
+    if (bytes.length > maximumBytes) {
+      throw StateError('The speaker signature recovery is too large.');
+    }
+    return bytes;
+  }
+}
 
 final class ConversationReconciliationResult {
   const ConversationReconciliationResult({
