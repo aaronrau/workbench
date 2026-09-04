@@ -39,6 +39,11 @@ final class G2AgentHistoryState {
   static const int standardDetailBodyLinesPerPage = 8;
   static const int agentDetailBodyLinesPerPage = 7;
   static const int detailPageOverlapLines = 1;
+  static const int maximumLoadedMessagesPerAgent = 64;
+  static const int maximumAgentHistoryDetailPages = 8;
+  static const int maximumAgentHistorySourceRunes = 8192;
+  static const String agentHistoryOverflowText =
+      'More history is available on phone.';
   static const G2TextLayout _layout = G2TextLayout.history;
   // Keep selector and control content at the same horizontal position when
   // the cursor moves. Selected and empty gutters are all 25 px in the G2 font,
@@ -71,6 +76,7 @@ final class G2AgentHistoryState {
   bool detailTranscriptionIndicatorVisible = false;
   String? _cachedDetailBody;
   int? _cachedDetailRowsPerPage;
+  bool? _cachedDetailHistoryBounded;
   List<List<String>>? _cachedDetailPages;
 
   bool get isOpen => mode != G2AgentHistoryMode.closed;
@@ -792,13 +798,34 @@ final class G2AgentHistoryState {
   List<List<String>> _detailPages() {
     final body = _renderDetailBody();
     final rowsPerPage = detailBodyLinesPerPage;
+    final boundRetainedHistory = _isRetainedAgentHistoryVisible;
     final cached = _cachedDetailPages;
     if (cached != null &&
         _cachedDetailRowsPerPage == rowsPerPage &&
+        _cachedDetailHistoryBounded == boundRetainedHistory &&
         _cachedDetailBody == body) {
       return cached;
     }
-    final wrapped = _layout.wrapText(body);
+    var wrapped = _layout.wrapText(
+      boundRetainedHistory
+          ? _truncate(body, maximumAgentHistorySourceRunes)
+          : body,
+    );
+    if (boundRetainedHistory) {
+      final maximumRows =
+          rowsPerPage +
+          (maximumAgentHistoryDetailPages - 1) *
+              (rowsPerPage - detailPageOverlapLines);
+      final maximumContentRows = maximumRows - 1;
+      final sourceWasTruncated =
+          body.runes.length > maximumAgentHistorySourceRunes;
+      if (sourceWasTruncated || wrapped.length > maximumContentRows) {
+        wrapped = <String>[
+          ...wrapped.take(maximumContentRows),
+          agentHistoryOverflowText,
+        ];
+      }
+    }
     final pages = _layout.paginateLines(
       wrapped,
       rowsPerPage: rowsPerPage,
@@ -809,8 +836,19 @@ final class G2AgentHistoryState {
     );
     _cachedDetailBody = body;
     _cachedDetailRowsPerPage = rowsPerPage;
+    _cachedDetailHistoryBounded = boundRetainedHistory;
     _cachedDetailPages = immutable;
     return immutable;
+  }
+
+  bool get _isRetainedAgentHistoryVisible {
+    if (!detailTitleIsAgent) {
+      return false;
+    }
+    final speechState = detailSpeechState;
+    return speechState == null ||
+        (!detailListenModeSelected &&
+            speechState != G2AgentDetailSpeechState.sending);
   }
 
   String _renderDetailBody() {

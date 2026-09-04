@@ -461,21 +461,40 @@ final class AgentExchangeStore {
   }
 
   Future<List<AgentMessageView>> retainedMessagesForAgents(
-    Iterable<String> agents,
-  ) async {
+    Iterable<String> agents, {
+    int? maximumMessagesPerAgent,
+  }) async {
     _requireInitialized();
     final normalizedAgents = agents
         .map((agent) => agent.trim().toLowerCase())
         .where((agent) => agent.isNotEmpty)
         .toSet();
-    if (normalizedAgents.isEmpty) {
+    if (normalizedAgents.isEmpty ||
+        (maximumMessagesPerAgent != null && maximumMessagesPerAgent <= 0)) {
       return const <AgentMessageView>[];
     }
-    final records = _messages
-        .where(
-          (record) => normalizedAgents.contains(record.agent.toLowerCase()),
-        )
-        .toList(growable: false);
+    final rankedRecords =
+        _messages
+            .where(
+              (record) => normalizedAgents.contains(record.agent.toLowerCase()),
+            )
+            .toList(growable: false)
+          ..sort((left, right) {
+            final byTime = right.updatedAt.compareTo(left.updatedAt);
+            return byTime != 0 ? byTime : right.id.compareTo(left.id);
+          });
+    final records = <_AgentMessageRecord>[];
+    final selectedByAgent = <String, int>{};
+    for (final record in rankedRecords) {
+      final normalizedAgent = record.agent.toLowerCase();
+      final selected = selectedByAgent[normalizedAgent] ?? 0;
+      if (maximumMessagesPerAgent != null &&
+          selected >= maximumMessagesPerAgent) {
+        continue;
+      }
+      records.add(record);
+      selectedByAgent[normalizedAgent] = selected + 1;
+    }
     final messages = <AgentMessageView>[];
     for (final record in records) {
       final text = await _readText(record.path);

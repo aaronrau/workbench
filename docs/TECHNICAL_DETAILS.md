@@ -63,7 +63,12 @@ Memo and retained-message agent details are host-paginated rather than relying
 on firmware text scrolling. Each page reuses the four-pixel history inset, puts
 the tap action in its fixed controls, and uses eight body rows below Memo's one
 title or seven body rows below an inactive agent's title and Listen Mode
-control. Every agent title ends `- Swipe to navigate`. An active manual session
+control. The selector reads only the newest indexed message per agent, and an
+open detail reads at most the newest 64 indexed messages for that agent.
+Retained agent history exposes at most eight newest-first G2 pages and ends the
+last page with `More history is available on phone.` when older rows remain;
+every durable message remains available in the phone history. Every
+agent title ends `- Swipe to navigate`. An active manual session
 puts its only lifecycle/preview status beside the agent name and adds a fixed
 Preview Correction row, leaving six
 pixel-width-wrapped transcript rows.

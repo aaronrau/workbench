@@ -458,8 +458,23 @@ void main() {
     final history = await store.retainedMessagesForAgents(const <String>[
       'Flux',
     ]);
+    final boundedHistory = await store.retainedMessagesForAgents(const <String>[
+      'Flux',
+    ], maximumMessagesPerAgent: 3);
+    final historyAfterBoundedRead = await store.retainedMessagesForAgents(
+      const <String>['Flux'],
+    );
     expect(history, hasLength(AgentExchangeStore.maximumExchanges + 8));
     expect(history.first.message, 'retained request 39');
     expect(history.last.message, 'retained request 0');
+    expect(boundedHistory.map((message) => message.message), <String>[
+      'retained request 39',
+      'retained request 38',
+      'retained request 37',
+    ]);
+    expect(
+      historyAfterBoundedRead,
+      hasLength(AgentExchangeStore.maximumExchanges + 8),
+    );
   });
 }

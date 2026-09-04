@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:even_g2_r1_poc/src/websocket/agent_exchange_store.dart';
 import 'package:even_g2_r1_poc/src/websocket/g2_agent_history_state.dart';
 import 'package:even_g2_r1_poc/src/websocket/selected_agent_transcript_session.dart';
@@ -1241,7 +1243,7 @@ void main() {
     expect(rendered, isNot(contains('Flux: synthetic build is ready')));
   });
 
-  test('does not truncate retained conversation messages between pages', () {
+  test('bounds retained conversation pages without changing durable text', () {
     final response = List<String>.generate(
       1800,
       (index) => 'history${index.toString().padLeft(4, '0')}',
@@ -1263,16 +1265,60 @@ void main() {
       ..selectNext()
       ..showSelectedDetail();
 
+    expect(
+      state.detailPageCount,
+      G2AgentHistoryState.maximumAgentHistoryDetailPages,
+    );
+    expect(state.render(), contains('history0000'));
     while (state.selectNextDetailPage()) {}
 
-    expect(state.render(), contains('history1799'));
+    expect(
+      state.render(),
+      contains(G2AgentHistoryState.agentHistoryOverflowText),
+    );
+    expect(state.render(), isNot(contains('history1799')));
+    expect(response, endsWith('history1799'));
+    expect(utf8.encode(state.render()).length, lessThanOrEqualTo(2000));
+  });
+
+  test('bounds hundreds of retained messages to a recent G2 window', () {
+    final messages = <AgentMessageView>[
+      for (var index = 0; index < 274; index++)
+        AgentMessageView(
+          id: 'retained-$index',
+          agent: 'Flux',
+          direction: AgentMessageDirection.received,
+          message:
+              'retained update $index with synthetic status detail for review',
+          updatedAt: sentAt.add(Duration(minutes: index)),
+        ),
+    ];
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showAgentMessages(messages);
+
+    expect(
+      state.detailPageCount,
+      G2AgentHistoryState.maximumAgentHistoryDetailPages,
+    );
+    expect(state.render(), contains('retained update 273'));
+    while (state.selectNextDetailPage()) {}
+    expect(
+      state.render(),
+      contains(G2AgentHistoryState.agentHistoryOverflowText),
+    );
+    expect(messages, hasLength(274));
   });
 
   test(
     'long targeted transcript uses every page without truncating its tail',
     () {
       final transcript = List<String>.generate(
-        120,
+        500,
         (index) => 'spoken${index.toString().padLeft(3, '0')}',
       ).join(' ');
       final state = G2AgentHistoryState()
@@ -1292,12 +1338,15 @@ void main() {
         ),
         isTrue,
       );
-      expect(state.detailPageCount, greaterThan(1));
+      expect(
+        state.detailPageCount,
+        greaterThan(G2AgentHistoryState.maximumAgentHistoryDetailPages),
+      );
       expect(state.render().split('\n'), hasLength(9));
 
       while (state.selectNextDetailPage()) {}
 
-      expect(state.render(), contains('spoken119'));
+      expect(state.render(), contains('spoken499'));
       expect(state.render().split('\n'), hasLength(9));
     },
   );

@@ -1570,7 +1570,7 @@ final class WearableController extends ChangeNotifier
     }
     if (_agentHistory.isOpen) {
       _glassesStatusQueue.setPaused(true, owner: 'history');
-      await _showAgentHistory();
+      await _showAgentHistory(allowPageReplacement: false);
       return;
     }
     _glassesStatusQueue.setPaused(false);
@@ -2256,6 +2256,7 @@ final class WearableController extends ChangeNotifier
             ),
             _agentExchangeStore.retainedMessagesForAgents(
               _voiceWebSocket.config.agentNames,
+              maximumMessagesPerAgent: 1,
             ),
           ]);
           exchanges = loaded[0] as List<AgentExchangeView>;
@@ -2285,7 +2286,7 @@ final class WearableController extends ChangeNotifier
         memo: memo?.note,
       );
       _syncSelectedAgentVadMode();
-      await _showAgentHistory();
+      await _showAgentHistory(allowPageReplacement: false);
       addLog(
         'WebSocket',
         '[WorkBench][AgentHistory] state=opened '
@@ -2309,15 +2310,17 @@ final class WearableController extends ChangeNotifier
     if (selected.kind == G2AgentHistoryEntryKind.memo) {
       _agentHistory.showSelectedDetail();
       _syncSelectedAgentVadMode();
-      await _showAgentHistory();
+      await _showAgentHistory(allowPageReplacement: false);
       return;
     }
     List<AgentMessageView>? messages;
     if (_agentExchangeStoreReady) {
       try {
-        messages = await _agentExchangeStore.retainedMessagesForAgents(<String>[
-          selected.label,
-        ]);
+        messages = await _agentExchangeStore.retainedMessagesForAgents(
+          <String>[selected.label],
+          maximumMessagesPerAgent:
+              G2AgentHistoryState.maximumLoadedMessagesPerAgent,
+        );
       } on Object {
         addLog(
           'WebSocket',
@@ -2341,7 +2344,7 @@ final class WearableController extends ChangeNotifier
       _agentHistory.showAgentMessages(messages);
     }
     _syncSelectedAgentVadMode();
-    await _showAgentHistory();
+    await _showAgentHistory(allowPageReplacement: false);
     addLog(
       'WebSocket',
       '[WorkBench][AgentHistory] state=messages_opened '
@@ -2693,7 +2696,7 @@ final class WearableController extends ChangeNotifier
               )) {
             _agentHistoryWaitTimer?.cancel();
             _agentHistoryWaitTimer = null;
-            _queueAgentHistoryDisplay();
+            _queueAgentHistoryDisplay(allowPageReplacement: false);
           }
         }
         await _refreshOpenAgentHistoryFor(indexedAgent);
@@ -2874,6 +2877,8 @@ final class WearableController extends ChangeNotifier
     try {
       final messages = await _agentExchangeStore.retainedMessagesForAgents(
         <String>[openAgent],
+        maximumMessagesPerAgent:
+            G2AgentHistoryState.maximumLoadedMessagesPerAgent,
       );
       if (!_agentHistory.refreshOpenAgentMessages(
         agent: openAgent,
@@ -2882,7 +2887,7 @@ final class WearableController extends ChangeNotifier
         return false;
       }
       _syncSelectedAgentVadMode();
-      _queueAgentHistoryDisplay();
+      _queueAgentHistoryDisplay(allowPageReplacement: false);
       addLog(
         'WebSocket',
         '[WorkBench][AgentHistory] state=messages_refreshed '

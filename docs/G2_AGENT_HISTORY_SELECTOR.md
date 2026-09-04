@@ -23,8 +23,9 @@ This flow extends, rather than replaces, the existing behavior:
 The selector renders every agent option with a `[Agent] content` first row.
 Carriage returns, newlines, and repeated whitespace are collapsed to spaces
 before the row is measured; overflow after the second measured row is
-ellipsized. Opening the option loads every exchange retained in the bounded
-agent ledger for only that agent. The
+ellipsized. The selector loads only the newest indexed message for each agent;
+opening an option loads up to the newest 64 indexed messages for that agent.
+These are glasses-only read bounds; the phone history remains complete. The
 target glasses layout contains:
 
 1. `[x]`
@@ -152,9 +153,11 @@ for the final VAD flush and all queued STT, then changes the second row to
 reuses the current preview without another LLM call. The
 detail returns to newest-first durable history after acknowledgement.
 Every successfully indexed matching-agent response replaces the open detail's
-durable body and rebuilds page 1 immediately. A nonmatching response is saved
-without interrupting the current agent. Active listening or sending controls
-remain intact while their underlying history refreshes.
+durable body and refreshes page 1. If that refresh changes the page structure,
+the replacement waits for the settled page-recovery path instead of rebuilding
+inside the gesture or socket callback. A nonmatching response is saved without
+interrupting the current agent. Active listening or sending controls remain
+intact while their underlying history refreshes.
 Memo details retain one title and eight body rows and page immediately. Both
 layouts stay within the nine-line viewport and prevent the firmware's native
 scroll track from appearing beside the app thumb. Pages stop at either boundary
@@ -163,7 +166,10 @@ content row on the next page, preserving the wearer's reading position. The
 selector preview for each agent comes from that agent's newest indexed durable
 message by timestamp, regardless of sent or received direction. Row ordering
 and the compact age use the newest received direction only. Detail history
-keeps every indexed durable message and never truncates to that preview bound.
+keeps every indexed durable message on the phone. Its G2 projection shows at
+most eight newest-first pages; when older rows remain, the last page ends
+`More history is available on phone.` The bound changes only the glasses view
+and never deletes, truncates, or rewrites an atomic message file or index row.
 
 Every detail page begins with `[ Memo · Tap to dismiss ]` or the two agent rows
 `   [<name>] - Swipe to Navigate` and
@@ -175,11 +181,16 @@ text remain hard line breaks; blank paragraph separators remain blank display
 rows. Only horizontal spacing is normalized before long lines are wrapped.
 
 Detail bodies are wrapped and paginated once per content revision, then reused
-while the wearer scrolls. A logical page turn keeps the current EvenHub page,
-gesture-capture container, and image container alive and serially upgrades only
-the bounded text and thumb bitmap. A full-page rebuild is reserved for a real
-structure change, such as entering or leaving multi-page detail mode. This
-avoids racing the firmware page lifecycle on every physical swipe.
+while the wearer scrolls. Retained agent history is bounded during storage
+reads and again before pagination, so a large accumulated history cannot read
+every message into the G2 interaction or expose hundreds of pages; live Listen
+Mode transcript paging remains complete. A logical page turn keeps
+the current EvenHub page, gesture-capture container, and image container alive
+and serially upgrades only the bounded text and thumb bitmap. A full-page
+rebuild is reserved for a real structure change, such as entering or leaving
+multi-page detail mode, and a gesture- or socket-driven structure change is
+deferred until the page lifecycle settles. This avoids racing the firmware
+page lifecycle on every physical interaction.
 
 Multi-page detail mode adds one firmware-valid 20-by-144-pixel image container
 centered at the right edge. The container never moves or changes size while
@@ -238,7 +249,7 @@ message.
 | Swipe to the last visible entry | Scroll the minimum whole blocks needed to reveal its next entry |
 | Tap on `[x]` | Clear the selector and restore the audio visualizer |
 | Tap on Memo | Show the most recent saved Memo, or the empty state |
-| Tap on an agent with a command | Show all of its retained timestamped messages |
+| Tap on an agent with a command | Show its bounded recent G2 history; keep the complete history on the phone |
 | Tap on an agent without a command | Show `No conversation yet`; do not send |
 | Double tap | Consume without a second request so selector state stays deterministic |
 
@@ -507,7 +518,8 @@ gesture-controlled ownership.
   Memo details expose eight content rows, and both repeat the prior page's final
   row first after a forward swipe;
 - empty Memo and agent options never send;
-- tapping an agent loads every indexed durable message and enters detail;
+- tapping an agent loads indexed durable history, enters detail, and exposes at
+  most eight newest-first G2 pages without changing the complete phone history;
 - sent messages and received updates render as
   `[HH:mm] Message` without agent or direction labels;
 - missing responses leave the timestamped sent message intact without sending
@@ -564,7 +576,8 @@ gesture-controlled ownership.
 - unrelated and uncorrelated events remain unattached to an exchange but stay
   visible as independent received history for their named agent;
 - G2 detail loading calls the same retained-message loader as the phone agent
-  tab and filters to only the selected agent;
+  tab, filters to only the selected agent, and bounds only its glasses
+  projection;
 - configuration change clears live selection and pending timers;
 - restart rebuilds message history from atomic app-private message files and
   exchange previews from app-private metadata.
@@ -581,8 +594,8 @@ gesture-controlled ownership.
   text/thumb update is active, instead of replaying every intermediate page;
 - every full-page frame passes the render-safety guard before a BLE write;
   identical frames are suppressed, swipe changes may update only an existing
-  compatible page in place, and a required replacement is deferred to the
-  settled page-recovery path;
+  compatible page in place, and gesture- or socket-driven required
+  replacements are deferred to the settled page-recovery path;
 - dismiss clears private text before restoring the pulse;
 - BLE timeout cannot stall later selector writes;
 - disconnect/reconnect rerenders no more than one bounded private page.
@@ -601,12 +614,11 @@ representative phone:
    the final Memo option while checking the optional
    aligned continuation row, second-row ellipsis, stable horizontal alignment,
    the unused ninth physical row, and the borderless surface;
-5. select an agent with more than five exchanges and multiple response updates,
-   verify the G2 list exactly matches the phone agent tab in newest-message
-   order, with every item shown as `[HH:mm] Message`, and verify that the
-   right-edge indicator moves through every detail page,
-   with the prior final row repeated first after each forward swipe, then tap to
-   dismiss;
+5. select an agent with enough retained messages to exceed eight G2 pages,
+   verify the newest rows match the phone agent tab, the eighth page ends
+   `More history is available on phone.`, the phone retains the complete list,
+   and the right-edge indicator moves through all eight detail pages with the
+   prior final row repeated first after each forward swipe, then tap to dismiss;
 6. select an agent without a response and verify its timestamped sent message
    remains visible without any outbound request;
 7. verify unrelated inbound events do not replace the open history page;
