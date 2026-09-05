@@ -174,6 +174,10 @@ final class AudioPipelineCoordinator {
       <String, Completer<TranscriptCorrectionPreviewResult>>{};
 
   CaptureJournalSupervisor? _capture;
+  CaptureJournalSupervisor? _microphoneCapture;
+  bool _decoderReady = false;
+  int microphoneLevel = 0;
+  DateTime? lastMicrophonePcmAt;
   VadSupervisor? _vad;
   TranscriptionSupervisor? _transcription;
   TranscriptCorrectionSupervisor? _correction;
@@ -215,7 +219,8 @@ final class AudioPipelineCoordinator {
   int completedTranscripts = 0;
   int completedCorrections = 0;
 
-  bool get canConnect => startup.isReady;
+  bool get canConnect => startup.isReady && _decoderReady;
+  bool get canCapturePcm => startup.isReady;
   bool get isSwitchingModel => _modelSwitching;
   bool get isExportingSharedAudio => _sharedExportOperations > 0;
   String get selectedModelId => _selectedModel.id;
@@ -265,12 +270,24 @@ final class AudioPipelineCoordinator {
       await _capture!.start();
 
       _setStartup(StartupPhase.decoder, 'Checking the LC3 audio decoder…');
-      await _decoder.initialize();
-      log(
-        'Pipeline',
-        '[WorkBench][Decoder] state=ready sample_rate=16000 '
-            'pcm_gain=${g2PcmGain}x',
-      );
+      try {
+        await _decoder.initialize();
+        _decoderReady = true;
+      } on Object {
+        _decoderReady = false;
+        log(
+          'Pipeline',
+          '[WorkBench][Decoder] state=unavailable source=g2',
+          isError: true,
+        );
+      }
+      if (_decoderReady) {
+        log(
+          'Pipeline',
+          '[WorkBench][Decoder] state=ready sample_rate=16000 '
+              'pcm_gain=${g2PcmGain}x',
+        );
+      }
 
       _setStartup(
         StartupPhase.transcription,
@@ -368,8 +385,86 @@ final class AudioPipelineCoordinator {
     }
   }
 
+  Future<void> startMicrophoneCapture() async {
+    if (!canCapturePcm || _microphoneCapture != null) {
+      throw StateError('Local audio is not ready for microphone capture.');
+    }
+    // This barrier also drains packets accepted before a glasses disconnect.
+    await _capture?.drain();
+    await _drainDecodeQueue();
+    await _finishAudioSource();
+    final capture = CaptureJournalSupervisor(
+      rootPath: '$audioFolder/journal',
+      pcm16: true,
+      onCaptured: (_, pcm) => _acceptDecodedPcm(pcm),
+      onStatus: _pipelineStatus,
+      onFatalBackpressure: onCaptureUnsafe,
+    );
+    _microphoneCapture = capture;
+    try {
+      await capture.start();
+    } on Object {
+      _microphoneCapture = null;
+      await capture.dispose();
+      rethrow;
+    }
+  }
+
+  void acceptMicrophonePcm(Uint8List pcm) {
+    if (!_disposed) _microphoneCapture?.accept(pcm);
+  }
+
+  Future<void> stopMicrophoneCapture() async {
+    final capture = _microphoneCapture;
+    if (capture == null) return;
+    // The recorder must already be stopped, including its final read.
+    // Retain this supervisor on failure so Stop can retry the same durable
+    // handoff. Releasing ownership early could mix recovery audio with G2.
+    await capture.drain();
+    await _finishAudioSource();
+    await capture.dispose();
+    _microphoneCapture = null;
+  }
+
+  Future<void> _finishAudioSource() async {
+    // Never leak a prior source's recovery audio into the next session.
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (!(_vad?.isReady ?? false)) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw StateError(
+          'Wait for voice detection recovery before switching audio.',
+        );
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    _replayVadRecovery();
+    await flushCurrentSpeechAndWait();
+    _transcriptTurn.endSession();
+    _meterSamples = 0;
+    _meterSquareSum = 0;
+    _meterPeak = 0;
+    _meterStartedAt = null;
+    microphoneLevel = 0;
+    lastMicrophonePcmAt = null;
+  }
+
+  void _acceptDecodedPcm(Uint8List pcm) {
+    if (_disposed) return;
+    _meterPcm(pcm);
+    final vad = _vad;
+    if (vad?.isReady ?? false) {
+      vad!.acceptPcm(pcm);
+    } else {
+      _queueVadRecovery(pcm);
+    }
+  }
+
   void acceptLc3(Uint8List packet) {
-    if (_disposed || !_initialized || packet.isEmpty) {
+    if (_disposed ||
+        !_initialized ||
+        !_decoderReady ||
+        _microphoneCapture != null ||
+        packet.isEmpty) {
       return;
     }
     _capture?.accept(packet);
@@ -416,13 +511,7 @@ final class AudioPipelineCoordinator {
       try {
         final decoded = await _decoder.decode(captured.bytes);
         final pcm = applyG2PcmGain(decoded);
-        _meterPcm(pcm);
-        final vad = _vad;
-        if (vad?.isReady ?? false) {
-          vad!.acceptPcm(pcm);
-        } else {
-          _queueVadRecovery(pcm);
-        }
+        _acceptDecodedPcm(pcm);
       } catch (error) {
         log(
           'Pipeline',
@@ -441,6 +530,7 @@ final class AudioPipelineCoordinator {
   }
 
   void _meterPcm(Uint8List pcm) {
+    final previousSquareSum = _meterSquareSum;
     final data = ByteData.sublistView(pcm);
     for (var offset = 0; offset + 1 < pcm.length; offset += 2) {
       final sample = data.getInt16(offset, Endian.little);
@@ -452,6 +542,18 @@ final class AudioPipelineCoordinator {
       _meterSamples++;
     }
     final now = DateTime.now();
+    if (_microphoneCapture != null && pcm.isNotEmpty) {
+      final rms = sqrt(
+        (_meterSquareSum - previousSquareSum) / (pcm.length ~/ 2),
+      );
+      microphoneLevel = (rms / 32768 * 255).round().clamp(0, 255);
+      final refresh =
+          lastMicrophonePcmAt == null ||
+          now.difference(lastMicrophonePcmAt!) >=
+              const Duration(milliseconds: 100);
+      lastMicrophonePcmAt = now;
+      if (refresh) onChanged();
+    }
     _meterStartedAt ??= now;
     if (now.difference(_meterStartedAt!) < const Duration(seconds: 1) ||
         _meterSamples == 0) {
@@ -1666,6 +1768,8 @@ final class AudioPipelineCoordinator {
   ) async {
     _initialized = false;
     _initialStartupComplete = false;
+    await _microphoneCapture?.dispose();
+    _microphoneCapture = null;
     await _capture?.dispose();
     await _drainDecodeQueue();
     await _vad?.dispose();
@@ -1686,6 +1790,7 @@ final class AudioPipelineCoordinator {
     }
     await _decoder.dispose();
     _capture = null;
+    _decoderReady = false;
     _vad = null;
     _transcription = null;
     _correction = null;
@@ -1715,6 +1820,8 @@ final class AudioPipelineCoordinator {
       }
     }
     _previewCorrections.clear();
+    await _microphoneCapture?.dispose();
+    _microphoneCapture = null;
     await _capture?.dispose();
     await _drainDecodeQueue();
     await _vad?.dispose();

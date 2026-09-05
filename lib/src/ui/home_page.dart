@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../audio/conversation_models.dart';
+import '../audio/phone_microphone_session.dart';
 import '../audio/speech_model.dart';
 import '../ble/ble_models.dart';
 import '../startup/startup_state.dart';
@@ -63,6 +64,18 @@ final class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _toggleMicrophone() async {
+    try {
+      await controller.toggleMicrophone();
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    }
+  }
+
   Future<void> _connectOrDisconnectDevices() async {
     if (controller.hasWearableSession) {
       await controller.disconnectAll();
@@ -118,27 +131,53 @@ final class _HomePageState extends State<HomePage> {
               titleSpacing: 12,
               title: _showTools
                   ? null
-                  : FilledButton.icon(
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 14),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      onPressed:
-                          _busy || (!hasSession && !controller.canConnect)
-                          ? null
-                          : () => _run(_connectOrDisconnectDevices),
-                      icon: Icon(
-                        hasSession ? Icons.link_off : Icons.bluetooth_searching,
-                      ),
-                      label: Text(
-                        hasSession
-                            ? 'Disconnect'
-                            : !controller.canConnect
-                            ? 'Preparing audio…'
-                            : _busy || controller.scanning
-                            ? 'Connecting…'
-                            : 'Connect devices',
-                      ),
+                  : Row(
+                      children: <Widget>[
+                        Flexible(
+                          child: FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                              ),
+                            ),
+                            onPressed:
+                                _busy ||
+                                    controller.microphoneOwnsInput ||
+                                    (!hasSession && !controller.canConnect)
+                                ? null
+                                : () => _run(_connectOrDisconnectDevices),
+                            icon: Icon(
+                              hasSession
+                                  ? Icons.link_off
+                                  : Icons.bluetooth_searching,
+                            ),
+                            label: Text(
+                              hasSession
+                                  ? 'Disconnect'
+                                  : !controller.canConnect &&
+                                        !controller.microphoneOwnsInput
+                                  ? 'Preparing audio…'
+                                  : _busy || controller.scanning
+                                  ? 'Connecting…'
+                                  : 'Connect devices',
+                            ),
+                          ),
+                        ),
+                        if (controller.supportsMicrophone) ...<Widget>[
+                          const SizedBox(width: 8),
+                          MicrophoneToggle(
+                            active: controller.microphoneOwnsInput,
+                            enabled:
+                                controller.microphonePhase !=
+                                    MicrophonePhase.starting &&
+                                controller.microphonePhase !=
+                                    MicrophonePhase.stopping &&
+                                (controller.microphoneOwnsInput ||
+                                    (!_busy && controller.canStartMicrophone)),
+                            onPressed: _toggleMicrophone,
+                          ),
+                        ],
+                      ],
                     ),
               actions: <Widget>[
                 if (!_showTools) ...<Widget>[
@@ -205,7 +244,7 @@ final class _HomePageState extends State<HomePage> {
           if (!startup.isBusy) const SizedBox(width: 8),
           Expanded(
             child: Text(
-              startup.message,
+              controller.microphoneStatus ?? startup.message,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodySmall,
@@ -293,10 +332,12 @@ final class _HomePageState extends State<HomePage> {
     final recentAudio =
         g2.lastAudioAt != null &&
         DateTime.now().difference(g2.lastAudioAt!).inSeconds < 3;
-    final streaming = g2.isConnected && g2.audioEnabled && recentAudio;
+    final streaming = controller.microphoneActive
+        ? controller.microphoneReceivingAudio
+        : g2.isConnected && g2.audioEnabled && recentAudio;
     final audioStatus = streaming
         ? 'Streaming'
-        : g2.isConnected && g2.audioEnabled
+        : controller.microphoneActive || (g2.isConnected && g2.audioEnabled)
         ? 'Waiting'
         : 'Off';
 
@@ -336,7 +377,7 @@ final class _HomePageState extends State<HomePage> {
         ),
         const SizedBox(height: 10),
         LinearProgressIndicator(
-          value: g2.audioActivityLevel / 255,
+          value: controller.audioActivityLevel / 255,
           minHeight: 4,
           borderRadius: BorderRadius.circular(999),
         ),
@@ -344,7 +385,7 @@ final class _HomePageState extends State<HomePage> {
         Row(
           children: <Widget>[
             Text(
-              'Level ${g2.audioActivityLevel}/255',
+              'Level ${controller.audioActivityLevel}/255',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const Spacer(),
@@ -888,6 +929,31 @@ final class _HomePageState extends State<HomePage> {
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 16),
+            Text('Audio input', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            IgnorePointer(
+              child: Row(
+                children: <Widget>[
+                  FilledButton.icon(
+                    onPressed: () {},
+                    icon: const Icon(Icons.bluetooth_searching),
+                    label: const Text('Connect devices'),
+                  ),
+                  const SizedBox(width: 8),
+                  MicrophoneToggle(
+                    active: false,
+                    enabled: true,
+                    onPressed: () {},
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Start the phone microphone while glasses are disconnected.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
             Text('Section title', style: theme.textTheme.titleSmall),
             const SizedBox(height: 4),
             Text(
@@ -1176,4 +1242,32 @@ final class _HomePageState extends State<HomePage> {
         .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
         .join(' ');
   }
+}
+
+/// Compact secondary audio-source control, shared with the Tools examples.
+class MicrophoneToggle extends StatelessWidget {
+  const MicrophoneToggle({
+    required this.active,
+    required this.enabled,
+    required this.onPressed,
+    super.key,
+  });
+
+  final bool active;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    toggled: active,
+    child: IconButton.outlined(
+      tooltip: active ? 'Stop microphone' : 'Start microphone',
+      onPressed: enabled ? onPressed : null,
+      style: IconButton.styleFrom(
+        minimumSize: const Size(48, 40),
+        tapTargetSize: MaterialTapTargetSize.padded,
+      ),
+      icon: Icon(active ? Icons.mic : Icons.mic_none),
+    ),
+  );
 }

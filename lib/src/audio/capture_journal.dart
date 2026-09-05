@@ -14,11 +14,16 @@ final class CaptureJournalSupervisor {
     required this.onCaptured,
     required this.onStatus,
     required this.onFatalBackpressure,
+    this.pcm16 = false,
   });
 
   static const int _maximumPendingPackets = 600;
 
   final String rootPath;
+  final bool pcm16;
+  int _pendingBytes = 0;
+  Completer<void>? _drained;
+  bool _unsafe = false;
   final CapturedPacketSink onCaptured;
   final CaptureStatusSink onStatus;
   final void Function() onFatalBackpressure;
@@ -51,13 +56,16 @@ final class CaptureJournalSupervisor {
   }
 
   void accept(Uint8List packet) {
-    if (_disposed || packet.isEmpty) {
+    if (_disposed || _unsafe || packet.isEmpty) {
       return;
     }
-    final sequence = _nextSequence++;
-    final stable = Uint8List.fromList(packet);
-    _pending[sequence] = stable;
-    if (_pending.length > _maximumPendingPackets) {
+    if (pcm16 && packet.length.isOdd) {
+      throw const FormatException('PCM16 requires complete samples.');
+    }
+    // Six seconds of PCM at 16 kHz. Refuse more data before allocating it.
+    if (_pending.length >= _maximumPendingPackets ||
+        (pcm16 && _pendingBytes + packet.length > 16000 * 2 * 6)) {
+      _unsafe = true;
       onStatus(
         '[WorkBench][Capture] state=failed reason=pending_overflow',
         isError: true,
@@ -65,6 +73,10 @@ final class CaptureJournalSupervisor {
       onFatalBackpressure();
       return;
     }
+    final sequence = _nextSequence++;
+    final stable = Uint8List.fromList(packet);
+    _pending[sequence] = stable;
+    _pendingBytes += stable.length;
     _sendPacket(sequence, stable);
   }
 
@@ -112,7 +124,11 @@ final class CaptureJournalSupervisor {
     });
     _isolate = await Isolate.spawn<Map<String, Object>>(
       _captureJournalWorker,
-      <String, Object>{'events': _events!.sendPort, 'rootPath': rootPath},
+      <String, Object>{
+        'events': _events!.sendPort,
+        'rootPath': rootPath,
+        'pcm16': pcm16,
+      },
       debugName: 'workbench-capture-journal',
       errorsAreFatal: true,
       onError: _errors!.sendPort,
@@ -145,8 +161,13 @@ final class CaptureJournalSupervisor {
         for (final sequence in sequences) {
           final packet = _pending.remove(sequence);
           if (packet != null) {
+            _pendingBytes -= packet.length;
             onCaptured(sequence, packet);
           }
+        }
+        if (_pending.isEmpty) {
+          _drained?.complete();
+          _drained = null;
         }
         if (sequences.isNotEmpty &&
             sequences.last - _lastReportedSequence >= 100) {
@@ -208,6 +229,14 @@ final class CaptureJournalSupervisor {
     _exit = null;
   }
 
+  /// Wait for every accepted packet's disk flush and downstream handoff.
+  Future<void> drain() async {
+    if (_pending.isEmpty) return;
+    final drained = _drained ??= Completer<void>();
+    _commands?.send(<String, Object>{'type': 'flush'});
+    await drained.future.timeout(const Duration(seconds: 10));
+  }
+
   Future<void> dispose() async {
     _disposed = true;
     _restartTimer?.cancel();
@@ -238,6 +267,7 @@ final class CaptureJournalSupervisor {
 void _captureJournalWorker(Map<String, Object> bootstrap) {
   final events = bootstrap['events']! as SendPort;
   final rootPath = bootstrap['rootPath']! as String;
+  final pcm16 = bootstrap['pcm16']! as bool;
   final commands = ReceivePort();
   final buffered = <_JournalRecord>[];
   RandomAccessFile? output;
@@ -262,10 +292,20 @@ void _captureJournalWorker(Map<String, Object> bootstrap) {
     }
     closeOutput();
     final stamp = now.toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
-    final file = File('$rootPath/lc3-$stamp.wblc3');
+    final file = File(
+      pcm16 ? '$rootPath/pcm-$stamp.wbpcm' : '$rootPath/lc3-$stamp.wblc3',
+    );
     output = file.openSync(mode: FileMode.append);
     if (file.lengthSync() == 0) {
-      output!.writeFromSync(utf8.encode('WBLC3\x01'));
+      output!.writeFromSync(utf8.encode(pcm16 ? 'WBPCM\x01' : 'WBLC3\x01'));
+      if (pcm16) {
+        // Version 1 PCM journal: rate, channels, bits; all little endian.
+        final format = ByteData(8)
+          ..setUint32(0, 16000, Endian.little)
+          ..setUint16(4, 1, Endian.little)
+          ..setUint16(6, 16, Endian.little);
+        output!.writeFromSync(format.buffer.asUint8List());
+      }
       output!.flushSync();
     }
     openedAt = now;
@@ -319,6 +359,8 @@ void _captureJournalWorker(Map<String, Object> bootstrap) {
         if (buffered.length >= 5) {
           flush();
         }
+      case 'flush':
+        flush();
       case 'close':
         flushTimer.cancel();
         flush();

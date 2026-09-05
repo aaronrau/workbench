@@ -5,6 +5,8 @@ flowchart TD
     A[G2 BLE audio] --> B[Durable LC3 journal]
     B --> C[LC3 decode + fixed gain]
     C --> D[Continuous VAD isolate + 2 s pre-roll]
+    PHONE[Android built-in microphone] --> PCM[Durable PCM16 journal]
+    PCM --> D
     D --> E{Endpoint mode}
     E -->|Default flow| F[Require 1.5 s continuously VAD-inactive]
     E -->|Selected-agent manual mode| G[Require 1.0 s continuously VAD-inactive per audio chunk]
@@ -345,3 +347,65 @@ enrollment, matching, storage, and validation contracts.
 
 See [Transcription turn test plan](TRANSCRIPTION_TURN_TEST_PLAN.md) for the
 computer-speaker Kokoro cases and turn-level acceptance criteria.
+
+## Phone microphone input
+
+On Android, **Start microphone** beside **Connect devices** records the phone's
+built-in microphone while G2 is fully disconnected. The control requests
+microphone permission on first use. **Stop microphone** releases the recorder,
+drains captured audio, and finalizes the current speech segment. Connect is
+disabled until that handoff finishes; the microphone is disabled throughout G2
+connection and reconnection. Recording never starts automatically after a
+Bluetooth disconnect or an app/process restart.
+
+`AndroidMicrophoneCapture` requests 16 kHz mono PCM16 from Android AudioRecord;
+Android supplies the requested capture format. The app verifies the sample
+rate, channel count, encoding, and actual built-in input route. Unsupported
+formats, changed routes, silenced recording, and capture failures stop the
+source. Short samples are explicitly serialized little endian. The phone path
+does not apply the G2-specific 16x gain or encode/decode LC3.
+
+Native capture has one producer and a bounded six-second queue. Dart pulls one
+chunk at a time into the existing capture-journal worker. PCM journaling has a
+six-second byte bound and acknowledges only disk-flushed records. A `.wbpcm`
+file starts with `WBPCM` and version byte 1, followed by little-endian sample
+rate (uint32), channels (uint16), and bits per sample (uint16). Each record uses
+the existing length, sequence, timestamp, checksum, and payload layout. Existing
+`.wblc3` files remain compatible. Journals remain app-private; the shared VAD
+writer produces the same 16 kHz, mono, PCM16 WAV files for either source.
+
+Metering, VAD recovery, speech segmentation, atomic raw/corrected transcripts,
+STT, correction, history/export, and agent invocation all use the existing
+pipeline. Conversation analysis remains an independent consumer of durable
+speech WAVs. Stopping capture does not cancel queued local processing, and
+restored jobs cannot send agent commands.
+
+`MicrophoneCaptureService` owns a separate microphone foreground notification
+and wake lock. It requires RECORD_AUDIO and the microphone foreground-service
+type, starts only from the visible app, and does not require Bluetooth
+permissions. It supports recording while the app is backgrounded or the screen
+is off, but never restarts itself after process death. Activity teardown stops
+the recorder. The existing Bluetooth foreground service retains its own owner.
+
+For a physical phone test, run the host-only Kokoro fixture with an explicit
+Android target and a fresh evidence directory outside the repository:
+
+```sh
+python3 tool/validate_phone_microphone.py \
+  --serial '<android-serial>' \
+  --output-dir /tmp/workbench-phone-microphone-trial-001
+```
+
+Add `--background` to repeat with Work Bench in the background during playback.
+The runner shares synthesis, `af_maple`, 90% host volume, one second of leading
+silence, 500 ms of trailing silence, volume restoration, and playback markers
+with the G2 skill. Its preflight uses the visible microphone control separately
+from the unchanged G2 connection preflight. It preserves the stimulus, played
+WAV, captured speech WAVs, SHA-256 manifests, logs, and report for each trial.
+Run the checked-in G2 skill afterward to validate both sources independently.
+
+Run `flutter analyze`, `flutter test`, and
+`python3 tool/test_validate_phone_microphone.py` for static and regression
+checks. The phone preflight rejects a disabled toggle and requires fresh PCM
+before speaker playback. Its UI probe retries a missing hierarchy a bounded
+number of times. Keep the G2 skill's two runner test files passing as well.

@@ -325,3 +325,15 @@ Pillow and run:
 ```sh
 python3 tool/generate_app_icons.py
 ```
+
+## Android microphone mode
+
+The Home toolbar's microphone toggle supplies an alternative to the G2 LC3
+stream. `PhoneMicrophoneSession` reserves audio ownership before permission
+requests and retains it through recorder shutdown and durable VAD flush.
+`AndroidMicrophoneSource` pulls bounded native PCM chunks through a dedicated
+method channel. A separate microphone foreground service supports background
+recording without activating the Bluetooth service. Both sources converge at
+PCM16 input and reuse all speech processing and downstream consumers. See
+[Phone microphone input](LOCAL_AUDIO_PIPELINE.md#phone-microphone-input) for the
+format, lifecycle, capture safety, and physical validation contract.

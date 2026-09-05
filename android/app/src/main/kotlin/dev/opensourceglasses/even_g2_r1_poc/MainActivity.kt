@@ -76,6 +76,8 @@ class MainActivity : FlutterActivity() {
     private var pendingDirectoryResult: MethodChannel.Result? = null
     private val storageExecutor = Executors.newSingleThreadExecutor()
     private val historyExecutor = Executors.newSingleThreadExecutor()
+    private val microphoneExecutor = Executors.newSingleThreadExecutor()
+    private var microphoneReadPending = false
     private val sharedHistoryCache by lazy {
         SharedHistoryCache(applicationContext)
     }
@@ -88,6 +90,65 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         reportPreviousProcessExits()
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "dev.opensourceglasses/workbench_microphone",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    if (MicrophoneCaptureService.pendingStart != null ||
+                        MicrophoneCaptureService.instance?.capture != null) {
+                        result.error("microphone_busy", "Microphone is already active", null)
+                    } else if (isFinishing || isDestroyed || !hasWindowFocus()) {
+                        result.error("microphone_foreground", "Open Work Bench to start the microphone", null)
+                    } else {
+                        MicrophoneCaptureService.pendingStart = { error ->
+                            if (error == null) result.success(null)
+                            else result.error("microphone_start", error, null)
+                        }
+                        try {
+                            ContextCompat.startForegroundService(applicationContext,
+                                Intent(applicationContext, MicrophoneCaptureService::class.java))
+                        } catch (_: Exception) {
+                            MicrophoneCaptureService.pendingStart = null
+                            result.error("microphone_start", "Microphone permission or service unavailable", null)
+                        }
+                    }
+                }
+                "read", "stop", "release" -> {
+                    if (call.method == "read" && microphoneReadPending) {
+                        result.error("microphone_busy", "A microphone read is already pending", null)
+                        return@setMethodCallHandler
+                    }
+                    if (call.method == "read") microphoneReadPending = true
+                    val service = MicrophoneCaptureService.instance
+                    microphoneExecutor.execute {
+                        try {
+                            val bytes = when (call.method) {
+                                "read" -> service?.capture?.read()
+                                "stop" -> { service?.capture?.stop(); null }
+                                else -> { service?.releaseCapture(); null }
+                            }
+                            runOnUiThread {
+                                if (call.method == "read") microphoneReadPending = false
+                                if (call.method == "release") {
+                                    MicrophoneCaptureService.pendingStart?.invoke("Microphone start cancelled")
+                                    MicrophoneCaptureService.pendingStart = null
+                                    stopService(Intent(applicationContext, MicrophoneCaptureService::class.java))
+                                }
+                                result.success(bytes)
+                            }
+                        } catch (_: Exception) {
+                            runOnUiThread {
+                                if (call.method == "read") microphoneReadPending = false
+                                result.error("microphone_capture", "Microphone capture stopped; check input and permissions", null)
+                            }
+                        }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
         debugGestureChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             DEBUG_GESTURE_CHANNEL,
@@ -2172,6 +2233,10 @@ class MainActivity : FlutterActivity() {
         stopSharedAudio()
         storageExecutor.shutdown()
         historyExecutor.shutdown()
+        MicrophoneCaptureService.pendingStart?.invoke("Microphone activity closed")
+        MicrophoneCaptureService.pendingStart = null
+        stopService(Intent(applicationContext, MicrophoneCaptureService::class.java))
+        microphoneExecutor.shutdown()
         WorkBenchLc3.dispose()
         super.onDestroy()
     }

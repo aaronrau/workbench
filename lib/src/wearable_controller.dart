@@ -8,6 +8,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'audio/audio_pipeline_coordinator.dart';
+import 'audio/android_microphone_source.dart';
+import 'audio/phone_microphone_session.dart';
 import 'audio/conversation_analysis_service.dart';
 import 'audio/shared_audio_export_store.dart';
 import 'audio/speech_model.dart';
@@ -436,6 +438,18 @@ final class WearableController extends ChangeNotifier
       onCollectedTranscript: _handleCollectedTranscript,
       sharedAudioExportStore: _sharedAudioExportStore,
     );
+    _microphone = PhoneMicrophoneSession(
+      canStart: () => canStartMicrophone,
+      requestPermission: _requestMicrophonePermission,
+      prepareCapture: _audioPipeline.startMicrophoneCapture,
+      startRecorder: () => _microphoneSource.start(
+        onPcm: _audioPipeline.acceptMicrophonePcm,
+        onFailure: () => unawaited(_stopFailedMicrophone()),
+      ),
+      stopRecorder: _microphoneSource.stop,
+      finishCapture: _audioPipeline.stopMicrophoneCapture,
+    );
+    _microphone.addListener(_safeNotify);
     g2 = G2Connection(
       ble: _ble,
       log: addLog,
@@ -532,6 +546,68 @@ final class WearableController extends ChangeNotifier
   late final ConversationAnalysisService _conversationAnalysis;
   late final VoiceMemoService _voiceMemo;
   late final AudioPipelineCoordinator _audioPipeline;
+  final AndroidMicrophoneSource _microphoneSource = AndroidMicrophoneSource();
+  late final PhoneMicrophoneSession _microphone;
+  bool _deviceOperation = false;
+  bool get supportsMicrophone => Platform.isAndroid;
+  bool get microphoneOwnsInput => _microphone.ownsInput;
+  bool get microphoneActive => _microphone.recording;
+  int get audioActivityLevel =>
+      microphoneActive ? _audioPipeline.microphoneLevel : g2.audioActivityLevel;
+  bool get microphoneReceivingAudio =>
+      microphoneActive &&
+      _audioPipeline.lastMicrophonePcmAt != null &&
+      DateTime.now().difference(_audioPipeline.lastMicrophonePcmAt!).inSeconds <
+          3;
+  MicrophonePhase get microphonePhase => _microphone.phase;
+  bool get canStartMicrophone =>
+      supportsMicrophone &&
+      !_disposed &&
+      !_deviceOperation &&
+      !scanning &&
+      g2.state == LinkState.disconnected &&
+      !_microphone.ownsInput &&
+      _audioPipeline.canCapturePcm;
+  String? get microphoneStatus => switch (_microphone.phase) {
+    MicrophonePhase.off => null,
+    MicrophonePhase.starting => 'Starting phone microphone…',
+    MicrophonePhase.recording => 'Phone microphone active',
+    MicrophonePhase.stopping => 'Stopping phone microphone…',
+    MicrophonePhase.error => _microphone.error,
+  };
+
+  Future<void> _requestMicrophonePermission() async {
+    if (!supportsMicrophone || _lifecycleState != AppLifecycleState.resumed) {
+      throw StateError('Open Work Bench on Android to start the microphone.');
+    }
+    final status = await Permission.microphone.request();
+    if (!status.isGranted) {
+      throw StateError(
+        status.isPermanentlyDenied
+            ? 'Allow microphone access in Android app settings.'
+            : 'Allow microphone access to use phone audio.',
+      );
+    }
+    // Let Android restore window focus after dismissing the permission dialog.
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+  }
+
+  Future<void> toggleMicrophone() =>
+      microphoneOwnsInput ? _microphone.stop() : _microphone.start();
+
+  Future<void> _stopFailedMicrophone() async {
+    addLog(
+      'Microphone',
+      '[WorkBench][Microphone] state=failed capture=stopping',
+      isError: true,
+    );
+    try {
+      await _microphone.stop(failed: true);
+    } on Object {
+      // The session exposes a safe, actionable status; no audio enters logs.
+    }
+  }
+
   late final G2Connection g2;
   late final GlassesStatusQueue _glassesStatusQueue;
   late final R1Connection r1;
@@ -597,7 +673,7 @@ final class WearableController extends ChangeNotifier
   final List<PooledLog> logs = <PooledLog>[];
 
   StartupSnapshot get startup => _audioPipeline.startup;
-  bool get canConnect => _audioPipeline.canConnect;
+  bool get canConnect => _audioPipeline.canConnect && !microphoneOwnsInput;
   String? get audioFolder => _audioPipeline.audioFolder;
   SharedAudioFolder? get sharedAudioFolder => _sharedAudioExportStore.folder;
   bool get supportsSharedAudioFolder => _sharedAudioExportStore.isSupported;
@@ -834,32 +910,42 @@ final class WearableController extends ChangeNotifier
     if (scanning) {
       return;
     }
-    await _requestPermissions();
-    await stopScan();
-    _g2ByKey.clear();
-    _r1ById.clear();
-    _loggedR1Advertisements.clear();
-    scanning = true;
+    if (_deviceOperation) {
+      throw StateError('A device operation is already active.');
+    }
+    _deviceOperation = true;
     _safeNotify();
-    addLog('BLE', 'Low-latency scan started for ${duration.inSeconds}s');
+    try {
+      await _requestPermissions();
+      await stopScan();
+      _g2ByKey.clear();
+      _r1ById.clear();
+      _loggedR1Advertisements.clear();
+      scanning = true;
+      _safeNotify();
+      addLog('BLE', 'Low-latency scan started for ${duration.inSeconds}s');
 
-    _scanSubscription = _ble
-        .scanForDevices(
-          withServices: const <Uuid>[],
-          scanMode: ScanMode.lowLatency,
-          requireLocationServicesEnabled: false,
-        )
-        .listen(
-          _onDiscovered,
-          onError: (Object error) {
-            scanning = false;
-            addLog('BLE scan', '$error', isError: true);
-            _safeNotify();
-          },
-        );
-    _scanTimer = Timer(duration, () {
-      unawaited(stopScan());
-    });
+      _scanSubscription = _ble
+          .scanForDevices(
+            withServices: const <Uuid>[],
+            scanMode: ScanMode.lowLatency,
+            requireLocationServicesEnabled: false,
+          )
+          .listen(
+            _onDiscovered,
+            onError: (Object error) {
+              scanning = false;
+              addLog('BLE scan', '$error', isError: true);
+              _safeNotify();
+            },
+          );
+      _scanTimer = Timer(duration, () {
+        unawaited(stopScan());
+      });
+    } finally {
+      _deviceOperation = false;
+      _safeNotify();
+    }
   }
 
   void _onDiscovered(DiscoveredDevice device) {
@@ -916,20 +1002,29 @@ final class WearableController extends ChangeNotifier
     if (!canConnect) {
       throw StateError('Local audio safety checks are not ready.');
     }
-    await stopScan();
-    await _runtime.setWearableSessionActive(true);
+    if (_deviceOperation) {
+      throw StateError('A device operation is already active.');
+    }
+    _deviceOperation = true;
+    _safeNotify();
     try {
+      await stopScan();
+      await _runtime.setWearableSessionActive(true);
       await g2.connect(pair);
       rememberedG2Serial = pair.serialNumber;
       final preferences = await SharedPreferences.getInstance();
       await preferences.setString('remembered_g2_serial', pair.serialNumber);
       await _linkRingAndGlasses();
     } finally {
+      _deviceOperation = false;
       await _syncBackgroundService();
     }
   }
 
   Future<void> connectR1(DiscoveredDevice device) async {
+    if (microphoneOwnsInput) {
+      throw StateError('Stop the microphone before connecting devices.');
+    }
     await stopScan();
     await _runtime.setWearableSessionActive(true);
     try {
@@ -946,8 +1041,10 @@ final class WearableController extends ChangeNotifier
   Future<void> disconnectG2() async {
     await g2.disconnect();
     _lastControllerLinkKey = null;
-    _audioPipeline.handleWearableDisconnect(expected: true);
-    _voiceMemo.handleWearableDisconnect();
+    if (!microphoneOwnsInput) {
+      _audioPipeline.handleWearableDisconnect(expected: true);
+      _voiceMemo.handleWearableDisconnect();
+    }
     await _syncBackgroundService();
   }
 
@@ -965,8 +1062,10 @@ final class WearableController extends ChangeNotifier
     // deduplication key across a reset makes the next connection skip the
     // handoff and leaves Android directly attached to R1.
     _lastControllerLinkKey = null;
-    _audioPipeline.handleWearableDisconnect(expected: true);
-    _voiceMemo.handleWearableDisconnect();
+    if (!microphoneOwnsInput) {
+      _audioPipeline.handleWearableDisconnect(expected: true);
+      _voiceMemo.handleWearableDisconnect();
+    }
     await _syncBackgroundService();
   }
 
@@ -975,8 +1074,12 @@ final class WearableController extends ChangeNotifier
 
   Future<void> restartVadForTest() => _audioPipeline.restartVadForTest();
 
-  Future<void> retryAudioPipeline() =>
-      _audioPipeline.retryInitialize(transcriptionModel: _selectedSpeechModel);
+  Future<void> retryAudioPipeline() async {
+    if (microphoneOwnsInput) await _microphone.stop();
+    await _audioPipeline.retryInitialize(
+      transcriptionModel: _selectedSpeechModel,
+    );
+  }
 
   Future<void> selectSpeechModel(String modelId) async {
     final model = speechModelForId(modelId);
@@ -2957,6 +3060,10 @@ final class WearableController extends ChangeNotifier
     if (_disposed) {
       return;
     }
+    if (microphoneOwnsInput) {
+      unawaited(_stopFailedMicrophone());
+      return;
+    }
     addLog(
       'Pipeline',
       '[WorkBench][Capture] state=dropped action=disconnect',
@@ -3052,6 +3159,17 @@ final class WearableController extends ChangeNotifier
     unawaited(_closeAgentHistory(clearDisplay: true));
   }
 
+  Future<void> _disposeAudioInputs() async {
+    try {
+      await _microphone.stop();
+    } on Object {
+      // Native lifecycle cleanup also releases recording if shutdown fails.
+    } finally {
+      _microphone.dispose();
+      await _audioPipeline.dispose();
+    }
+  }
+
   @override
   void dispose() {
     _disposed = true;
@@ -3075,7 +3193,8 @@ final class WearableController extends ChangeNotifier
     unawaited(r1.dispose());
     unawaited(_conversationAnalysis.dispose());
     unawaited(_voiceMemo.dispose());
-    unawaited(_audioPipeline.dispose());
+    _microphone.removeListener(_safeNotify);
+    unawaited(_disposeAudioInputs());
     unawaited(_voiceWebSocket.close());
     unawaited(_runtime.dispose());
     super.dispose();
