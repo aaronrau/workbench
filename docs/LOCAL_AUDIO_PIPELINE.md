@@ -362,8 +362,12 @@ Bluetooth disconnect or an app/process restart.
 Android supplies the requested capture format. The app verifies the sample
 rate, channel count, encoding, and actual built-in input route. Unsupported
 formats, changed routes, silenced recording, and capture failures stop the
-source. Short samples are explicitly serialized little endian. The phone path
-does not apply the G2-specific 16x gain or encode/decode LC3.
+source. Short samples are explicitly serialized little endian. After durable
+PCM journaling, phone input receives an 8x digital gain (about +18 dB) before
+metering, VAD, and speech WAV persistence. It reuses the G2 PCM gain routine's
+signed 16-bit saturation to prevent overflow; loud input can still clip. The
+original journal preserves unamplified samples. G2 retains its 16x gain, and
+phone input does not encode/decode LC3.
 
 Native capture has one producer and a bounded six-second queue. Dart pulls one
 chunk at a time into the existing capture-journal worker. PCM journaling has a

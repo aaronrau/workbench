@@ -396,13 +396,18 @@ final class AudioPipelineCoordinator {
     final capture = CaptureJournalSupervisor(
       rootPath: '$audioFolder/journal',
       pcm16: true,
-      onCaptured: (_, pcm) => _acceptDecodedPcm(pcm),
+      onCaptured: (_, pcm) => _acceptDecodedPcm(applyMicrophonePcmGain(pcm)),
       onStatus: _pipelineStatus,
       onFatalBackpressure: onCaptureUnsafe,
     );
     _microphoneCapture = capture;
     try {
       await capture.start();
+      log(
+        'Microphone',
+        '[WorkBench][Microphone] state=ready sample_rate=16000 '
+            'pcm_gain=${microphonePcmGain}x',
+      );
     } on Object {
       _microphoneCapture = null;
       await capture.dispose();

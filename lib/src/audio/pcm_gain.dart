@@ -1,8 +1,16 @@
 import 'dart:typed_data';
 
 const int g2PcmGain = 16;
+const int microphonePcmGain = 8;
 
-Uint8List applyG2PcmGain(Uint8List pcm16, {int gain = g2PcmGain}) {
+Uint8List applyG2PcmGain(Uint8List pcm16, {int gain = g2PcmGain}) =>
+    _applyPcmGain(pcm16, gain: gain);
+
+/// Boost quiet phone input by about 18 dB using the shared PCM16 saturation.
+Uint8List applyMicrophonePcmGain(Uint8List pcm16) =>
+    _applyPcmGain(pcm16, gain: microphonePcmGain);
+
+Uint8List _applyPcmGain(Uint8List pcm16, {required int gain}) {
   if (gain < 1) {
     throw RangeError.range(gain, 1, null, 'gain');
   }

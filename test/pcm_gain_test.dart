@@ -4,6 +4,22 @@ import 'package:even_g2_r1_poc/src/audio/pcm_gain.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'phone gain boosts quiet input and saturates without changing source',
+    () {
+      final input = _pcm(<int>[-5000, -100, 0, 100, 5000]);
+
+      expect(_samples(applyMicrophonePcmGain(input)), <int>[
+        -32768,
+        -800,
+        0,
+        800,
+        32767,
+      ]);
+      expect(_samples(input), <int>[-5000, -100, 0, 100, 5000]);
+    },
+  );
+
   test('amplifies little-endian PCM16 samples', () {
     final input = _pcm(<int>[-100, 0, 100]);
 
