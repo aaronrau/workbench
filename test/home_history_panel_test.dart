@@ -12,6 +12,52 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  for (final folderUnavailable in [false, true]) {
+    testWidgets(
+      'shows local messages when shared folder unavailable=$folderUnavailable',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.pumpWidget(
+          _app(
+            HomeHistoryPanel(
+              events: const [],
+              conversations: const [],
+              analysisEnabled: false,
+              needsEnrollment: false,
+              analysisState: 'disabled',
+              knownSpeakerCount: 0,
+              pendingConversationCount: 0,
+              isLoadingConversations: false,
+              isStorageBusy: false,
+              sharedFolderName: folderUnavailable ? 'Synthetic folder' : null,
+              messageError: folderUnavailable
+                  ? 'Could not read the selected folder.'
+                  : null,
+              messages: [
+                SharedWebSocketMessage(
+                  id: 'local.sent.message.txt',
+                  direction: SharedWebSocketMessageDirection.sent,
+                  text: 'Agent One: Saved local request.',
+                  updatedAt: DateTime(2026),
+                ),
+              ],
+            ),
+          ),
+        );
+        await tester.tap(find.text('Messages'));
+        await tester.pumpAndSettle();
+        expect(find.text('Agent One: Saved local request.'), findsOneWidget);
+        expect(find.text('Sent'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey<String>('messages-list')),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets('switches between events and aligned speaker turns', (
     tester,
   ) async {
@@ -242,7 +288,7 @@ void main() {
     await tester.tap(find.text('Messages'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Choose a shared folder'), findsOneWidget);
+    expect(find.textContaining('No saved messages yet'), findsOneWidget);
     final chooseButton = find.widgetWithText(FilledButton, 'Choose folder');
     expect(chooseButton, findsOneWidget);
     await tester.tap(chooseButton);
@@ -414,7 +460,7 @@ void main() {
       findsNothing,
     );
     expect(selectedAgentField.focusNode?.hasFocus, isFalse);
-    expect(find.textContaining('Shared message folders'), findsOneWidget);
+    expect(find.textContaining('No saved messages yet'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

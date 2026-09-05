@@ -384,6 +384,14 @@ pipeline. Conversation analysis remains an independent consumer of durable
 speech WAVs. Stopping capture does not cancel queued local processing, and
 restored jobs cannot send agent commands.
 
+The phone preview tracks the latest live turn through Original, Corrected,
+Sending, and Sent (only after the server acknowledgement), or Saved when it
+does not send. Late correction or delivery results cannot overwrite a newer
+utterance. Messages reads recent atomic app-private sent/received records
+immediately and merges them with exported history by filename. Missing shared
+storage or export failure must not hide these local messages; the raw and
+corrected transcript files remain separate.
+
 `MicrophoneCaptureService` owns a separate microphone foreground notification
 and wake lock. It requires RECORD_AUDIO and the microphone foreground-service
 type, starts only from the visible app, and does not require Bluetooth

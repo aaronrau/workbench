@@ -2,6 +2,45 @@ import 'package:even_g2_r1_poc/src/audio/transcript_turn_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'latest raw preview advances through corrected text and acknowledgement',
+    () {
+      final state = TranscriptTurnState()..startTurn('conversation-1');
+      state.completeTurn(
+        'conversation-1',
+        'raw words',
+        resultId: 'chunk-final',
+      );
+      expect(state.status, TranscriptPreviewStatus.original);
+      expect(
+        state.updateDelivery(
+          'chunk-final',
+          'Corrected words',
+          TranscriptPreviewStatus.sending,
+        ),
+        isTrue,
+      );
+      expect(state.visibleText, 'Corrected words');
+      expect(state.status, TranscriptPreviewStatus.sending);
+      state.updateDelivery(
+        'chunk-final',
+        'Corrected words',
+        TranscriptPreviewStatus.sent,
+      );
+      expect(state.status.label, 'Sent');
+      state.startTurn('conversation-2');
+      expect(
+        state.updateDelivery(
+          'chunk-final',
+          'Old words',
+          TranscriptPreviewStatus.sent,
+        ),
+        isFalse,
+      );
+      expect(state.visibleText, isNull);
+    },
+  );
+
   test('new speech clears the previous visible transcript', () {
     final state = TranscriptTurnState();
 

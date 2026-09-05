@@ -211,6 +211,16 @@ final class AudioPipelineCoordinator {
   String? activeVadProvider;
   String? activeCorrectionProvider;
   String? get lastTranscript => _transcriptTurn.visibleText;
+  TranscriptPreviewStatus get transcriptPreviewStatus => _transcriptTurn.status;
+
+  void updateTranscriptDelivery(
+    String segmentId,
+    String text,
+    TranscriptPreviewStatus status,
+  ) {
+    if (_transcriptTurn.updateDelivery(segmentId, text, status)) onChanged();
+  }
+
   String? lastCorrectedTranscript;
   String? lastTranscriptPath;
   String? lastCorrectedTranscriptPath;
@@ -426,12 +436,13 @@ final class AudioPipelineCoordinator {
     // Retain this supervisor on failure so Stop can retry the same durable
     // handoff. Releasing ownership early could mix recovery audio with G2.
     await capture.drain();
-    await _finishAudioSource();
+    // Keep the final phone turn visible while its STT/correction/send finishes.
+    await _finishAudioSource(clearPreview: false);
     await capture.dispose();
     _microphoneCapture = null;
   }
 
-  Future<void> _finishAudioSource() async {
+  Future<void> _finishAudioSource({bool clearPreview = true}) async {
     // Never leak a prior source's recovery audio into the next session.
     final deadline = DateTime.now().add(const Duration(seconds: 10));
     while (!(_vad?.isReady ?? false)) {
@@ -444,7 +455,7 @@ final class AudioPipelineCoordinator {
     }
     _replayVadRecovery();
     await flushCurrentSpeechAndWait();
-    _transcriptTurn.endSession();
+    if (clearPreview) _transcriptTurn.endSession();
     _meterSamples = 0;
     _meterSquareSum = 0;
     _meterPeak = 0;
@@ -694,6 +705,7 @@ final class AudioPipelineCoordinator {
     final displayed = _transcriptTurn.completeTurn(
       segment?.conversationId ?? id,
       displayedText,
+      resultId: id,
     );
     if (!displayed) {
       log(
@@ -915,6 +927,11 @@ final class AudioPipelineCoordinator {
     } else if (result.routeWhenCorrected) {
       lastCorrectedTranscript = result.correctedText;
       lastCorrectedTranscriptPath = result.correctedPath;
+      updateTranscriptDelivery(
+        result.segmentId,
+        result.correctedText,
+        TranscriptPreviewStatus.corrected,
+      );
       unawaited(
         _exportSharedFiles(
           <String>[result.correctedPath],

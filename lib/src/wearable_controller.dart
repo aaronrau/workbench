@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'audio/audio_pipeline_coordinator.dart';
 import 'audio/android_microphone_source.dart';
 import 'audio/phone_microphone_session.dart';
+import 'audio/transcript_turn_state.dart';
 import 'audio/conversation_analysis_service.dart';
 import 'audio/shared_audio_export_store.dart';
 import 'audio/speech_model.dart';
@@ -683,7 +684,10 @@ final class WearableController extends ChangeNotifier
   List<SharedTranscript> get sharedTranscripts =>
       _sharedAudioExportStore.transcripts;
   List<SharedWebSocketMessage> get sharedWebSocketMessages =>
-      _sharedAudioExportStore.messages;
+      mergeMessageHistory(
+        _sharedAudioExportStore.messages,
+        _webSocketMessageStore.recentMessages,
+      );
   List<AgentMessageView> get agentMessages => _agentMessages;
   bool get isLoadingAgentMessages => _isLoadingAgentMessages;
   String? get agentMessageError => _agentMessageError;
@@ -694,6 +698,8 @@ final class WearableController extends ChangeNotifier
       _sharedAudioExportStore.messageLoadError ??
       _sharedAudioExportStore.transcriptLoadError;
   String? get lastTranscript => _audioPipeline.lastTranscript;
+  TranscriptPreviewStatus get transcriptPreviewStatus =>
+      _audioPipeline.transcriptPreviewStatus;
   int get completedTranscripts => _audioPipeline.completedTranscripts;
   String? get transcriptionProvider => _audioPipeline.activeProvider;
   String? get vadProvider => _audioPipeline.activeVadProvider;
@@ -1321,6 +1327,12 @@ final class WearableController extends ChangeNotifier
 
   Future<void> refreshSharedMessages({bool reconcileShared = false}) async {
     Object? failure;
+    try {
+      await _webSocketMessageStore.refreshRecent();
+      _safeNotify();
+    } on Object {
+      // Retain live records even if refreshing the local archive fails.
+    }
     try {
       await _sharedAudioExportStore.refreshMessages(
         reconcileShared: reconcileShared,
@@ -2665,6 +2677,11 @@ final class WearableController extends ChangeNotifier
     if (selectedRoute == null) {
       await _glassesStatusQueue.markTranscriptSending(segmentId: segmentId);
     }
+    _audioPipeline.updateTranscriptDelivery(
+      segmentId,
+      transcript,
+      TranscriptPreviewStatus.sending,
+    );
     final sendResult = await _voiceWebSocket.sendAgentMessageWithResult(
       endpointId: route.endpointId!,
       agent: route.agent,
@@ -2697,6 +2714,11 @@ final class WearableController extends ChangeNotifier
     required String transcript,
     required bool sent,
   }) async {
+    _audioPipeline.updateTranscriptDelivery(
+      segmentId,
+      transcript,
+      sent ? TranscriptPreviewStatus.sent : TranscriptPreviewStatus.saved,
+    );
     if (_agentHistory.completeTargetedSpeech(
       segmentId: segmentId,
       transcript: transcript,
@@ -2759,6 +2781,7 @@ final class WearableController extends ChangeNotifier
         direction: WebSocketMessageDirection.received,
         message: message,
       );
+      _safeNotify();
       savedMessage = saved;
       _scheduleWebSocketMessageExport(
         saved,
@@ -2839,6 +2862,7 @@ final class WearableController extends ChangeNotifier
         direction: direction,
         message: message,
       );
+      _safeNotify();
       _scheduleWebSocketMessageExport(
         saved,
         successState: 'message_exported',

@@ -280,8 +280,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
               IconButton(
                 tooltip: 'Refresh messages',
                 onPressed:
-                    widget.sharedFolderName == null ||
-                        _isLoadingMessagesForTab ||
+                    _isLoadingMessagesForTab ||
                         widget.isLoadingMessages ||
                         widget.isStorageBusy
                     ? null
@@ -407,7 +406,8 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   Widget _buildAllMessages(BuildContext context) {
     final theme = Theme.of(context);
     final folderName = widget.sharedFolderName;
-    if (folderName == null) {
+    final history = _messageHistory();
+    if (folderName == null && history.isEmpty) {
       return Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 320),
@@ -416,9 +416,9 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             children: <Widget>[
               Text(
                 widget.supportsSharedFolder
-                    ? 'Choose a shared folder to browse sent and received '
-                          'messages, transcripts, and WAV audio.'
-                    : 'Shared message folders are available on Android.',
+                    ? 'No saved messages yet. Choose a folder to also save '
+                          'messages, transcripts, and WAV audio there.'
+                    : 'No saved messages yet.',
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodyMedium,
               ),
@@ -437,7 +437,6 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         ),
       );
     }
-    final history = _messageHistory();
     if ((_isLoadingMessagesForTab || widget.isLoadingMessages) &&
         history.isEmpty) {
       return _buildLoadingState(
@@ -447,7 +446,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
       );
     }
     final error = widget.messageError;
-    if (error != null) {
+    if (error != null && history.isEmpty) {
       return Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 320),
@@ -485,7 +484,9 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Text(
-          'Messages and transcripts in $folderName',
+          error != null
+              ? 'Folder unavailable · showing saved messages'
+              : 'Saved messages and transcripts',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodySmall,

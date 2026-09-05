@@ -404,10 +404,11 @@ final class _HomePageState extends State<HomePage> {
           const SizedBox(height: 8),
           Semantics(
             label: 'Latest transcript',
+            liveRegion: true,
             child: Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                transcript,
+                '${controller.transcriptPreviewStatus.label}: $transcript',
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodyMedium,
