@@ -34,7 +34,22 @@ final class ConversationAnalysisResult {
   final int analysisMs;
 }
 
-final class ConversationAnalysisSupervisor {
+abstract interface class ConversationAnalysisWorker {
+  bool get isReady;
+  Future<void> start();
+  void analyze({
+    required String segmentId,
+    required String wavPath,
+    required Iterable<SpeakerProfile> profiles,
+    required bool enrollment,
+    double? signatureMatchThreshold,
+  });
+  Future<void> restartForTest();
+  Future<void> dispose();
+}
+
+final class ConversationAnalysisSupervisor
+    implements ConversationAnalysisWorker {
   ConversationAnalysisSupervisor({
     required this.models,
     required this.transcription,
@@ -73,9 +88,11 @@ final class ConversationAnalysisSupervisor {
   bool _closing = false;
   int _restartAttempt = 0;
 
+  @override
   bool get isReady => _commands != null && _isolate != null;
   int get pendingCount => _pending.length;
 
+  @override
   Future<void> start() async {
     if (_disposed) {
       throw StateError('Conversation analysis is closed.');
@@ -86,6 +103,7 @@ final class ConversationAnalysisSupervisor {
     await _spawnAndWaitUntilReady();
   }
 
+  @override
   void analyze({
     required String segmentId,
     required String wavPath,
@@ -115,6 +133,7 @@ final class ConversationAnalysisSupervisor {
     );
   }
 
+  @override
   Future<void> restartForTest() async {
     if (_disposed || _isolate == null) {
       return;
@@ -157,7 +176,7 @@ final class ConversationAnalysisSupervisor {
         _scheduleRestart();
       }
     });
-    _isolate = await Isolate.spawn<Map<String, Object>>(
+    final isolate = await Isolate.spawn<Map<String, Object>>(
       _conversationWorker,
       <String, Object>{
         'events': _events!.sendPort,
@@ -171,16 +190,25 @@ final class ConversationAnalysisSupervisor {
       errorsAreFatal: true,
       debugName: 'workbench-conversation-analysis',
     );
+    if (_disposed || _closing) {
+      isolate.kill(priority: Isolate.immediate);
+      return;
+    }
+    _isolate = isolate;
   }
 
   Future<void> _spawnAndWaitUntilReady() async {
-    await _spawn();
-    final ready = _ready!;
-    await ready.future.timeout(const Duration(seconds: 45));
+    // Listen for cancellation immediately, including while Isolate.spawn is
+    // still completing, so disposal cannot leave an unhandled ready error.
+    await Future.wait<void>(<Future<void>>[
+      _spawn(),
+      _ready!.future.timeout(const Duration(seconds: 45)),
+    ]);
   }
 
   void _handleEvent(Object? value) {
-    if (value is! Map<Object?, Object?>) {
+    if (value is! Map<Object?, Object?> ||
+        (_disposed && value['type'] != 'closed')) {
       return;
     }
     switch (value['type']) {
@@ -311,11 +339,16 @@ final class ConversationAnalysisSupervisor {
     _exit = null;
   }
 
+  @override
   Future<void> dispose() async {
     _disposed = true;
     _closing = true;
     _restartTimer?.cancel();
     _restartTimer = null;
+    final ready = _ready;
+    if (ready != null && !ready.isCompleted) {
+      ready.completeError(StateError('Conversation analysis was cancelled.'));
+    }
     final commands = _commands;
     final closed = _closed;
     commands?.send(<String, Object>{'type': 'close'});

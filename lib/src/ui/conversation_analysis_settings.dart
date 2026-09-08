@@ -17,6 +17,7 @@ final class ConversationAnalysisSettings extends StatefulWidget {
     required this.onSpeakerMatchThresholdChanged,
     required this.onResetSpeakerIdentification,
     this.error,
+    this.resetBusy = false,
     super.key,
   });
 
@@ -29,6 +30,7 @@ final class ConversationAnalysisSettings extends StatefulWidget {
   final int requiredEnrollmentSamples;
   final double speakerMatchThreshold;
   final bool busy;
+  final bool resetBusy;
   final ValueChanged<bool> onEnabledChanged;
   final ValueChanged<double> onSpeakerMatchThresholdChanged;
   final VoidCallback onResetSpeakerIdentification;
@@ -55,7 +57,8 @@ final class _ConversationAnalysisSettingsState
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final stateLabel = widget.state.replaceAll('_', ' ');
-    final thresholdBlocked = widget.busy || widget.pendingConversationCount > 0;
+    final thresholdBlocked =
+        widget.busy || widget.resetBusy || widget.pendingConversationCount > 0;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -83,7 +86,9 @@ final class _ConversationAnalysisSettingsState
                 style: theme.textTheme.bodySmall,
               ),
               value: widget.enabled,
-              onChanged: widget.busy ? null : widget.onEnabledChanged,
+              onChanged: widget.busy || widget.resetBusy
+                  ? null
+                  : widget.onEnabledChanged,
             ),
             if (widget.enabled) ...<Widget>[
               const SizedBox(height: 8),
@@ -136,14 +141,18 @@ final class _ConversationAnalysisSettingsState
               OutlinedButton.icon(
                 key: const ValueKey<String>('reset-speaker-identification'),
                 onPressed:
-                    widget.busy ||
-                        widget.enrollmentPending ||
-                        widget.pendingConversationCount > 0 ||
-                        widget.knownSpeakerCount == 0
+                    widget.resetBusy ||
+                        (!widget.enrollmentPending &&
+                            (widget.pendingConversationCount > 0 ||
+                                widget.knownSpeakerCount == 0))
                     ? null
                     : widget.onResetSpeakerIdentification,
                 icon: const Icon(Icons.person_search_outlined),
-                label: const Text('Reset speaker identification'),
+                label: Text(
+                  widget.enrollmentPending
+                      ? 'Reset voice samples'
+                      : 'Reset speaker identification',
+                ),
               ),
             ],
           ],

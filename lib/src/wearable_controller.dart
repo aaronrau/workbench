@@ -760,6 +760,7 @@ final class WearableController extends ChangeNotifier
       _sharedAudioExportStore.conversationLoadError;
   bool get conversationAnalysisEnabled => _conversationAnalysis.enabled;
   bool get conversationAnalysisStarting => _conversationAnalysis.isStarting;
+  bool get conversationAnalysisResetting => _conversationAnalysis.isResetting;
   bool get conversationAnalysisReady => _conversationAnalysis.isReady;
   bool get conversationNeedsEnrollment => _conversationAnalysis.needsEnrollment;
   bool get conversationEnrollmentPending =>

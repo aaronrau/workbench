@@ -52,24 +52,25 @@ void main() {
     expect(resetCount, 1);
   });
 
-  testWidgets('shows enrollment progress and blocks a second reset', (
+  testWidgets('allows resetting enrollment before any speaker is saved', (
     tester,
   ) async {
+    var resets = 0;
     await tester.pumpWidget(
       _app(
         ConversationAnalysisSettings(
           enabled: true,
-          state: 'waiting_for_enrollment_speech',
-          knownSpeakerCount: 2,
-          pendingConversationCount: 0,
+          state: 'enrolling',
+          knownSpeakerCount: 0,
+          pendingConversationCount: 1,
           enrollmentPending: true,
           acceptedEnrollmentSamples: 1,
           requiredEnrollmentSamples: 3,
           speakerMatchThreshold: 0.70,
-          busy: false,
+          busy: true,
           onEnabledChanged: (_) {},
           onSpeakerMatchThresholdChanged: (_) {},
-          onResetSpeakerIdentification: () {},
+          onResetSpeakerIdentification: () => resets++,
         ),
       ),
     );
@@ -78,7 +79,11 @@ void main() {
     final reset = tester.widget<OutlinedButton>(
       find.byKey(const ValueKey<String>('reset-speaker-identification')),
     );
-    expect(reset.onPressed, isNull);
+    expect(reset.onPressed, isNotNull);
+    expect(find.text('Reset voice samples'), findsOneWidget);
+    await tester.ensureVisible(find.text('Reset voice samples'));
+    await tester.tap(find.text('Reset voice samples'));
+    expect(resets, 1);
   });
 }
 

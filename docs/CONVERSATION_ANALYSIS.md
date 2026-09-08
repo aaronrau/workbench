@@ -51,12 +51,22 @@ Use **Tools → Conversation analysis → Enable speaker-labeled
 conversations** to turn analysis off or back on. It defaults to on when no
 preference is saved; existing saved choices are preserved. When no primary
 profile exists, Home asks for three clear single-speaker utterances and shows
-progress after each accepted sample. Each
-sample is persisted before the next prompt, so enrollment resumes after an app
+progress after each accepted sample. Each sample is persisted before the next
+prompt, so enrollment resumes after an app
 restart. Enrollment rejects a segment when diarization detects multiple
 speakers or when a later sample does not match every earlier sample. A rejected
 sample does not advance progress. Only after all three samples agree does the
 profile become eligible to identify speech as `You`.
+
+Home shows a rejected sample's reason below the enrollment prompt. **Reset
+voice samples** is available there and in Tools while enrollment is waiting,
+loading, or checking a sample. Reset clears the incomplete `You` profile and
+queued enrollment samples, restores the default match threshold, and starts
+again at sample one using speech begun after the reset. Late results from the
+previous attempt cannot restore discarded samples. Native worker cleanup runs
+independently; saved conversations, other speakers, WAVs, and primary
+transcripts remain intact. An empty app-private profile bank is authoritative
+after reset, even if updating its shared recovery copy fails.
 
 Each local diarization cluster produces a normalized TitaNet embedding:
 

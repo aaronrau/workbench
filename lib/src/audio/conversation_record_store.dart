@@ -105,6 +105,9 @@ final class ConversationRecordStore {
     await _root!.create(recursive: true);
   }
 
+  Future<bool> hasProfileBank() =>
+      File('${_requireRoot().path}/speaker-profiles.json').exists();
+
   Future<List<SpeakerProfile>> loadProfiles() async {
     final file = File('${_requireRoot().path}/speaker-profiles.json');
     if (!await file.exists()) {

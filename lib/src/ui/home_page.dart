@@ -10,6 +10,7 @@ import '../wearable_controller.dart';
 import '../websocket/voice_websocket_connections.dart';
 import 'app_version_label.dart';
 import 'conversation_analysis_settings.dart';
+import 'conversation_enrollment_prompt.dart';
 import 'home_history_panel.dart';
 import 'transcript_correction_settings.dart';
 import 'voice_websocket_home_status.dart';
@@ -33,6 +34,7 @@ final class _HomePageState extends State<HomePage> {
   G2Side _rawSide = G2Side.right;
   bool _busy = false;
   bool _showTools = false;
+  bool _speakerResetBusy = false;
 
   WearableController get controller => widget.controller;
 
@@ -72,6 +74,26 @@ final class _HomePageState extends State<HomePage> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    }
+  }
+
+  Future<void> _resetSpeakerSamples() async {
+    if (_speakerResetBusy) {
+      return;
+    }
+    setState(() => _speakerResetBusy = true);
+    try {
+      await controller.resetConversationSpeakerIdentification();
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _speakerResetBusy = false);
       }
     }
   }
@@ -269,41 +291,14 @@ final class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildConversationEnrollmentPrompt() {
-    final theme = Theme.of(context);
-    final preparing = controller.conversationAnalysisStarting;
-    final checking = controller.conversationAnalysisState == 'enrolling';
-    final accepted = controller.acceptedConversationEnrollmentSamples;
-    final required = controller.requiredConversationEnrollmentSamples;
-    return Container(
-      constraints: const BoxConstraints(minHeight: 48),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        border: Border.all(color: theme.colorScheme.outlineVariant),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: <Widget>[
-          if (preparing)
-            const SizedBox.square(
-              dimension: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else
-            const Icon(Icons.record_voice_over_outlined, size: 20),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              preparing
-                  ? 'Preparing private speaker analysis…'
-                  : checking
-                  ? 'Checking voice sample ${accepted + 1} of $required…'
-                  : 'Voice sample ${accepted + 1} of $required: speak one '
-                        'clear sentence, then pause while it is checked.',
-              style: theme.textTheme.bodyMedium,
-            ),
-          ),
-        ],
-      ),
+    return ConversationEnrollmentPrompt(
+      acceptedSamples: controller.acceptedConversationEnrollmentSamples,
+      requiredSamples: controller.requiredConversationEnrollmentSamples,
+      preparing: controller.conversationAnalysisStarting,
+      checking: controller.conversationAnalysisState == 'enrolling',
+      resetting: _speakerResetBusy || controller.conversationAnalysisResetting,
+      error: controller.conversationAnalysisError,
+      onReset: _resetSpeakerSamples,
     );
   }
 
@@ -556,13 +551,13 @@ final class _HomePageState extends State<HomePage> {
           controller.requiredConversationEnrollmentSamples,
       speakerMatchThreshold: controller.conversationSpeakerMatchThreshold,
       busy: _busy,
+      resetBusy: _speakerResetBusy || controller.conversationAnalysisResetting,
       error: controller.conversationAnalysisError,
       onEnabledChanged: (value) =>
           _run(() => controller.setConversationAnalysisEnabled(value)),
       onSpeakerMatchThresholdChanged: (value) =>
           _run(() => controller.setConversationSpeakerMatchThreshold(value)),
-      onResetSpeakerIdentification: () =>
-          _run(controller.resetConversationSpeakerIdentification),
+      onResetSpeakerIdentification: _resetSpeakerSamples,
     );
   }
 
@@ -953,6 +948,21 @@ final class _HomePageState extends State<HomePage> {
             Text(
               'Start the phone microphone while glasses are disconnected.',
               style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Text('Voice enrollment', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            IgnorePointer(
+              child: ConversationEnrollmentPrompt(
+                acceptedSamples: 1,
+                requiredSamples: 3,
+                preparing: false,
+                checking: false,
+                resetting: false,
+                error:
+                    'The sample did not match. Speak again or reset to start over.',
+                onReset: () {},
+              ),
             ),
             const SizedBox(height: 12),
             Text('Section title', style: theme.textTheme.titleSmall),

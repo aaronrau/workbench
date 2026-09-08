@@ -16,6 +16,13 @@ import 'speech_model.dart';
 typedef ConversationServiceLog =
     void Function(String source, String message, {bool isError});
 
+typedef ConversationWorkerLoader =
+    Future<ConversationAnalysisWorker> Function({
+      required ConversationAnalysisResultSink onResult,
+      required ConversationAnalysisFailureSink onFailure,
+      required double signatureMatchThreshold,
+    });
+
 /// Optional, supervised analysis downstream of the already durable speech WAV.
 ///
 /// No live LC3 or PCM buffer is copied. The primary capture/VAD/STT path closes
@@ -36,12 +43,14 @@ final class ConversationAnalysisService {
     ConversationRecordStore? recordStore,
     ConversationModelStore? modelStore,
     ModelAssetStore? speechModelStore,
+    ConversationWorkerLoader? workerLoader,
     DateTime Function() clock = DateTime.now,
   }) : _sharedAudioExportStore = sharedAudioExportStore,
        _preferences = preferences,
        _recordStore = recordStore ?? ConversationRecordStore(),
        _modelStore = modelStore ?? ConversationModelStore(),
        _speechModelStore = speechModelStore ?? ModelAssetStore(),
+       _workerLoader = workerLoader,
        _clock = clock;
 
   static const int _maximumPendingJobs = 32;
@@ -54,10 +63,11 @@ final class ConversationAnalysisService {
   final ConversationRecordStore _recordStore;
   final ConversationModelStore _modelStore;
   final ModelAssetStore _speechModelStore;
+  final ConversationWorkerLoader? _workerLoader;
   final DateTime Function() _clock;
   final Queue<ConversationPendingJob> _jobs = Queue<ConversationPendingJob>();
 
-  ConversationAnalysisSupervisor? _supervisor;
+  ConversationAnalysisWorker? _supervisor;
   List<SpeakerProfile> _profiles = const <SpeakerProfile>[];
   bool _initialized = false;
   bool _disposed = false;
@@ -65,6 +75,9 @@ final class ConversationAnalysisService {
   Completer<void>? _startSettled;
   bool _jobActive = false;
   bool _activeJobEnrollment = false;
+  bool _resetting = false;
+  int _workerGeneration = 0;
+  Future<void>? _retainingResult;
   bool _enrollmentRequested = false;
   int? _minimumEnrollmentSegmentMicros;
   Future<void>? _memoryPressureRelease;
@@ -76,7 +89,8 @@ final class ConversationAnalysisService {
   String? error;
   int completedConversations = 0;
 
-  bool get isStarting => _starting;
+  bool get isStarting => _starting && _jobs.isNotEmpty;
+  bool get isResetting => _resetting;
   bool get isReady => _supervisor?.isReady ?? false;
   SpeakerProfile? get _primaryProfile {
     for (final profile in _profiles) {
@@ -112,7 +126,7 @@ final class ConversationAnalysisService {
       _speakerMatchThreshold = await _preferences.loadSpeakerMatchThreshold();
       var storedProfiles = await _recordStore.loadProfiles();
       bool? recoveredEnabled;
-      if (storedProfiles.isEmpty) {
+      if (storedProfiles.isEmpty && !await _recordStore.hasProfileBank()) {
         final recovery = await _readSharedRecovery();
         if (recovery != null && recovery.profiles.isNotEmpty) {
           storedProfiles = recovery.profiles;
@@ -239,28 +253,49 @@ final class ConversationAnalysisService {
   }
 
   Future<void> resetSpeakerIdentification() async {
-    if (_disposed) {
+    if (_disposed || _resetting) {
       return;
     }
-    if (_jobActive || _jobs.isNotEmpty) {
+    if ((_jobActive && !_activeJobEnrollment) ||
+        _jobs.any((job) => !job.enrollment)) {
       throw StateError(
         'Wait for pending conversation analysis before resetting speaker identification.',
       );
     }
-    await _preferences.saveSpeakerMatchThreshold(
-      defaultSpeakerSignatureMatchThreshold,
-    );
-    _speakerMatchThreshold = defaultSpeakerSignatureMatchThreshold;
-    _profiles = retainBoundedSpeakerProfiles(
-      retainNonPrimarySpeakerProfiles(_profiles),
-    );
-    _enrollmentRequested = enabled;
-    _minimumEnrollmentSegmentMicros = enabled ? _nowMicros() : null;
-    state = enabled ? 'waiting_for_enrollment_speech' : 'disabled';
+    _resetting = true;
+    _workerGeneration++;
+    _idleWorkerReleaseTimer?.cancel();
+    _idleWorkerReleaseTimer = null;
+    _jobs.removeWhere((job) => job.enrollment);
+    final release = _releaseWorker(reason: 'speaker_reset').catchError((
+      Object caught,
+    ) {
+      log(
+        'Conversation',
+        '[WorkBench][Conversation] state=reset_cleanup_failed '
+            'capture=unaffected transcription=unaffected',
+        isError: true,
+      );
+    });
+    state = 'resetting';
     error = null;
     onChanged();
     try {
+      // Let an older atomic write finish before persisting the reset. Its
+      // generation is invalid, so it cannot accept another enrollment sample.
+      await _retainingResult;
+      await _preferences.saveSpeakerMatchThreshold(
+        defaultSpeakerSignatureMatchThreshold,
+      );
+      _speakerMatchThreshold = defaultSpeakerSignatureMatchThreshold;
+      _profiles = retainBoundedSpeakerProfiles(
+        retainNonPrimarySpeakerProfiles(_profiles),
+      );
+      _enrollmentRequested = enabled;
+      _minimumEnrollmentSegmentMicros = enabled ? _nowMicros() : null;
+      await _persistJobs();
       await _saveProfilesAndBackup();
+      state = enabled ? 'waiting_for_enrollment_speech' : 'disabled';
       log(
         'Conversation',
         '[WorkBench][Conversation] state=speaker_identification_reset '
@@ -273,6 +308,16 @@ final class ConversationAnalysisService {
       _fail(caught, stateName: 'profile_storage_failed');
       rethrow;
     } finally {
+      _resetting = false;
+      // Native cleanup belongs only to conversation analysis. Resetting the
+      // prompt and the primary audio path never wait for it.
+      unawaited(
+        release.then((_) {
+          if (!_disposed && enabled && _jobs.isNotEmpty) {
+            return _start();
+          }
+        }),
+      );
       onChanged();
     }
   }
@@ -283,7 +328,7 @@ final class ConversationAnalysisService {
     if (!_initialized || _disposed) {
       return;
     }
-    if (_profiles.isNotEmpty) {
+    if (_profiles.isNotEmpty || await _recordStore.hasProfileBank()) {
       await _backupSharedRecovery();
       return;
     }
@@ -316,7 +361,11 @@ final class ConversationAnalysisService {
   /// This method deliberately returns void so the primary audio pipeline
   /// cannot await conversation analysis.
   void acceptFinalizedSegment(String segmentId, String wavPath) {
-    if (!enabled || _disposed || segmentId.isEmpty || wavPath.isEmpty) {
+    if (!enabled ||
+        _disposed ||
+        _resetting ||
+        segmentId.isEmpty ||
+        wavPath.isEmpty) {
       return;
     }
     _idleWorkerReleaseTimer?.cancel();
@@ -391,9 +440,15 @@ final class ConversationAnalysisService {
       }
       return;
     }
-    if (_disposed || !enabled || isReady || _jobs.isEmpty) {
+    if (_disposed ||
+        _resetting ||
+        _memoryPressureRelease != null ||
+        !enabled ||
+        isReady ||
+        _jobs.isEmpty) {
       return;
     }
+    final generation = _workerGeneration;
     _idleWorkerReleaseTimer?.cancel();
     _idleWorkerReleaseTimer = null;
     _starting = true;
@@ -401,28 +456,30 @@ final class ConversationAnalysisService {
     state = 'starting';
     error = null;
     onChanged();
+    ConversationAnalysisWorker? startingWorker;
     try {
-      _status('verifying speaker models');
-      final models = await _modelStore.prepare();
-      final transcription = await _speechModelStore.prepareTranscriptionModel(
-        definition: parakeet110mModel,
-        onStatus: (message) => _status(message),
-      );
-      if (_disposed || !enabled || _jobs.isEmpty) {
-        return;
-      }
-      final supervisor = ConversationAnalysisSupervisor(
-        models: models,
-        transcription: transcription,
-        onResult: _onResult,
-        onFailure: _onFailure,
-        onStatus: (message, {bool isError = false}) =>
-            log('Conversation', message, isError: isError),
+      final supervisor = await (_workerLoader ?? _loadWorker)(
+        onResult: (result) {
+          if (_isCurrentGeneration(generation)) {
+            _retainingResult = _retainResult(result, generation);
+            unawaited(_retainingResult);
+          }
+        },
+        onFailure: (segmentId, caught) {
+          if (_isCurrentGeneration(generation)) {
+            _onFailure(segmentId, caught);
+          }
+        },
         signatureMatchThreshold: _speakerMatchThreshold,
       );
+      startingWorker = supervisor;
+      if (!_isCurrentGeneration(generation) || !enabled || _jobs.isEmpty) {
+        await supervisor.dispose();
+        return;
+      }
       _supervisor = supervisor;
       await supervisor.start();
-      if (_disposed || !enabled || _jobs.isEmpty) {
+      if (!_isCurrentGeneration(generation) || !enabled || _jobs.isEmpty) {
         if (identical(_supervisor, supervisor)) {
           _supervisor = null;
         }
@@ -441,9 +498,13 @@ final class ConversationAnalysisService {
       );
       _dispatch();
     } catch (caught) {
-      await _supervisor?.dispose();
-      _supervisor = null;
-      _fail(caught, stateName: 'unavailable');
+      if (_isCurrentGeneration(generation)) {
+        await startingWorker?.dispose();
+        if (identical(_supervisor, startingWorker)) {
+          _supervisor = null;
+        }
+        _fail(caught, stateName: 'unavailable');
+      }
     } finally {
       _starting = false;
       final settled = _startSettled;
@@ -451,8 +512,40 @@ final class ConversationAnalysisService {
       if (settled != null && !settled.isCompleted) {
         settled.complete();
       }
+      if (generation != _workerGeneration &&
+          !_disposed &&
+          !_resetting &&
+          enabled &&
+          _jobs.isNotEmpty) {
+        unawaited(_start());
+      }
       onChanged();
     }
+  }
+
+  bool _isCurrentGeneration(int generation) =>
+      !_disposed && generation == _workerGeneration;
+
+  Future<ConversationAnalysisWorker> _loadWorker({
+    required ConversationAnalysisResultSink onResult,
+    required ConversationAnalysisFailureSink onFailure,
+    required double signatureMatchThreshold,
+  }) async {
+    _status('verifying speaker models');
+    final models = await _modelStore.prepare();
+    final transcription = await _speechModelStore.prepareTranscriptionModel(
+      definition: parakeet110mModel,
+      onStatus: _status,
+    );
+    return ConversationAnalysisSupervisor(
+      models: models,
+      transcription: transcription,
+      onResult: onResult,
+      onFailure: onFailure,
+      onStatus: (message, {bool isError = false}) =>
+          log('Conversation', message, isError: isError),
+      signatureMatchThreshold: signatureMatchThreshold,
+    );
   }
 
   void _dispatch() {
@@ -461,7 +554,8 @@ final class ConversationAnalysisService {
         _jobs.isEmpty ||
         supervisor == null ||
         !supervisor.isReady ||
-        _disposed) {
+        _disposed ||
+        _resetting) {
       return;
     }
     final job = _jobs.first;
@@ -485,13 +579,15 @@ final class ConversationAnalysisService {
     onChanged();
   }
 
-  void _onResult(ConversationAnalysisResult result) {
-    unawaited(_retainResult(result));
-  }
-
-  Future<void> _retainResult(ConversationAnalysisResult result) async {
+  Future<void> _retainResult(
+    ConversationAnalysisResult result,
+    int generation,
+  ) async {
     _removeJob(result.record.id);
     await _persistJobs();
+    if (!_isCurrentGeneration(generation)) {
+      return;
+    }
     try {
       _profiles = retainBoundedSpeakerProfiles(result.profiles);
       final completedEnrollment = result.enrollment && !needsEnrollment;
@@ -500,7 +596,13 @@ final class ConversationAnalysisService {
         _minimumEnrollmentSegmentMicros = null;
       }
       await _saveProfilesAndBackup();
+      if (!_isCurrentGeneration(generation)) {
+        return;
+      }
       await _reconcilePrimarySpeakerHistoryIfNeeded();
+      if (!_isCurrentGeneration(generation)) {
+        return;
+      }
       if (!result.enrollment) {
         final retained = await _recordStore.retainRecord(result.record);
         await _sharedAudioExportStore.indexConversation(retained);
@@ -536,12 +638,16 @@ final class ConversationAnalysisService {
         }
       }
     } catch (caught) {
-      _fail(caught, stateName: 'storage_failed');
+      if (_isCurrentGeneration(generation)) {
+        _fail(caught, stateName: 'storage_failed');
+      }
     } finally {
-      _jobActive = false;
-      _activeJobEnrollment = false;
-      _dispatch();
-      _scheduleIdleWorkerRelease();
+      if (_isCurrentGeneration(generation)) {
+        _jobActive = false;
+        _activeJobEnrollment = false;
+        _dispatch();
+        _scheduleIdleWorkerRelease();
+      }
       onChanged();
     }
   }
@@ -664,7 +770,7 @@ final class ConversationAnalysisService {
   }
 
   Future<void> _backupSharedRecovery() async {
-    if (!_sharedAudioExportStore.hasSharedFolder || _profiles.isEmpty) {
+    if (!_sharedAudioExportStore.hasSharedFolder) {
       return;
     }
     try {
@@ -837,8 +943,10 @@ final class ConversationAnalysisService {
   }
 }
 
-String _oneLine(Object value) =>
-    '$value'.replaceAll(RegExp(r'\s+'), ' ').trim();
+String _oneLine(Object value) => '$value'
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim()
+    .replaceFirst(RegExp(r'^(?:Bad state:\s*)+'), '');
 
 int? _segmentStartMicros(String segmentId) {
   final separator = segmentId.indexOf('-');
