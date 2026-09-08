@@ -16,6 +16,139 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
+    'stalled conversation export does not block the next analysis',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final temporary = await Directory.systemTemp.createTemp(
+        'workbench-conversation-export.',
+      );
+      final store = ConversationRecordStore(
+        supportDirectory: () async => temporary,
+      );
+      await store.initialize();
+      final now = DateTime.utc(2026, 1, 1);
+      final primary = SpeakerProfile(
+        id: 'primary-user',
+        label: 'You',
+        isPrimary: true,
+        embedding: const <double>[1, 0],
+        sampleCount: 3,
+        createdAt: now,
+        updatedAt: now,
+      );
+      await store.saveProfiles(<SpeakerProfile>[primary]);
+      const channel = MethodChannel('test/workbench_conversation_export');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final blocked = Completer<void>();
+      final exports = <List<String>>[];
+      var indexed = 0;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'currentDirectory':
+            return <String, Object>{'displayName': 'Shared'};
+          case 'writeSpeakerSignatureRecovery':
+            return null;
+          case 'indexConversation':
+            indexed++;
+            return null;
+          case 'listConversations':
+            return <Object?>[];
+          case 'exportFiles':
+            exports.add(
+              ((call.arguments as Map<Object?, Object?>)['paths']
+                      as List<Object?>)
+                  .cast<String>(),
+            );
+            if (exports.length == 1) await blocked.future;
+            return exports.last.length;
+          default:
+            fail('Unexpected method ${call.method}');
+        }
+      });
+      final shared = SharedAudioExportStore(channel: channel, isAndroid: true);
+      await shared.initialize();
+      final worker = _FakeConversationWorker((_) {}, (_, _) {});
+      late ConversationAnalysisResultSink resultSink;
+      final service = ConversationAnalysisService(
+        log: (_, _, {bool isError = false}) {},
+        onChanged: () {},
+        sharedAudioExportStore: shared,
+        recordStore: store,
+        workerLoader:
+            ({
+              required onResult,
+              required onFailure,
+              required signatureMatchThreshold,
+            }) async {
+              resultSink = onResult;
+              return worker;
+            },
+      );
+      addTearDown(() async {
+        if (!blocked.isCompleted) blocked.complete();
+        await service.dispose();
+        shared.dispose();
+        messenger.setMockMethodCallHandler(channel, null);
+        await temporary.delete(recursive: true);
+      });
+      await service.initialize();
+      for (var index = 0; index < 3; index++) {
+        final id = 'synthetic-$index';
+        final wav = File('${temporary.path}/$id.wav')
+          ..writeAsBytesSync(<int>[0, 0]);
+        final text = File('${temporary.path}/$id.conversation.txt')
+          ..writeAsStringSync('You [0.00–1.00]\nSynthetic speech.\n');
+        service.acceptFinalizedSegment(id, wav.path);
+        await _waitUntil(() => worker.analyzed.contains(id));
+        await service.resumeAfterMemoryPressure();
+        expect(service.state, 'analyzing');
+        resultSink(
+          ConversationAnalysisResult(
+            record: ConversationRecord(
+              id: id,
+              audioPath: wav.path,
+              textPath: text.path,
+              metadataPath: '${temporary.path}/$id.conversation.json',
+              updatedAt: now,
+              utterances: <ConversationUtterance>[
+                ConversationUtterance(
+                  id: '$id-turn',
+                  conversationId: id,
+                  speakerId: primary.id,
+                  speakerLabel: 'You',
+                  text: 'Synthetic speech.',
+                  startMs: 0,
+                  endMs: 1000,
+                  confidence: 0.9,
+                  updatedAt: now,
+                  isPrimary: true,
+                ),
+              ],
+            ),
+            profiles: <SpeakerProfile>[primary],
+            enrollment: false,
+            audioMs: 1000,
+            analysisMs: 10,
+          ),
+        );
+        await _waitUntil(() => service.completedConversations == index + 1);
+        expect(service.pendingCount, 0);
+      }
+      expect(blocked.isCompleted, isFalse);
+      expect(indexed, 3);
+      expect(await store.loadRecords(), hasLength(3));
+      expect(
+        exports,
+        hasLength(1),
+        reason: 'Only one native export may be outstanding.',
+      );
+      blocked.complete();
+      await _waitUntil(() => exports.expand((batch) => batch).length == 3);
+    },
+  );
+
+  test(
     'reset and later enrollment finish while shared backup never replies',
     () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});

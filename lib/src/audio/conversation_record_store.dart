@@ -214,6 +214,32 @@ final class ConversationRecordStore {
     return retained;
   }
 
+  Future<Map<String, int>> loadPendingTextExports() async {
+    final file = File('${_requireRoot().path}/pending-exports.json');
+    if (await file.exists()) {
+      try {
+        final decoded = jsonDecode(await file.readAsString());
+        if (decoded is Map<String, Object?> &&
+            decoded['version'] == 1 &&
+            decoded['paths'] is Map<String, Object?>) {
+          final paths = (decoded['paths']! as Map<String, Object?>)
+              .cast<String, int>();
+          return Map<String, int>.of(paths);
+        }
+      } on Object {
+        // The atomic retained records can reconstruct a missing/corrupt queue.
+      }
+    }
+    return <String, int>{
+      for (final record in await loadRecords()) record.textPath: 0,
+    };
+  }
+
+  Future<void> savePendingTextExports(Map<String, int> paths) => _atomicWrite(
+    File('${_requireRoot().path}/pending-exports.json'),
+    '${jsonEncode(<String, Object>{'version': 1, 'paths': paths})}\n',
+  );
+
   Future<ConversationReconciliationResult> reconcilePrimarySpeaker({
     required SpeakerProfile primary,
     required Map<String, double> equivalentSpeakerScores,

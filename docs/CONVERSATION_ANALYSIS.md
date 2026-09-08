@@ -45,6 +45,17 @@ instances active and run them in parallel. Android memory-pressure handling
 may release the optional worker independently, but the primary path never
 awaits that release.
 
+Conversation completion waits for app-private persistence and the local history
+index, then releases the next analysis job. Shared-folder text exports run on
+their own durable `pending-exports.json` queue, including text rewritten during
+speaker-history reconciliation. At most one export call is outstanding, in
+batches of up to eight files. A stalled provider cannot hold the analysis job
+or prevent later results from appearing in Conversation. Failed exports remain
+queued for retry; app restart restores pending work, and older installations
+recover exports from their retained conversation records. A late export cannot
+acknowledge a newer rewrite of the same text. Returning to the foreground keeps
+the active analysis status instead of replacing it with `ready`.
+
 ## Enrollment and matching
 
 Use **Tools → Conversation analysis → Enable speaker-labeled

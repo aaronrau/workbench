@@ -9,6 +9,7 @@ import 'conversation_analysis_worker.dart';
 import 'conversation_model_store.dart';
 import 'conversation_models.dart';
 import 'conversation_record_store.dart';
+import 'conversation_text_export_queue.dart';
 import 'model_asset_store.dart';
 import 'shared_audio_export_store.dart';
 import 'speech_model.dart';
@@ -66,6 +67,16 @@ final class ConversationAnalysisService {
   final ConversationWorkerLoader? _workerLoader;
   final DateTime Function() _clock;
   final Queue<ConversationPendingJob> _jobs = Queue<ConversationPendingJob>();
+  late final ConversationTextExportQueue
+  _textExports = ConversationTextExportQueue(
+    recordStore: _recordStore,
+    exportStore: _sharedAudioExportStore,
+    onFailure: () => log(
+      'Conversation',
+      '[WorkBench][Conversation] state=export_deferred private_records=retained',
+      isError: true,
+    ),
+  );
 
   ConversationAnalysisWorker? _supervisor;
   List<SpeakerProfile> _profiles = const <SpeakerProfile>[];
@@ -125,6 +136,7 @@ final class ConversationAnalysisService {
     _initialized = true;
     try {
       await _recordStore.initialize();
+      await _textExports.initialize();
       _speakerMatchThreshold = await _preferences.loadSpeakerMatchThreshold();
       var storedProfiles = await _recordStore.loadProfiles();
       bool? recoveredEnabled;
@@ -327,6 +339,7 @@ final class ConversationAnalysisService {
     if (!_initialized || _disposed) {
       return;
     }
+    _textExports.resume();
     if (_profiles.isNotEmpty || await _recordStore.hasProfileBank()) {
       _scheduleSharedRecoveryBackup();
       return;
@@ -603,8 +616,8 @@ final class ConversationAnalysisService {
       }
       if (!result.enrollment) {
         final retained = await _recordStore.retainRecord(result.record);
+        await _textExports.enqueue(<String>[retained.textPath]);
         await _sharedAudioExportStore.indexConversation(retained);
-        await _sharedAudioExportStore.exportFiles(<String>[retained.textPath]);
         completedConversations++;
       }
       final primary = _primaryProfile;
@@ -698,10 +711,10 @@ final class ConversationAnalysisService {
       primary: primary,
       equivalentSpeakerScores: equivalentScores,
     );
+    await _textExports.enqueue(reconciliation.updatedTextPaths);
     await _sharedAudioExportStore.indexConversations(
       reconciliation.recordsToIndex,
     );
-    await _sharedAudioExportStore.exportFiles(reconciliation.updatedTextPaths);
     if (!_isCurrentGeneration(generation)) {
       return;
     }
@@ -903,8 +916,10 @@ final class ConversationAnalysisService {
       await _start();
       return;
     }
-    state = _idleState;
-    onChanged();
+    if (!_jobActive && !_starting && !_resetting && _jobs.isEmpty) {
+      state = _idleState;
+      onChanged();
+    }
   }
 
   String get _idleState =>
@@ -974,6 +989,7 @@ final class ConversationAnalysisService {
     await _memoryPressureRelease;
     await _persistJobs();
     await _profileWrites;
+    await _textExports.dispose();
     await _supervisor?.dispose();
     _supervisor = null;
   }
