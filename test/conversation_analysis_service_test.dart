@@ -15,6 +15,122 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'reset and later enrollment finish while shared backup never replies',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final temporary = await Directory.systemTemp.createTemp(
+        'workbench-enrollment-stalled-backup.',
+      );
+      final store = ConversationRecordStore(
+        supportDirectory: () async => temporary,
+      );
+      await store.initialize();
+      var now = DateTime.utc(2026, 1, 1);
+      final partial = acceptPrimarySpeakerEnrollmentSample(
+        primary: null,
+        candidate: const <double>[1, 0],
+        now: now,
+      );
+      await store.saveProfiles(<SpeakerProfile>[partial]);
+      const channel = MethodChannel('test/workbench_stalled_speaker_backup');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final blocked = Completer<void>();
+      final writes = <ConversationProfileRecovery>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'currentDirectory':
+            return <String, Object>{'displayName': 'Shared'};
+          case 'writeSpeakerSignatureRecovery':
+            writes.add(
+              ConversationProfileRecovery.decode(
+                (call.arguments as Map<Object?, Object?>)['recovery']
+                    as Uint8List,
+              ),
+            );
+            if (writes.length == 2) await blocked.future;
+            return null;
+          default:
+            fail('Unexpected method ${call.method}');
+        }
+      });
+      final shared = SharedAudioExportStore(channel: channel, isAndroid: true);
+      await shared.initialize();
+      final workers = <_FakeConversationWorker>[];
+      final service = ConversationAnalysisService(
+        log: (_, _, {bool isError = false}) {},
+        onChanged: () {},
+        sharedAudioExportStore: shared,
+        recordStore: store,
+        clock: () => now,
+        workerLoader:
+            ({
+              required onResult,
+              required onFailure,
+              required signatureMatchThreshold,
+            }) async {
+              final worker = _FakeConversationWorker(onResult, onFailure);
+              workers.add(worker);
+              return worker;
+            },
+      );
+      addTearDown(() async {
+        if (!blocked.isCompleted) blocked.complete();
+        await service.dispose();
+        shared.dispose();
+        messenger.setMockMethodCallHandler(channel, null);
+        await temporary.delete(recursive: true);
+      });
+      await service.initialize();
+      await _waitUntil(() => writes.length == 1);
+      await service.resetSpeakerIdentification().timeout(
+        const Duration(seconds: 1),
+      );
+      await _waitUntil(() => writes.length == 2);
+      expect(blocked.isCompleted, isFalse);
+      expect(service.isResetting, isFalse);
+      expect(service.state, 'waiting_for_enrollment_speech');
+      expect(await store.loadProfiles(), isEmpty);
+      final wav = File('${temporary.path}/synthetic.wav')
+        ..writeAsBytesSync(<int>[0, 0]);
+      final id = '${now.microsecondsSinceEpoch + 1}-new';
+      service.acceptFinalizedSegment(id, wav.path);
+      await _waitUntil(
+        () => workers.isNotEmpty && workers.last.analyzed.isNotEmpty,
+      );
+      workers.last.complete(id, wav.path, partial, now);
+      await _waitUntil(() => service.state == 'waiting_for_enrollment_speech');
+      expect(service.acceptedEnrollmentSamples, 1);
+      expect(service.pendingCount, 0);
+      await service
+          .setSpeakerMatchThreshold(0.72)
+          .timeout(const Duration(seconds: 1));
+      now = now.add(const Duration(seconds: 10));
+      await service.resetSpeakerIdentification().timeout(
+        const Duration(seconds: 1),
+      );
+      expect(service.acceptedEnrollmentSamples, 0);
+      expect(
+        writes,
+        hasLength(2),
+        reason: 'Only one native backup may remain outstanding.',
+      );
+      blocked.complete();
+      await _waitUntil(() => writes.length == 3);
+      expect(
+        writes.last.profiles,
+        isEmpty,
+        reason: 'Only the latest pending state is mirrored.',
+      );
+      expect(
+        writes.last.speakerMatchThreshold,
+        defaultSpeakerSignatureMatchThreshold,
+      );
+      expect(await wav.exists(), isTrue);
+    },
+  );
+
   for (final failSharedWrite in <bool>[false, true]) {
     test(
       'reset survives restart with ${failSharedWrite ? 'failed' : 'successful'} shared recovery update',

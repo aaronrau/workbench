@@ -68,6 +68,12 @@ independently; saved conversations, other speakers, WAVs, and primary
 transcripts remain intact. An empty app-private profile bank is authoritative
 after reset, even if updating its shared recovery copy fails.
 
+Reset finishes after app-private persistence. Shared speaker recovery is
+mirrored independently, with at most one write in flight and one pending
+snapshot containing the latest state. A slow or unresponsive recovery write
+cannot hold the enrollment prompt on `Resetting` or delay acceptance of the
+next voice sample.
+
 Each local diarization cluster produces a normalized TitaNet embedding:
 
 - short-turn clustering uses a `0.01` cosine-distance cut, with profile

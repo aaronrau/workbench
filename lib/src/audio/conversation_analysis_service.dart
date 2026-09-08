@@ -77,7 +77,9 @@ final class ConversationAnalysisService {
   bool _activeJobEnrollment = false;
   bool _resetting = false;
   int _workerGeneration = 0;
-  Future<void>? _retainingResult;
+  Future<void> _profileWrites = Future<void>.value();
+  ConversationProfileRecovery? _pendingSharedRecovery;
+  bool _sharedRecoveryRunning = false;
   bool _enrollmentRequested = false;
   int? _minimumEnrollmentSegmentMicros;
   Future<void>? _memoryPressureRelease;
@@ -156,7 +158,7 @@ final class ConversationAnalysisService {
       await _reconcilePrimarySpeakerHistoryIfNeeded();
       _jobs.addAll(await _recordStore.loadPendingJobs());
       enabled = recoveredEnabled ?? await _preferences.loadEnabled();
-      await _backupSharedRecovery();
+      _scheduleSharedRecoveryBackup();
       if (!enabled) {
         state = 'disabled';
         onChanged();
@@ -189,7 +191,7 @@ final class ConversationAnalysisService {
     enabled = value;
     error = null;
     await _preferences.saveEnabled(value);
-    await _backupSharedRecovery();
+    _scheduleSharedRecoveryBackup();
     if (!value) {
       _idleWorkerReleaseTimer?.cancel();
       _idleWorkerReleaseTimer = null;
@@ -243,7 +245,7 @@ final class ConversationAnalysisService {
     await _preferences.saveSpeakerMatchThreshold(normalized);
     _speakerMatchThreshold = normalized;
     await _applySpeakerMatchThresholdToPrimary();
-    await _backupSharedRecovery();
+    _scheduleSharedRecoveryBackup();
     log(
       'Conversation',
       '[WorkBench][Conversation] state=threshold_saved '
@@ -281,9 +283,6 @@ final class ConversationAnalysisService {
     error = null;
     onChanged();
     try {
-      // Let an older atomic write finish before persisting the reset. Its
-      // generation is invalid, so it cannot accept another enrollment sample.
-      await _retainingResult;
       await _preferences.saveSpeakerMatchThreshold(
         defaultSpeakerSignatureMatchThreshold,
       );
@@ -329,7 +328,7 @@ final class ConversationAnalysisService {
       return;
     }
     if (_profiles.isNotEmpty || await _recordStore.hasProfileBank()) {
-      await _backupSharedRecovery();
+      _scheduleSharedRecoveryBackup();
       return;
     }
     final recovery = await _readSharedRecovery();
@@ -461,8 +460,7 @@ final class ConversationAnalysisService {
       final supervisor = await (_workerLoader ?? _loadWorker)(
         onResult: (result) {
           if (_isCurrentGeneration(generation)) {
-            _retainingResult = _retainResult(result, generation);
-            unawaited(_retainingResult);
+            unawaited(_retainResult(result, generation));
           }
         },
         onFailure: (segmentId, caught) {
@@ -672,6 +670,7 @@ final class ConversationAnalysisService {
   }
 
   Future<void> _reconcilePrimarySpeakerHistoryIfNeeded() async {
+    final generation = _workerGeneration;
     final primary = _primaryProfile;
     if (primary == null ||
         !primary.calibrationComplete ||
@@ -703,6 +702,9 @@ final class ConversationAnalysisService {
       reconciliation.recordsToIndex,
     );
     await _sharedAudioExportStore.exportFiles(reconciliation.updatedTextPaths);
+    if (!_isCurrentGeneration(generation)) {
+      return;
+    }
 
     final equivalentIds = equivalentProfiles
         .map((profile) => profile.id)
@@ -743,8 +745,17 @@ final class ConversationAnalysisService {
   }
 
   Future<void> _saveProfilesAndBackup() async {
-    await _recordStore.saveProfiles(_profiles);
-    await _backupSharedRecovery();
+    final profiles = _profiles;
+    // Serialize only app-private atomic writes. Reset must follow an older
+    // local write, but never wait for that result's shared-folder consumers.
+    final write = _profileWrites.then(
+      (_) => _recordStore.saveProfiles(profiles),
+    );
+    _profileWrites = write.catchError((Object error) {});
+    await write;
+    if (!_disposed && identical(_profiles, profiles)) {
+      _scheduleSharedRecoveryBackup();
+    }
   }
 
   Future<ConversationProfileRecovery?> _readSharedRecovery() async {
@@ -769,31 +780,54 @@ final class ConversationAnalysisService {
     }
   }
 
-  Future<void> _backupSharedRecovery() async {
-    if (!_sharedAudioExportStore.hasSharedFolder) {
+  void _scheduleSharedRecoveryBackup() {
+    if (_disposed || !_sharedAudioExportStore.hasSharedFolder) {
       return;
     }
+    _pendingSharedRecovery = ConversationProfileRecovery(
+      profiles: List<SpeakerProfile>.unmodifiable(_profiles),
+      enabled: enabled,
+      speakerMatchThreshold: _speakerMatchThreshold,
+    );
+    if (_sharedRecoveryRunning) {
+      return;
+    }
+    _sharedRecoveryRunning = true;
+    unawaited(_drainSharedRecoveryBackups());
+  }
+
+  Future<void> _drainSharedRecoveryBackups() async {
     try {
-      final recovery = ConversationProfileRecovery(
-        profiles: _profiles,
-        enabled: enabled,
-        speakerMatchThreshold: _speakerMatchThreshold,
-      );
-      await _sharedAudioExportStore.writeSpeakerSignatureRecovery(
-        recovery.encode(),
-      );
-      log(
-        'Conversation',
-        '[WorkBench][Conversation] state=signatures_backed_up '
-            'profiles=${_profiles.length}',
-      );
-    } on Object {
-      log(
-        'Conversation',
-        '[WorkBench][Conversation] state=signature_backup_failed '
-            'private_profiles=retained',
-        isError: true,
-      );
+      while (!_disposed && _pendingSharedRecovery != null) {
+        final recovery = _pendingSharedRecovery!;
+        _pendingSharedRecovery = null;
+        try {
+          // Keep one native call outstanding and replace the pending snapshot
+          // with the latest state. A provider that never replies cannot stall
+          // enrollment or create an unbounded native queue through retries.
+          await _sharedAudioExportStore.writeSpeakerSignatureRecovery(
+            recovery.encode(),
+          );
+          if (!_disposed) {
+            log(
+              'Conversation',
+              '[WorkBench][Conversation] state=signatures_backed_up '
+                  'profiles=${recovery.profiles.length}',
+            );
+          }
+        } on Object {
+          if (!_disposed) {
+            log(
+              'Conversation',
+              '[WorkBench][Conversation] state=signature_backup_failed '
+                  'private_profiles=retained',
+              isError: true,
+            );
+          }
+        }
+      }
+    } finally {
+      _sharedRecoveryRunning = false;
     }
   }
 
@@ -934,10 +968,12 @@ final class ConversationAnalysisService {
 
   Future<void> dispose() async {
     _disposed = true;
+    _pendingSharedRecovery = null;
     _idleWorkerReleaseTimer?.cancel();
     _idleWorkerReleaseTimer = null;
     await _memoryPressureRelease;
     await _persistJobs();
+    await _profileWrites;
     await _supervisor?.dispose();
     _supervisor = null;
   }
