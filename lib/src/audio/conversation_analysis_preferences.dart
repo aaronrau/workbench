@@ -13,7 +13,7 @@ final class ConversationAnalysisPreferences {
   Future<bool> loadEnabled() async {
     final preferences = await SharedPreferences.getInstance();
     return preferences.getBool(conversationAnalysisEnabledPreferenceKey) ??
-        false;
+        true;
   }
 
   Future<void> saveEnabled(bool enabled) async {

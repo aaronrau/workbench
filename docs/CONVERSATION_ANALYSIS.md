@@ -1,6 +1,6 @@
 # Independent conversation analysis
 
-Conversation analysis is an optional, disabled-by-default consumer of the
+Conversation analysis is an optional, enabled-by-default consumer of the
 durable speech WAV. It identifies speakers and transcribes their turns without
 participating in the primary transcript, correction, glasses-display, or
 WebSocket route.
@@ -47,9 +47,11 @@ awaits that release.
 
 ## Enrollment and matching
 
-Enable **Tools → Conversation analysis → Enable speaker-labeled
-conversations**. When no primary profile exists, Home asks for three clear
-single-speaker utterances and shows progress after each accepted sample. Each
+Use **Tools → Conversation analysis → Enable speaker-labeled
+conversations** to turn analysis off or back on. It defaults to on when no
+preference is saved; existing saved choices are preserved. When no primary
+profile exists, Home asks for three clear single-speaker utterances and shows
+progress after each accepted sample. Each
 sample is persisted before the next prompt, so enrollment resumes after an app
 restart. Enrollment rejects a segment when diarization detects multiple
 speakers or when a later sample does not match every earlier sample. A rejected

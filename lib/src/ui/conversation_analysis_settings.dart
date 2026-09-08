@@ -79,7 +79,7 @@ final class _ConversationAnalysisSettingsState
                 widget.enabled
                     ? 'State: $stateLabel · ${widget.knownSpeakerCount} saved '
                           'speakers · ${widget.pendingConversationCount} pending'
-                    : 'Disabled by default',
+                    : 'Disabled',
                 style: theme.textTheme.bodySmall,
               ),
               value: widget.enabled,

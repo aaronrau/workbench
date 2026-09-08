@@ -8,12 +8,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test(
-    'conversation analysis is disabled by default and persists opt-in',
+    'conversation analysis defaults on and preserves saved choices',
     () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       const preferences = ConversationAnalysisPreferences();
 
-      expect(await preferences.loadEnabled(), isFalse);
+      expect(await preferences.loadEnabled(), isTrue);
+      await preferences.saveEnabled(false);
+      expect(
+        await const ConversationAnalysisPreferences().loadEnabled(),
+        isFalse,
+      );
       await preferences.saveEnabled(true);
       expect(await preferences.loadEnabled(), isTrue);
       expect(

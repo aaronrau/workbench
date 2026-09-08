@@ -323,7 +323,7 @@ recovery buffer.
 
 ## Optional conversation worker
 
-Speaker diarization is disabled by default and branches only after VAD has
+Speaker diarization is enabled by default and branches only after VAD has
 atomically finalized the ordinary speech WAV. The primary STT starts first;
 then a non-awaited callback gives the optional service the same WAV path. No
 second live LC3/PCM buffer is retained.

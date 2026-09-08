@@ -88,7 +88,7 @@ expose for a true locked Hub mode.
 | Continuous LC3 stream, audio pulse, gestures, and Hub recovery | Implemented |
 | Android foreground operation and iOS background-central support | Implemented within platform limits |
 | Durable LC3 capture, VAD, and selectable local Whisper/Parakeet STT | Implemented on Android |
-| Optional independent speaker diarization and conversation history | Implemented on Android; disabled by default |
+| Optional independent speaker diarization and conversation history | Implemented on Android; enabled by default |
 | Gemma 4 post-STT correction with separate original/corrected files | Implemented on Android; GPU-qualified on the representative RedMagic phone |
 | Local `Hey Memo` iterative voice notes with G2 double-tap finish | Implemented on Android |
 | On-device intent, task context, and approval policy | Planned |
@@ -115,9 +115,10 @@ expose for a true locked Hub mode.
   rotating, integrity-checked SQLite snapshots in that folder can seed the
   private history index after reinstall; the individual WAV/TXT records remain
   authoritative.
-- Offers disabled-by-default speaker diarization under **Tools → Conversation
-  analysis**. The first clear sentence enrolls `You`; new voices receive saved
-  labels. A supervised isolate reuses the finalized VAD WAV and runs its own
+- Offers speaker diarization enabled by default under **Tools → Conversation
+  analysis**, where it can be turned off. Three clear single-speaker sentences
+  enroll `You`; new voices receive saved labels. A supervised isolate reuses
+  the finalized VAD WAV and runs its own
   CPU speaker models and Parakeet 110M recognizer. Home's **Conversation** tab
   is separate from Messages; it reads only speaker turns from an app-private
   SQLite index and displays aligned turns with grayscale speaker markers. This

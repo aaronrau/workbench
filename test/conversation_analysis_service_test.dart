@@ -12,11 +12,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test(
-    'starts its independent models only after a durable WAV is queued',
+    'defaults on but starts independent models only after a durable WAV is queued',
     () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{
-        conversationAnalysisEnabledPreferenceKey: true,
-      });
+      SharedPreferences.setMockInitialValues(<String, Object>{});
       final temporary = await Directory.systemTemp.createTemp(
         'workbench-conversation-on-demand.',
       );
@@ -38,6 +36,7 @@ void main() {
 
       await service.initialize();
 
+      expect(service.enabled, isTrue);
       expect(service.state, 'waiting_for_enrollment_speech');
       expect(service.isStarting, isFalse);
       expect(service.isReady, isFalse);
