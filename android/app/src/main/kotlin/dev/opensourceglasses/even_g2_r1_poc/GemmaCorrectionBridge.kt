@@ -25,6 +25,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     private val nextRequestId = AtomicLong(1)
     private val pendingById = mutableMapOf<Long, MethodChannel.Result>()
     private val waitingForService = mutableListOf<PendingRequest>()
+    private val connectTimeouts = Handler(Looper.getMainLooper())
     private var service: Messenger? = null
     private var binding = false
     private var bound = false
@@ -227,10 +228,36 @@ internal class GemmaCorrectionBridge(private val context: Context) :
             failAll("service_unavailable", "The Gemma service could not start.")
         } else {
             bound = true
+            scheduleConnectTimeout()
         }
     }
 
+    /**
+     * After the Gemma process crashes, Android holds its restart in a backoff
+     * that can last minutes. `bindService` still reports success and simply
+     * never connects, so without this every queued request would wait for the
+     * caller's own timeout and burn a correction attempt on a misleading
+     * `timeout`. Fail fast with a transient code instead; the raw transcript
+     * keeps its own path and the next request rebinds.
+     */
+    private fun scheduleConnectTimeout() {
+        connectTimeouts.removeCallbacksAndMessages(null)
+        connectTimeouts.postDelayed(
+            {
+                if (service == null) {
+                    resetDeadBinding()
+                    failAll(
+                        "service_unavailable",
+                        "The Gemma process did not start in time.",
+                    )
+                }
+            },
+            CONNECT_TIMEOUT_MS,
+        )
+    }
+
     override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+        connectTimeouts.removeCallbacksAndMessages(null)
         binding = false
         bound = true
         service = Messenger(binder)
@@ -277,6 +304,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     }
 
     private fun resetDeadBinding() {
+        connectTimeouts.removeCallbacksAndMessages(null)
         service = null
         binding = false
         if (bound) {
@@ -297,6 +325,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     }
 
     fun dispose() {
+        connectTimeouts.removeCallbacksAndMessages(null)
         if (bound) {
             context.runCatching {
                 unbindService(this@GemmaCorrectionBridge)
@@ -306,5 +335,9 @@ internal class GemmaCorrectionBridge(private val context: Context) :
         binding = false
         bound = false
         failAll("activity_closed", "The app closed before correction completed.")
+    }
+
+    private companion object {
+        const val CONNECT_TIMEOUT_MS = 8_000L
     }
 }

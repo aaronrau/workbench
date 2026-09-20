@@ -51,6 +51,13 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // R8 runs in release builds. proguard-rules.pro keeps the
+            // LiteRT-LM classes its own JNI layer resolves by name; without it
+            // only debug builds can correct a transcript.
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }

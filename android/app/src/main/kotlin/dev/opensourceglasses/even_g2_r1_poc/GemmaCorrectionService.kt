@@ -204,6 +204,37 @@ class GemmaCorrectionService : Service() {
             return
         }
 
+        val userMessage =
+            if (task == TASK_MEMO_REVISION) {
+                "Revise the voice memo using the JSON source below. " +
+                    "Return only the complete updated memo text.\n\n$transcript"
+            } else {
+                "Correct the ASR transcript below. Return only the corrected " +
+                    "transcript text.\n\n<transcript>\n$transcript\n</transcript>"
+            }
+        // LiteRT-LM 0.14.0 does not reject an oversized prompt: it aborts the
+        // process from nativeCreateConversation, which kills this service and
+        // leaves Android backing off its restart. Refuse the request here so a
+        // long prompt stays a recoverable error and the raw transcript keeps
+        // its own path.
+        val estimatedPromptTokens = estimatePromptTokens(instructions, userMessage)
+        if (estimatedPromptTokens > MAX_PROMPT_TOKENS) {
+            Log.e(
+                "WorkBench",
+                "[WorkBench][CorrectionNative] state=rejected model=$modelId " +
+                    "code=prompt_too_long estimated_tokens=$estimatedPromptTokens " +
+                    "budget=$MAX_PROMPT_TOKENS instruction_chars=${instructions.length} " +
+                    "transcript_chars=${transcript.length}",
+            )
+            replyError(
+                replyTo,
+                requestId,
+                "prompt_too_long",
+                "The correction prompt does not fit the model context budget.",
+            )
+            return
+        }
+
         try {
             ensureMemoryAvailable()
             val canonicalModel = validateModelPath(modelPath)
@@ -238,14 +269,6 @@ class GemmaCorrectionService : Service() {
                         TimeUnit.MILLISECONDS,
                     )
                 val inferenceStart = android.os.SystemClock.elapsedRealtime()
-                val userMessage =
-                    if (task == TASK_MEMO_REVISION) {
-                        "Revise the voice memo using the JSON source below. " +
-                            "Return only the complete updated memo text.\n\n$transcript"
-                    } else {
-                        "Correct the ASR transcript below. Return only the corrected " +
-                            "transcript text.\n\n<transcript>\n$transcript\n</transcript>"
-                    }
                 val response = conversation.sendMessage(userMessage)
                 val inferenceMs =
                     android.os.SystemClock.elapsedRealtime() - inferenceStart
@@ -348,6 +371,12 @@ class GemmaCorrectionService : Service() {
                 "[WorkBench][CorrectionNative] state=failed model=$modelId " +
                     "provider=gpu task=$task code=$code error=${oneLine(error)}",
             )
+            // A cancelled or failed conversation can leave the engine holding
+            // partial native state. Reload it for the next segment rather than
+            // carrying that state into another correction.
+            if (error is CorrectionTimeoutException) {
+                releaseEngine("timeout")
+            }
             replyError(replyTo, requestId, code, oneLine(error))
         }
     }
@@ -395,6 +424,11 @@ class GemmaCorrectionService : Service() {
                 "provider=gpu engine_load_ms=$elapsed",
         )
         return elapsed
+    }
+
+    private fun estimatePromptTokens(instructions: String, userMessage: String): Int {
+        val characters = instructions.length + userMessage.length
+        return characters / CHARACTERS_PER_TOKEN + CHAT_TEMPLATE_TOKENS
     }
 
     private fun ensureMemoryAvailable() {
@@ -455,7 +489,18 @@ class GemmaCorrectionService : Service() {
         RuntimeException("Correction deferred because Android reported low memory.")
 
     companion object {
-        private const val MAX_NUM_TOKENS = 2048
+        // The KV budget must hold the system instruction, the user message,
+        // and the generated answer. Raising it past the previous 2,048 keeps a
+        // long editable prompt inside the context instead of overrunning it.
+        private const val MAX_NUM_TOKENS = 4_096
+        private const val RESERVED_RESPONSE_TOKENS = 512
+        private const val CHAT_TEMPLATE_TOKENS = 64
+        // Gemma tokens average well above three characters for prose. Three is
+        // a deliberate floor so a quote-heavy or alias-heavy prompt is still
+        // over-counted rather than under-counted.
+        private const val CHARACTERS_PER_TOKEN = 3
+        private const val MAX_PROMPT_TOKENS =
+            MAX_NUM_TOKENS - RESERVED_RESPONSE_TOKENS
         // The editable base prompt is capped at 10,000 characters. Flutter
         // appends bounded agent names and acoustic aliases per live segment.
         private const val MAX_INSTRUCTION_CHARACTERS = 16_000
