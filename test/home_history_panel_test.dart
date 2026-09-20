@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  _eventRowTests();
   for (final folderUnavailable in [false, true]) {
     testWidgets(
       'shows local messages when shared folder unavailable=$folderUnavailable',
@@ -1110,6 +1111,54 @@ SharedConversationTurn _turn({
   isPrimary: primary,
   isOverlap: false,
 );
+
+void _eventRowTests() {
+  testWidgets('an uncorrected route warning row is visually distinct', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _app(
+        const Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            WorkBenchEventRow(
+              time: '09:41',
+              source: 'Pipeline',
+              message: '[WorkBench][Correction] state=completed',
+            ),
+            WorkBenchEventRow(
+              time: '09:41',
+              source: 'WebSocket',
+              message:
+                  '[WorkBench][VoiceRoute] state=uncorrected_route '
+                  'reason=retry_exhausted transcript=raw',
+              severity: PooledLogSeverity.warning,
+            ),
+          ],
+        ),
+      ),
+    );
+
+    // The tint alone is never the only signal.
+    expect(find.textContaining('WARN'), findsOneWidget);
+    final container = tester.widget<Container>(
+      find.ancestor(
+        of: find.textContaining('uncorrected_route'),
+        matching: find.byType(Container),
+      ),
+    );
+    expect(container.color, workBenchColorScheme.errorContainer);
+    expect(
+      find.ancestor(
+        of: find.textContaining('state=completed'),
+        matching: find.byType(Container),
+      ),
+      findsNothing,
+    );
+  });
+}
 
 Widget _app(Widget child) {
   return MaterialApp(

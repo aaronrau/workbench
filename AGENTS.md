@@ -217,6 +217,18 @@ never block capture, VAD, STT, or access to the original transcript.
 - Run Gemma in its dedicated Android process with one engine, one serial
   worker, and one short-lived conversation per segment. Close the conversation
   on success, error, timeout, and cancellation.
+- Keep `android/app/proguard-rules.pro` keeping `com.google.ai.edge.litertlm.**`
+  in full. LiteRT-LM resolves its own Kotlin classes from its native library by
+  name and its AAR ships no consumer rules, so R8 otherwise renames or removes
+  them and the native layer aborts the `:gemma` process from
+  `nativeCreateConversation`. Correction then fails in release builds while
+  debug builds keep working, so validate correction on a release build, not
+  only on the debug APK that the install helper builds by default.
+- Refuse a correction request whose estimated prompt exceeds the engine's
+  context budget. LiteRT-LM 0.14.0 aborts its process on an overrun instead of
+  reporting one, so the budget is enforced in Dart and again in the service.
+  `MAX_NUM_TOKENS` and the mirrored Dart constants must stay in step, and
+  changing them requires repeating the accelerator qualification gate.
 - Before accepting continuous operation, run at least 15 minutes while sampling
   both app processes once per minute. Require bounded post-warm-up memory, no
   lost raw files, no capture gaps, an eventually empty correction queue, and
@@ -293,6 +305,13 @@ STT, correction, file export, or access to the original transcript.
 - When Gemma correction is enabled, route only the corrected live transcript
   and supply the validated saved agent names as correction vocabulary. Keep the
   raw transcript independently durable and visible before correction.
+- A correction outage must never swallow a spoken command. While correction is
+  pending, route nothing. Once correction is terminally unavailable for that
+  segment — disabled, missing model, refused prompt, exhausted retries, or a
+  Gemma process that stays unreachable past the transient outage bound — route
+  the durable raw transcript instead, and record the reason as a warning event.
+  Speech that was never a correction candidate, such as audio without a leading
+  wake word, still never reaches an agent.
 - Never route a transcription or correction job restored after app or process
   restart. A restored job may finish its local files, but only a transcript
   captured and corrected live in the current process may send a command.

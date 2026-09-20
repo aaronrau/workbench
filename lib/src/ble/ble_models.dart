@@ -132,16 +132,31 @@ bool isR1(DiscoveredDevice device) {
   return name.contains('EVEN R1') || name.contains('BCL60');
 }
 
+/// How prominently an event row is rendered in the Events tab.
+enum PooledLogSeverity { info, warning, error }
+
 final class PooledLog {
   const PooledLog({
     required this.timestamp,
     required this.source,
     required this.message,
     this.isError = false,
+    this.isWarning = false,
   });
 
   final DateTime timestamp;
   final String source;
   final String message;
   final bool isError;
+
+  /// A degraded-but-continuing condition, such as a command routed without
+  /// Gemma correction. It stays readable next to normal events but must be
+  /// visually distinct from them.
+  final bool isWarning;
+
+  PooledLogSeverity get severity => isError
+      ? PooledLogSeverity.error
+      : isWarning
+      ? PooledLogSeverity.warning
+      : PooledLogSeverity.info;
 }
