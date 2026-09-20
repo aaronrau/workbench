@@ -61,7 +61,7 @@ G2 operating system still owns the global Menu and other system surfaces.
 | --- | --- |
 | Stay in Daily/Hub mode | Yes; `MODE_DAILY` is reasserted after connection |
 | Start and maintain microphone streaming | Yes; starts automatically and restarts after recovery |
-| Keep tap and double-tap from stopping audio | Yes; tap commits a queued display item or opens history, and double-tap requests the last sent agent's update |
+| Keep tap and double-tap from stopping audio | Yes; tap commits a queued display item, opens history, or checks in on the selected agent, and double-tap requests the last sent agent's update |
 | Show tap and swipe; use double-tap for an agent update | Yes |
 | Show long press | Inferred from R1 activity and Hub lifecycle evidence |
 | Receive real long-press down/up in Hub | No; available only in Terminal mode |
@@ -206,7 +206,13 @@ server become routing buttons in the Messages tab.
   Agent detail pages rebuild the same durable newest-message-first sent and
   received list as the phone agent tab, shown as `[HH:mm] Message`. Saving the
   socket configuration does not clear this history, and startup reindexes its
-  durable message files if the performance index is missing. Agent details
+  durable message files if the performance index is missing. Selecting an agent
+  also checks in on it: one bounded `summary.request` is sent without being
+  awaited, the agent's name carries ` · Checking in` in both its selector row
+  and its detail title while the request is outstanding, and the returned
+  summary clears that annotation as it appears as an ordinary `[HH:mm]` row.
+  An unavailable endpoint shows ` · Unavailable` and thirty unanswered seconds
+  show ` · No update`, each briefly. Agent details
   open with `   [Flux] - Swipe to Navigate` and
   ` >  • Listen Mode - Tap to start`; opening the agent
   does not target audio. A second tap changes the Listen arrow from `>` to `<`

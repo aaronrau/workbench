@@ -56,6 +56,9 @@ final class G2AgentHistoryState {
 
   G2AgentHistoryMode mode = G2AgentHistoryMode.closed;
   List<G2AgentHistoryEntry> entries = const <G2AgentHistoryEntry>[];
+  // Lowercase agent name to its check-in annotation. The controller owns the
+  // bounded request timers and republishes this map as they resolve.
+  Map<String, String> checkInAnnotations = const <String, String>{};
   int selectedIndex = 0;
   int _selectorWindowStart = 1;
   String? waitingExchangeId;
@@ -94,6 +97,7 @@ final class G2AgentHistoryState {
 
   G2AgentHistoryEntry? get selected =>
       entries.isEmpty ? null : entries[selectedIndex];
+
   bool get isAgentDetailSpeechTarget =>
       detailListenModeSelected &&
       detailTitleIsAgent &&
@@ -469,6 +473,37 @@ final class G2AgentHistoryState {
     return true;
   }
 
+  /// Replaces one selector row's preview with newly received text.
+  ///
+  /// Row order stays frozen so a message arriving while the wearer is reading
+  /// the selector cannot move an entry out from under the cursor.
+  bool updateSelectorPreview(String agent, String message) {
+    final normalized = agent.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    final index = entries.indexWhere(
+      (entry) =>
+          entry.kind == G2AgentHistoryEntryKind.agent &&
+          entry.label.toLowerCase() == normalized,
+    );
+    if (index < 0) {
+      return false;
+    }
+    final entry = entries[index];
+    final content = _stripSpeakerPrefix(message, entry.label);
+    final updated = entries.toList(growable: false);
+    updated[index] = G2AgentHistoryEntry(
+      kind: entry.kind,
+      label: entry.label,
+      preview: content.isEmpty ? 'No messages' : _oneLine(content),
+      exchange: entry.exchange,
+      detail: entry.detail,
+    );
+    entries = List<G2AgentHistoryEntry>.unmodifiable(updated);
+    return true;
+  }
+
   bool exitDetailListenMode({bool preserveActiveSpeech = false}) {
     if (!isAgentDetail || !detailListenModeSelected) {
       return false;
@@ -693,6 +728,15 @@ final class G2AgentHistoryState {
     return _selectorEntryContentLines(entries[index]).length;
   }
 
+  /// Annotation the controller published for [agent], or an empty string.
+  String _checkInAnnotation(String? agent) {
+    final normalized = agent?.trim().toLowerCase();
+    if (normalized == null || normalized.isEmpty) {
+      return '';
+    }
+    return checkInAnnotations[normalized] ?? '';
+  }
+
   List<String> _renderSelectorEntry(int index) {
     final entry = entries[index];
     final lines = _selectorEntryContentLines(entry);
@@ -706,7 +750,7 @@ final class G2AgentHistoryState {
   List<String> _selectorEntryContentLines(G2AgentHistoryEntry entry) {
     final normalizedLabel = _oneLine(entry.label);
     final label = entry.kind == G2AgentHistoryEntryKind.agent
-        ? '[$normalizedLabel]'
+        ? '[$normalizedLabel${_checkInAnnotation(entry.label)}]'
         : normalizedLabel;
     final preview = _oneLine(entry.preview);
     final content = entry.kind == G2AgentHistoryEntryKind.agent
@@ -750,7 +794,7 @@ final class G2AgentHistoryState {
         : '   [';
     final titleSuffix = cancel
         ? ' · Waiting] - Tap to cancel'
-        : '] - Swipe to Navigate';
+        : '${_checkInAnnotation(detailTitle)}] - Swipe to Navigate';
     final titleWidth =
         _layout.wrappingWidthPixels -
         _layout.textWidth(titlePrefix) -

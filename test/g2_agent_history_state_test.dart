@@ -1538,4 +1538,218 @@ void main() {
       isNot(contains(RegExp(r'\b\d+(?:sec|min|hr|day|mon)\b'))),
     );
   });
+
+  test('annotates the selected agent while a check-in is outstanding', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike', 'Agent Two'],
+        exchanges: const <AgentExchangeView>[],
+        messages: <AgentMessageView>[
+          AgentMessageView(
+            id: 'pike-sent',
+            agent: 'Pike',
+            direction: AgentMessageDirection.sent,
+            message: 'validate the isolated device fixture',
+            updatedAt: sentAt,
+          ),
+        ],
+      );
+
+    state.checkInAnnotations = const <String, String>{'pike': ' · Checking in'};
+
+    final selector = state.render();
+    expect(selector, contains('[Pike · Checking in] validate'));
+    expect(selector, contains('[Agent Two] No messages'));
+    expect(selector.split('\n'), hasLength(4));
+
+    state
+      ..selectNext()
+      ..showAgentMessages(<AgentMessageView>[
+        AgentMessageView(
+          id: 'pike-sent',
+          agent: 'Pike',
+          direction: AgentMessageDirection.sent,
+          message: 'validate the isolated device fixture',
+          updatedAt: sentAt,
+        ),
+      ]);
+
+    expect(
+      state.render(),
+      startsWith('   [Pike · Checking in] - Swipe to Navigate\n'),
+    );
+    expect(state.render(), contains(' >  • Listen Mode - Tap to start'));
+    expect(
+      state.render(),
+      contains('${stamp(sentAt)} validate the isolated device fixture'),
+    );
+  });
+
+  test('restores the plain agent name when the check-in retires', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showAgentMessages(const <AgentMessageView>[]);
+
+    state.checkInAnnotations = const <String, String>{'pike': ' · No update'};
+    expect(state.render(), startsWith('   [Pike · No update] - Swipe'));
+
+    state.checkInAnnotations = const <String, String>{};
+    expect(state.render(), startsWith('   [Pike] - Swipe to Navigate\n'));
+  });
+
+  test('keeps the waiting title independent of a check-in annotation', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext();
+    state.checkInAnnotations = const <String, String>{'pike': ' · Checking in'};
+    state.showWaiting(
+      AgentExchangeView(
+        id: 'pike-exchange',
+        agent: 'Pike',
+        message: 'validate the isolated device fixture',
+        sentAt: sentAt,
+        legacy: false,
+      ),
+    );
+
+    expect(state.render(), startsWith('< [Pike · Waiting] - Tap to cancel'));
+    expect(state.render(), isNot(contains('Checking in')));
+  });
+
+  test('keeps an annotated selector row inside its measured bounds', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>[
+          'Agent One',
+          'Agent Two',
+          'Agent Three',
+          'Agent Four',
+          'Agent Five',
+          'Agent Six',
+        ],
+        exchanges: const <AgentExchangeView>[],
+        messages: <AgentMessageView>[
+          for (final agent in const <String>[
+            'Agent One',
+            'Agent Two',
+            'Agent Three',
+            'Agent Four',
+            'Agent Five',
+            'Agent Six',
+          ])
+            AgentMessageView(
+              id: '$agent-received',
+              agent: agent,
+              direction: AgentMessageDirection.received,
+              message:
+                  'a deliberately long synthetic status update that overflows '
+                  'the measured selector row and forces a continuation line',
+              updatedAt: sentAt,
+            ),
+        ],
+        memo: 'Remember the synthetic validation result.',
+      );
+    state.checkInAnnotations = <String, String>{
+      for (final agent in const <String>[
+        'agent one',
+        'agent two',
+        'agent three',
+        'agent four',
+        'agent five',
+        'agent six',
+      ])
+        agent: ' · Checking in',
+    };
+
+    final rows = state.render().split('\n');
+    expect(
+      rows.length,
+      lessThanOrEqualTo(G2AgentHistoryState.selectorMaximumRenderedRows),
+    );
+    expect(utf8.encode(state.render()).length, lessThanOrEqualTo(2000));
+    expect(rows.first, ' >  [x] - Swipe to Select');
+    expect(rows[1], startsWith('     [Agent One · Checking in]'));
+    // An annotated row still ellipsizes instead of claiming a third line.
+    expect(state.render(), contains('…'));
+  });
+
+  test('keeps cursor gutters aligned when a row is annotated', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike', 'Agent Two'],
+        exchanges: const <AgentExchangeView>[],
+      );
+    state.checkInAnnotations = const <String, String>{
+      'agent two': ' · Checking in',
+    };
+
+    final unselected = state.render().split('\n')[2];
+    state
+      ..selectNext()
+      ..selectNext();
+    final selected = state.render().split('\n')[2];
+
+    expect(unselected, '     [Agent Two · Checking in] No messages');
+    expect(selected, ' >  [Agent Two · Checking in] No messages');
+    expect(
+      G2TextLayout.history.textWidth(unselected),
+      G2TextLayout.history.textWidth(selected),
+    );
+  });
+
+  test('updates one selector preview without reordering rows', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike', 'Agent Two'],
+        exchanges: const <AgentExchangeView>[],
+        messages: <AgentMessageView>[
+          AgentMessageView(
+            id: 'pike-sent',
+            agent: 'Pike',
+            direction: AgentMessageDirection.sent,
+            message: 'validate the isolated device fixture',
+            updatedAt: sentAt,
+          ),
+        ],
+      );
+    final order = state.entries.map((entry) => entry.label).toList();
+
+    expect(
+      state.updateSelectorPreview('pike', 'Pike: synthetic summary signal'),
+      isTrue,
+    );
+
+    expect(state.entries.map((entry) => entry.label), order);
+    expect(state.render(), contains('[Pike] synthetic summary signal'));
+    expect(state.render(), isNot(contains('validate the isolated device')));
+    expect(state.updateSelectorPreview('Unknown Agent', 'ignored'), isFalse);
+    expect(state.updateSelectorPreview('   ', 'ignored'), isFalse);
+  });
+
+  test('falls back to the empty preview when a summary carries no text', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: const <AgentExchangeView>[],
+        messages: <AgentMessageView>[
+          AgentMessageView(
+            id: 'pike-sent',
+            agent: 'Pike',
+            direction: AgentMessageDirection.sent,
+            message: 'validate the isolated device fixture',
+            updatedAt: sentAt,
+          ),
+        ],
+      );
+
+    expect(state.updateSelectorPreview('Pike', 'Pike:'), isTrue);
+    expect(state.render(), contains('[Pike] No messages'));
+  });
 }

@@ -7,8 +7,8 @@ Status: implemented.
 An ordinary G2/R1 tap opens a compact, private history selector on the glasses.
 The selector gives quick access to the retained acknowledged messages for each
 configured agent and to the latest saved Memo. Swipes move the selection, tap
-opens the selected conversation history, and a final tap dismisses the
-interaction.
+opens the selected conversation history and checks in on that agent, and a
+final tap dismisses the interaction.
 
 This flow extends, rather than replaces, the existing behavior:
 
@@ -249,8 +249,9 @@ message.
 | Swipe to the last visible entry | Scroll the minimum whole blocks needed to reveal its next entry |
 | Tap on `[x]` | Clear the selector and restore the audio visualizer |
 | Tap on Memo | Show the most recent saved Memo, or the empty state |
-| Tap on an agent with a command | Show its bounded recent G2 history; keep the complete history on the phone |
-| Tap on an agent without a command | Show `No conversation yet`; do not send |
+| Tap on an agent with a command | Show its bounded recent G2 history and send one summary request; keep the complete history on the phone |
+| Tap on an agent without a command | Show `No conversation yet` and send one summary request; never send a command |
+| Tap on an agent already checking in | Reopen its history without sending a second request |
 | Double tap | Consume without a second request so selector state stays deterministic |
 
 ### Detail page
@@ -283,7 +284,10 @@ normal
                ├─ swipe ─► selector(other row selected)
                ├─ tap [x] ─► normal
                ├─ tap Memo/empty ─► detail
-               └─ tap agent ─► retained-message detail
+               └─ tap agent ─► retained-message detail + check-in
+                                   ├─ summary.result ─► new message row
+                                   ├─ 30 s elapsed ─► `· No update`
+                                   └─ unavailable ─► `· Unavailable`
 
 detail
   ├─ Memo swipe up/down ─► previous/next bounded detail page
@@ -322,8 +326,9 @@ the answer to newer work.
 
 ## Summary request behavior
 
-Agent-history selection is read-only. The separate double-tap progress shortcut
-can still send a summary request for the last acknowledged agent:
+Selecting an agent checks in on it. Opening an agent's detail sends one summary
+request for that agent, and the separate double-tap progress shortcut still
+sends the same request for the last acknowledged agent:
 
 ```json
 {
@@ -338,9 +343,59 @@ enter or reorder the normal command FIFO. Capture, VAD, STT, correction, raw
 files, corrected files, and access to the original transcript remain
 unaffected.
 
-Each connect and send attempt is bounded. Selecting an agent never waits for a
-connection, acknowledgement, or new agent response; it reads only the durable
-exchange ledger and its direct message-file paths.
+Each connect and send attempt is bounded, and the request is issued without
+awaiting it. Rendering the selected agent never waits for a connection,
+acknowledgement, or new agent response; the page is built from the durable
+exchange ledger and its direct message-file paths exactly as before, and a
+check-in that cannot be sent leaves that page intact.
+
+### Check-in annotation
+
+While a request is outstanding the agent's name carries ` · Checking in`
+wherever it is rendered — in its own detail title and in its selector row, so
+swiping back to the menu still shows the pending state:
+
+```text
+   [Agent One · Checking in] - Swipe to Navigate
+ >  • Listen Mode - Tap to start
+[14:31] <most recent command>
+[09:08] <previous command>
+```
+
+```text
+ >  [x] - Swipe to Select
+     [Agent One · Checking in] latest received update
+     [Agent Two] No messages
+     Memo - latest saved memo
+```
+
+The retained history stays readable underneath the whole time. This is not the
+`waiting` detail mode, which replaces the body with `Waiting for response…` and
+retitles the page `Tap to cancel`.
+
+The annotation retires in one of three ways:
+
+| Outcome | Result |
+| --- | --- |
+| A `summary.result` correlated to that request | Annotation clears and the summary appears as an ordinary `[HH:mm] Message` row |
+| An unavailable endpoint, a closed socket, or an unconfigured agent | ` · Unavailable` for two seconds, then clears |
+| No correlated response within thirty seconds | ` · No update` for two seconds, then clears |
+
+A correlated summary follows the ordinary inbound path: it is saved atomically,
+exported, indexed, and rendered in the same newest-first format as every other
+message. An open detail rebuilds page 1; an open selector updates only that
+agent's row preview and never reorders rows, so an arriving message cannot move
+an entry out from under the cursor.
+
+Only one check-in per agent may be outstanding. Reselecting an agent that is
+already checking in reopens its detail without sending a second request.
+Different agents may check in concurrently. A configuration change and app
+disposal cancel every pending check-in and its bounded timer; an ordinary
+dismissal does not, so reopening the menu still shows a pending annotation.
+
+The response correlates by `request_id`. A server that omits the agent name on
+its `summary.result` is still indexed under the agent whose check-in requested
+it, so the summary cannot be saved without appearing in that agent's history.
 
 ## Memo behavior
 
@@ -514,10 +569,19 @@ gesture-controlled ownership.
   two spaces after `>`, so cursor movement never shifts row content;
 - selector and detail rendering share the same calibrated width and row-layout
   utility;
+- a check-in annotation renders inside the brackets in both the selector row
+  and the detail title, leaves other agents unannotated, never reaches the
+  `· Waiting` title, and clears completely when the check-in retires;
+- an annotated selector row still fits two measured lines, keeps the complete
+  frame at or below eight rows and 2,000 UTF-8 bytes, and leaves the selected
+  and empty pointer gutters at equal measured width;
+- a selector preview update replaces one row's text without reordering entries
+  and ignores an unknown or blank agent name;
 - every agent detail exposes the exact two control rows plus seven content rows;
   Memo details expose eight content rows, and both repeat the prior page's final
   row first after a forward swipe;
-- empty Memo and agent options never send;
+- empty Memo and agent options never send a command; an empty agent option
+  still checks in and renders its annotation above the empty state;
 - tapping an agent loads indexed durable history, enters detail, and exposes at
   most eight newest-first G2 pages without changing the complete phone history;
 - sent messages and received updates render as
@@ -567,6 +631,15 @@ gesture-controlled ownership.
 ### Protocol and persistence tests
 
 - only a positive acknowledgement updates the latest agent command;
+- selecting an agent sends exactly one `summary.request` carrying the canonical
+  configured name, including for an agent that has never been sent a command,
+  and never emits a `message.send`;
+- a second selection while a check-in is outstanding sends nothing, while a
+  different agent may check in concurrently;
+- an unconfigured agent is refused without a socket write;
+- a `summary.result` that omits the agent name is indexed under the agent whose
+  check-in carried that request ID;
+- a configuration change clears every pending check-in and its bounded timer;
 - busy retry preserves the final accepted request ID;
 - selected-agent busy responses remain queued for bounded retry; rejection,
   timeout, and connection loss retain the message locally when delivery cannot
@@ -620,8 +693,14 @@ representative phone:
    and the right-edge indicator moves through all eight detail pages with the
    prior final row repeated first after each forward swipe, then tap to dismiss;
 6. select an agent without a response and verify its timestamped sent message
-   remains visible without any outbound request;
+   remains visible beneath a ` · Checking in` title, with no command sent;
 7. verify unrelated inbound events do not replace the open history page;
+7a. reselect an agent while its check-in is outstanding and confirm the fixture
+   receives no second `summary.request`; swipe back to the selector and confirm
+   its row also reads ` · Checking in` and updates in place when the summary
+   lands; stop the fixture and confirm ` · Unavailable` appears briefly and
+   clears while the detail stays readable; point at a fixture that swallows
+   `summary.request` and confirm ` · No update` after thirty seconds;
 8. start an agent Listen Mode session, confirm there is no Preview Correction
    row, speak two phrases separated by a VAD endpoint, and verify the title
    advances through transcribing/queued/correcting/ready while retaining
@@ -742,9 +821,10 @@ Correction because the harness cannot actuate the wearable controls.
   the complete durable message list immediately. Other-agent responses do not
   interrupt the selected detail.
 - Selecting an agent shows the same newest-message-first retained list as the
-  phone agent tab without issuing a network request. Every indexed sent and
-  received message appears as `[HH:mm] Message` without an agent or direction
-  label, including history recovered from durable files after an index loss.
+  phone agent tab, built entirely from durable storage and never waiting on the
+  one summary request it also issues. Every indexed sent and received message
+  appears as `[HH:mm] Message` without an agent or direction label, including
+  history recovered from durable files after an index loss.
 - Every multi-page Memo or agent detail shows a right-edge page-position
   indicator that remains visible and tracks bounded swipe paging; one-page
   details do not allocate an image container. All agent pages contain seven
@@ -753,6 +833,14 @@ Correction because the harness cannot actuate the wearable controls.
   All repeat the prior page's final body row after a forward swipe.
 - A missing response leaves the timestamped sent message visible; unrelated
   events do not become correlated responses.
+- Selecting an agent annotates its name ` · Checking in` in both the selector
+  row and the detail title while its summary request is outstanding, and leaves
+  the retained history readable underneath. The annotation clears when the
+  correlated summary arrives as an ordinary `[HH:mm]` row, or resolves to
+  ` · Unavailable` or ` · No update` for two seconds when the request cannot be
+  sent or goes unanswered for thirty seconds. Only one check-in per agent is
+  outstanding at a time, and a configuration change or disposal clears every
+  pending check-in and timer.
 - Tap on Send during `Listening` exits Listen Mode, flushes current audio, and
   waits for all snapshotted session chunks to finish STT. It sends the current
   automatically corrected aggregate without invoking correction again; a
