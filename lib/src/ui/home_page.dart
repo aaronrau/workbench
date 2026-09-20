@@ -988,6 +988,41 @@ final class _HomePageState extends State<HomePage> {
               states: <VoiceWebSocketEndpointState>[],
             ),
             const SizedBox(height: 16),
+            Text('Event severity', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            const IgnorePointer(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  WorkBenchEventRow(
+                    time: '09:41',
+                    source: 'Pipeline',
+                    message: '[WorkBench][Correction] state=completed',
+                  ),
+                  WorkBenchEventRow(
+                    time: '09:41',
+                    source: 'WebSocket',
+                    message:
+                        '[WorkBench][VoiceRoute] state=uncorrected_route '
+                        'reason=retry_exhausted transcript=raw',
+                    severity: PooledLogSeverity.warning,
+                  ),
+                  WorkBenchEventRow(
+                    time: '09:41',
+                    source: 'Pipeline',
+                    message: '[WorkBench][Correction] state=failed',
+                    severity: PooledLogSeverity.error,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'A warning fills its row and is labelled WARN. Use it when work '
+              'continues in a degraded mode; keep errors text-only.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
             Text('Peer views', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
             DefaultTabController(

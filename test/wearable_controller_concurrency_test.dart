@@ -469,7 +469,7 @@ void main() {
     );
   });
 
-  test('only a Gemma-corrected final transcript can route', () {
+  test('a Gemma-corrected final transcript can route', () {
     expect(
       finalTranscriptCanRoute(
         const FinalTranscriptDelivery(
@@ -477,10 +477,14 @@ void main() {
           rawTranscript: 'pull the ladies changes',
           transcript: 'Pull the latest changes.',
           isCorrected: true,
+          correctionOutcome: TranscriptCorrectionOutcome.corrected,
         ),
       ),
       isTrue,
     );
+  });
+
+  test('speech that was never a correction candidate cannot route', () {
     expect(
       finalTranscriptCanRoute(
         const FinalTranscriptDelivery(
@@ -488,10 +492,37 @@ void main() {
           rawTranscript: 'pull the ladies changes',
           transcript: 'pull the ladies changes',
           isCorrected: false,
+          correctionOutcome: TranscriptCorrectionOutcome.ineligible,
+          correctionFailureReason: 'no_wake_word',
         ),
       ),
       isFalse,
     );
+  });
+
+  test('a correction outage still routes the durable raw transcript', () {
+    for (final reason in <String>[
+      'retry_exhausted',
+      'service_unavailable',
+      'model_missing',
+      'correction_disabled',
+      'prompt_too_long',
+    ]) {
+      expect(
+        finalTranscriptCanRoute(
+          FinalTranscriptDelivery(
+            segmentId: 'segment-1',
+            rawTranscript: 'hey pike pull the latest changes',
+            transcript: 'hey pike pull the latest changes',
+            isCorrected: false,
+            correctionOutcome: correctionOutcomeForSkipReason(reason),
+            correctionFailureReason: reason,
+          ),
+        ),
+        isTrue,
+        reason: 'a $reason outage must not swallow a spoken command',
+      );
+    }
   });
 
   test('selected-agent delivery uses the retrying outbound queue', () {

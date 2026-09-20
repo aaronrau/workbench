@@ -13,6 +13,57 @@ import 'workbench_theme.dart';
 
 enum HomeHistoryTab { events, messages, conversations }
 
+/// One monospace Events row.
+///
+/// Errors stay text-only. A warning also fills its row so a degraded state,
+/// such as a command routed without Gemma correction, is visible while
+/// scanning, and carries a `WARN` label so the tint is never the only signal.
+final class WorkBenchEventRow extends StatelessWidget {
+  const WorkBenchEventRow({
+    required this.time,
+    required this.source,
+    required this.message,
+    this.severity = PooledLogSeverity.info,
+    super.key,
+  });
+
+  static const double rowHeight = 28;
+
+  final String time;
+  final String source;
+  final String message;
+  final PooledLogSeverity severity;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isWarning = severity == PooledLogSeverity.warning;
+    final text = Text(
+      '$time  $source  ${isWarning ? 'WARN ' : ''}$message',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: switch (severity) {
+          PooledLogSeverity.error => theme.colorScheme.error,
+          PooledLogSeverity.warning => theme.colorScheme.onErrorContainer,
+          PooledLogSeverity.info => null,
+        },
+        fontFamily: 'monospace',
+      ),
+    );
+    if (!isWarning) {
+      return Align(alignment: Alignment.centerLeft, child: text);
+    }
+    return Container(
+      height: rowHeight,
+      alignment: Alignment.centerLeft,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      color: theme.colorScheme.errorContainer,
+      child: text,
+    );
+  }
+}
+
 typedef DirectAgentMessageSender =
     Future<bool> Function({
       required String endpointId,
@@ -333,23 +384,17 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     return ListView.builder(
       key: const ValueKey<String>('events-list'),
       itemCount: events.length,
-      itemExtent: 28,
+      itemExtent: WorkBenchEventRow.rowHeight,
       itemBuilder: (context, index) {
         final entry = events[index];
         final time =
             '${entry.timestamp.hour.toString().padLeft(2, '0')}:'
             '${entry.timestamp.minute.toString().padLeft(2, '0')}';
-        return Align(
-          alignment: Alignment.centerLeft,
-          child: Text(
-            '$time  ${entry.source}  ${_singleLine(entry.message)}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: entry.isError ? Theme.of(context).colorScheme.error : null,
-              fontFamily: 'monospace',
-            ),
-          ),
+        return WorkBenchEventRow(
+          time: time,
+          source: entry.source,
+          message: _singleLine(entry.message),
+          severity: entry.severity,
         );
       },
     );

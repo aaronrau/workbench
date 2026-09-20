@@ -379,9 +379,18 @@ Future<void> completeAgentRouteConsumers({
   await Future.wait(operations);
 }
 
+/// Gemma correction is an optional consumer of the durable transcript, so a
+/// correction outage must not silently swallow a spoken command. A corrected
+/// transcript always routes; an uncorrected one routes only when correction was
+/// eligible and is permanently unavailable for this segment. Speech that was
+/// never a correction candidate still stays out of the agent bridge.
 @visibleForTesting
 bool finalTranscriptCanRoute(FinalTranscriptDelivery delivery) =>
-    delivery.isCorrected;
+    switch (delivery.correctionOutcome) {
+      TranscriptCorrectionOutcome.corrected => true,
+      TranscriptCorrectionOutcome.unavailable => true,
+      TranscriptCorrectionOutcome.ineligible => false,
+    };
 
 @visibleForTesting
 VoiceWebSocketDeliveryMode deliveryModeForAgentRoute({
@@ -1569,8 +1578,18 @@ final class WearableController extends ChangeNotifier
     }
   }
 
-  void addLog(String source, String message, {bool isError = false}) {
-    debugPrint('[Even G2/R1][$source]${isError ? '[ERROR]' : ''} $message');
+  void addLog(
+    String source,
+    String message, {
+    bool isError = false,
+    bool isWarning = false,
+  }) {
+    final level = isError
+        ? '[ERROR]'
+        : isWarning
+        ? '[WARN]'
+        : '';
+    debugPrint('[Even G2/R1][$source]$level $message');
     // Audio is a continuous stream, not an event history. Keep only its
     // latest summary so it cannot bury connection and gesture events.
     if (source == 'Audio') {
@@ -1585,6 +1604,7 @@ final class WearableController extends ChangeNotifier
             ? message
             : '${message.substring(0, _maximumLogMessageCharacters)}…',
         isError: isError,
+        isWarning: isWarning,
       ),
     );
     if (logs.length > _maximumLogEntries) {
@@ -2641,9 +2661,18 @@ final class WearableController extends ChangeNotifier
       addLog(
         'WebSocket',
         '[WorkBench][VoiceWebSocket] state=saved routed=false '
-            'reason=correction_not_completed',
+            'reason=${delivery.correctionFailureReason ?? 'correction_not_completed'}',
       );
       return;
+    }
+    if (!delivery.isCorrected) {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceRoute] state=uncorrected_route '
+            'reason=${delivery.correctionFailureReason ?? 'correction_unavailable'} '
+            'transcript=raw',
+        isWarning: true,
+      );
     }
     final correctedRoute = selectedRoute == null
         ? _voiceWebSocket.routeForTranscript(transcript)

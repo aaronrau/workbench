@@ -60,18 +60,51 @@ void dispatchFinalizedSpeechConsumers({
   );
 }
 
+/// Why a final transcript arrived without Gemma correction.
+///
+/// Correction is an optional consumer of the durable transcript. A transcript
+/// that was eligible for correction but could never receive it must still be
+/// able to reach its agent, so the delivery carries the distinction instead of
+/// a bare `isCorrected` flag.
+enum TranscriptCorrectionOutcome {
+  /// Gemma returned a validated correction.
+  corrected,
+
+  /// Correction was eligible but is permanently unavailable for this segment:
+  /// disabled, missing model, dead service, or exhausted retries.
+  unavailable,
+
+  /// The transcript was never a correction candidate, such as speech without
+  /// a leading wake word. It must not reach an agent.
+  ineligible,
+}
+
+/// Maps a supervisor skip reason onto the routing outcome it implies.
+TranscriptCorrectionOutcome correctionOutcomeForSkipReason(String reason) =>
+    switch (reason) {
+      'no_wake_word' || 'empty_transcript' =>
+        TranscriptCorrectionOutcome.ineligible,
+      _ => TranscriptCorrectionOutcome.unavailable,
+    };
+
 final class FinalTranscriptDelivery {
   const FinalTranscriptDelivery({
     required this.segmentId,
     required this.rawTranscript,
     required this.transcript,
     required this.isCorrected,
+    this.correctionOutcome = TranscriptCorrectionOutcome.ineligible,
+    this.correctionFailureReason,
   });
 
   final String segmentId;
   final String rawTranscript;
   final String transcript;
   final bool isCorrected;
+  final TranscriptCorrectionOutcome correctionOutcome;
+
+  /// The supervisor reason behind an uncorrected delivery, for logging only.
+  final String? correctionFailureReason;
 }
 
 final class TranscriptCorrectionPreviewResult {
@@ -828,16 +861,19 @@ final class AudioPipelineCoordinator {
         );
       }
     } else {
+      final reason = correctionEligible
+          ? 'correction_unavailable'
+          : 'no_wake_word';
       await TranscriptCorrectionSupervisor.persistSkipped(
         correctionJob,
-        reason: correctionEligible ? 'correction_unavailable' : 'no_wake_word',
+        reason: reason,
       );
       final finalTranscriptHandler = onFinalTranscript;
       if (finalTranscriptHandler != null) {
         log(
           'Pipeline',
           '[WorkBench][VoiceRoute] state=raw_fallback segment=$id '
-              'reason=${correctionEligible ? 'correction_unavailable' : 'no_wake_word'}',
+              'reason=$reason',
         );
         await _publishFinalTranscript(
           finalTranscriptHandler,
@@ -846,6 +882,8 @@ final class AudioPipelineCoordinator {
             rawTranscript: routableText,
             transcript: routableText,
             isCorrected: false,
+            correctionOutcome: correctionOutcomeForSkipReason(reason),
+            correctionFailureReason: reason,
           ),
         );
       }
@@ -954,6 +992,7 @@ final class AudioPipelineCoordinator {
               rawTranscript: result.originalText,
               transcript: result.correctedText,
               isCorrected: true,
+              correctionOutcome: TranscriptCorrectionOutcome.corrected,
             ),
           ),
         );
@@ -1022,6 +1061,8 @@ final class AudioPipelineCoordinator {
           rawTranscript: transcript,
           transcript: transcript,
           isCorrected: false,
+          correctionOutcome: correctionOutcomeForSkipReason(reason),
+          correctionFailureReason: reason,
         ),
       ),
     );
@@ -1352,6 +1393,8 @@ final class AudioPipelineCoordinator {
             rawTranscript: normalized,
             transcript: normalized,
             isCorrected: false,
+            correctionOutcome: TranscriptCorrectionOutcome.unavailable,
+            correctionFailureReason: 'correction_unavailable',
           ),
         );
       }
@@ -1536,6 +1579,12 @@ final class AudioPipelineCoordinator {
           rawTranscript: normalizedRaw,
           transcript: normalizedTranscript,
           isCorrected: isCorrected,
+          // The user already chose this agent on the glasses, so a preserved
+          // raw submission is a deliberate send, not an ineligible transcript.
+          correctionOutcome: isCorrected
+              ? TranscriptCorrectionOutcome.corrected
+              : TranscriptCorrectionOutcome.unavailable,
+          correctionFailureReason: isCorrected ? null : 'preview_preserved_raw',
         ),
       );
     }
