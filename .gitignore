@@ -80,6 +80,38 @@ service-account.*.json
 *.wblc3
 *.dump
 *.trace
+*.mp4
+*.mov
+*.webm
+
+# Captured speech, transcripts, and agent messages. These are the durable
+# app-private and shared-folder artifacts; a copy pulled into the working tree
+# for inspection must never become a commit.
+*.raw.txt
+*.corrected.txt
+*.message.txt
+*.conversation.txt
+*.continuous.txt
+*.transcript.json
+*.correction-skipped.json
+pending-corrections.json
+
+# Voice signatures and the local history index, including SQLite sidecars.
+# The speaker profile bank is the most sensitive file the app writes.
+*.wbprofiles
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Shared-folder recovery documents mirrored from private configuration.
+workbench-correction-prompt.txt
+workbench-agent-servers.json
+workbench-speaker-signatures.*
+workbench-history-cache-*
 
 # IntelliJ related
 *.iml
