@@ -29,6 +29,7 @@ import 'ble/r1_connection.dart';
 import 'protocol/g2_protocol.dart';
 import 'util/hex.dart';
 import 'startup/startup_state.dart';
+import 'websocket/agent_check_in_tracker.dart';
 import 'websocket/agent_exchange_store.dart';
 import 'websocket/g2_agent_history_state.dart';
 import 'websocket/selected_agent_transcript_session.dart';
@@ -400,6 +401,10 @@ VoiceWebSocketDeliveryMode deliveryModeForAgentRoute({
 final class WearableController extends ChangeNotifier
     with WidgetsBindingObserver {
   static const int _maximumSelectedAgentSpeechRoutes = 32;
+  static const Duration defaultAgentCheckInTimeout = Duration(seconds: 30);
+  static const Duration defaultAgentCheckInNoticeDuration = Duration(
+    seconds: 2,
+  );
 
   WearableController({
     FlutterReactiveBle? ble,
@@ -409,7 +414,11 @@ final class WearableController extends ChangeNotifier
     WebSocketMessageStore? webSocketMessageStore,
     AgentExchangeStore? agentExchangeStore,
     VoiceWebSocketConfigStore? voiceWebSocketConfigStore,
+    Duration agentCheckInTimeout = defaultAgentCheckInTimeout,
+    Duration agentCheckInNoticeDuration = defaultAgentCheckInNoticeDuration,
   }) : _ble = ble ?? FlutterReactiveBle(),
+       _agentCheckInTimeout = agentCheckInTimeout,
+       _agentCheckInNoticeDuration = agentCheckInNoticeDuration,
        _speechModelPreferences = speechModelPreferences,
        _sharedAudioExportStore =
            sharedAudioExportStore ?? SharedAudioExportStore(),
@@ -507,6 +516,7 @@ final class WearableController extends ChangeNotifier
     }
     _agentHistoryWaitTimer?.cancel();
     _agentHistoryWaitTimer = null;
+    _cancelAgentCheckIns();
     _agentHistoryGeneration++;
     openSimulatedAgentSelectorFixture(_agentHistory, fixture);
     _historyDisplayQueue.reset();
@@ -536,6 +546,7 @@ final class WearableController extends ChangeNotifier
     }
     _agentHistoryWaitTimer?.cancel();
     _agentHistoryWaitTimer = null;
+    _cancelAgentCheckIns();
     _agentHistoryGeneration++;
     openSimulatedAgentSendingFixture(_agentHistory);
     _historyDisplayQueue.reset();
@@ -647,6 +658,10 @@ final class WearableController extends ChangeNotifier
   Timer? _selectedAgentTranscriptionBlinkTimer;
   bool _selectedAgentTranscriptionIndicatorVisible = true;
   Timer? _agentHistoryWaitTimer;
+  final AgentCheckInTracker _agentCheckIns = AgentCheckInTracker();
+  final Map<String, Timer> _agentCheckInTimers = <String, Timer>{};
+  final Duration _agentCheckInTimeout;
+  final Duration _agentCheckInNoticeDuration;
   bool _agentExchangeStoreReady = false;
   bool _agentHistoryOpening = false;
   bool _agentHistoryClosing = false;
@@ -1166,6 +1181,8 @@ final class WearableController extends ChangeNotifier
 
   Future<void> saveVoiceWebSocketConfig(VoiceWebSocketConfig config) async {
     await _closeAgentHistory(clearDisplay: true);
+    // A pending check-in must never cross a configuration change.
+    _cancelAgentCheckIns();
     await _voiceWebSocket.saveConfig(config);
     _restoredVoiceWebSocketSettings = VoiceWebSocketSharedSettings.empty;
     if (_sharedAudioExportStore.hasSharedFolder) {
@@ -2421,6 +2438,9 @@ final class WearableController extends ChangeNotifier
         messages: messages,
         memo: memo?.note,
       );
+      // A check-in started before the menu was dismissed stays visible when
+      // the wearer reopens it.
+      _publishAgentCheckIns(render: false);
       _syncSelectedAgentVadMode();
       await _showAgentHistory(allowPageReplacement: false);
       addLog(
@@ -2470,6 +2490,9 @@ final class WearableController extends ChangeNotifier
         _agentHistory.selected?.label != selected.label) {
       return;
     }
+    // Claim the check-in before the page is drawn so the annotation arrives
+    // with the history instead of costing a second BLE write.
+    final checkingIn = _beginAgentCheckIn(selected.label);
     if (messages == null) {
       _agentHistory.showAgentConversations(
         selected.exchange == null
@@ -2486,10 +2509,151 @@ final class WearableController extends ChangeNotifier
       '[WorkBench][AgentHistory] state=messages_opened '
           'messages=${messages?.length ?? (selected.exchange == null ? 0 : 1)}',
     );
+    if (checkingIn) {
+      unawaited(_sendAgentCheckIn(selected.label, selected.exchange?.id));
+    }
   }
 
   void _queueAgentHistoryDisplay({bool allowPageReplacement = true}) {
     unawaited(_showAgentHistory(allowPageReplacement: allowPageReplacement));
+  }
+
+  /// Claims a check-in for [agent] so the first render of its page already
+  /// carries the annotation. Returns false when one is already outstanding.
+  bool _beginAgentCheckIn(String agent) {
+    if (_disposed || !_agentCheckIns.begin(agent)) {
+      return false;
+    }
+    _publishAgentCheckIns(render: false);
+    return true;
+  }
+
+  /// Asks the selected agent for a fresh summary without blocking the page.
+  ///
+  /// Selection must stay responsive, so this never awaits the connect,
+  /// acknowledgement, or response. The glasses annotate the agent name while
+  /// the request is outstanding and retire that annotation on a correlated
+  /// response, a bounded timeout, or an unavailable endpoint.
+  Future<void> _sendAgentCheckIn(String agent, String? exchangeId) async {
+    if (_disposed || !_agentCheckIns.isChecking(agent)) {
+      return;
+    }
+    final target = _voiceWebSocket.config.targetForAgent(agent);
+    if (target == null) {
+      _failAgentCheckIn(agent, VoiceWebSocketSummaryRequestOutcome.noSentAgent);
+      return;
+    }
+    VoiceWebSocketSummaryRequestResult result;
+    try {
+      result = await _voiceWebSocket.requestAgentSummary(target);
+    } on Object {
+      _failAgentCheckIn(agent, VoiceWebSocketSummaryRequestOutcome.unavailable);
+      return;
+    }
+    if (_disposed) {
+      return;
+    }
+    final requestId = result.requestId;
+    if (result.outcome != VoiceWebSocketSummaryRequestOutcome.sent ||
+        requestId == null) {
+      _failAgentCheckIn(agent, result.outcome);
+      return;
+    }
+    _agentCheckIns.bindRequest(agent, requestId);
+    if (exchangeId != null && _agentExchangeStoreReady) {
+      try {
+        await _agentExchangeStore.associateSummary(
+          exchangeId: exchangeId,
+          requestId: requestId,
+        );
+      } on Object {
+        addLog(
+          'WebSocket',
+          '[WorkBench][AgentHistory] state=check_in_correlation_failed '
+              'fallback=agent_name',
+          isError: true,
+        );
+      }
+    }
+    if (!_agentCheckIns.isChecking(agent)) {
+      // The response or a teardown already retired this check-in.
+      return;
+    }
+    _armAgentCheckInTimer(agent, _agentCheckInTimeout, () {
+      if (!_agentCheckIns.fail(agent, AgentCheckInPhase.noUpdate)) {
+        return;
+      }
+      _publishAgentCheckIns();
+      _armAgentCheckInNoticeTimer(agent);
+      addLog('WebSocket', '[WorkBench][AgentHistory] state=check_in_timeout');
+    });
+    addLog('WebSocket', '[WorkBench][AgentHistory] state=check_in_requested');
+  }
+
+  void _failAgentCheckIn(
+    String agent,
+    VoiceWebSocketSummaryRequestOutcome outcome,
+  ) {
+    if (!_agentCheckIns.fail(agent, AgentCheckInPhase.unavailable)) {
+      return;
+    }
+    _publishAgentCheckIns();
+    _armAgentCheckInNoticeTimer(agent);
+    addLog(
+      'WebSocket',
+      '[WorkBench][AgentHistory] state=check_in_failed '
+          'reason=${outcome.name}',
+      isError: outcome == VoiceWebSocketSummaryRequestOutcome.unavailable,
+    );
+  }
+
+  void _armAgentCheckInNoticeTimer(String agent) {
+    _armAgentCheckInTimer(agent, _agentCheckInNoticeDuration, () {
+      if (_agentCheckIns.clearNotice(agent)) {
+        _publishAgentCheckIns();
+      }
+    });
+  }
+
+  void _armAgentCheckInTimer(
+    String agent,
+    Duration duration,
+    void Function() onElapsed,
+  ) {
+    final key = agent.trim().toLowerCase();
+    _agentCheckInTimers.remove(key)?.cancel();
+    _agentCheckInTimers[key] = Timer(duration, () {
+      _agentCheckInTimers.remove(key);
+      if (_disposed) {
+        return;
+      }
+      onElapsed();
+    });
+  }
+
+  void _cancelAgentCheckInTimer(String? agent) {
+    final key = agent?.trim().toLowerCase();
+    if (key == null || key.isEmpty) {
+      return;
+    }
+    _agentCheckInTimers.remove(key)?.cancel();
+  }
+
+  void _cancelAgentCheckIns() {
+    for (final timer in _agentCheckInTimers.values) {
+      timer.cancel();
+    }
+    _agentCheckInTimers.clear();
+    _agentCheckIns.clearAll();
+    _agentHistory.checkInAnnotations = const <String, String>{};
+  }
+
+  /// Republishes the annotation map and redraws any open menu page.
+  void _publishAgentCheckIns({bool render = true}) {
+    _agentHistory.checkInAnnotations = _agentCheckIns.annotations;
+    if (render && _agentHistory.isOpen) {
+      _queueAgentHistoryDisplay(allowPageReplacement: false);
+    }
   }
 
   void _syncSelectedAgentVadMode() {
@@ -2827,14 +2991,18 @@ final class WearableController extends ChangeNotifier
         isError: true,
       );
     }
+    // A server that omits the agent name on a summary response still belongs
+    // to the agent whose check-in requested it. Without this the response is
+    // saved but never indexed into that agent's history.
+    final checkInAgent = _agentCheckIns.agentForRequest(event.requestId);
     if (savedMessage != null && _agentExchangeStoreReady) {
       try {
-        var indexedAgent = event.agent;
+        var indexedAgent = event.agent ?? checkInAgent;
         final exchangeId = await _agentExchangeStore.attachResponse(
           responsePath: savedMessage.path,
           kind: event.kind.name,
           requestId: event.requestId,
-          agent: event.agent,
+          agent: indexedAgent,
           allowLegacyAgentMatch: false,
         );
         final exchange = exchangeId == null
@@ -2855,7 +3023,22 @@ final class WearableController extends ChangeNotifier
             _queueAgentHistoryDisplay(allowPageReplacement: false);
           }
         }
-        await _refreshOpenAgentHistoryFor(indexedAgent);
+        // Retire the annotation before the refresh so one render carries both
+        // the new message row and the cleared agent name.
+        if (_agentCheckIns.completeForRequest(event.requestId)) {
+          _cancelAgentCheckInTimer(checkInAgent);
+          _agentHistory.checkInAnnotations = _agentCheckIns.annotations;
+        }
+        final refreshed = await _refreshOpenAgentHistoryFor(indexedAgent);
+        if (!refreshed && indexedAgent != null) {
+          // Keep that agent's menu row current so the summary is readable
+          // without reopening it. Only redraw when the menu itself is the
+          // visible page; another agent's open detail must not be disturbed.
+          _agentHistory.updateSelectorPreview(indexedAgent, message);
+          if (_agentHistory.mode == G2AgentHistoryMode.selector) {
+            _queueAgentHistoryDisplay(allowPageReplacement: false);
+          }
+        }
       } on Object {
         addLog(
           'WebSocket',
@@ -3231,6 +3414,7 @@ final class WearableController extends ChangeNotifier
     _selectedAgentPreviewResults.clear();
     _agentHistoryWaitTimer?.cancel();
     _agentHistoryWaitTimer = null;
+    _cancelAgentCheckIns();
     _agentHistory.close();
     WidgetsBinding.instance.removeObserver(this);
     _sharedAudioExportStore.removeListener(_sharedStorageChanged);

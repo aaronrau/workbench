@@ -23,6 +23,7 @@ void main() {
   late Map<String, int> ignoredResponsesRemaining;
   late Set<String> alwaysBusyMessages;
   late Set<String> negativeAcknowledgementBusyMessages;
+  late bool omitSummaryAgent;
 
   setUp(() async {
     temp = Directory.systemTemp.createTempSync(
@@ -40,6 +41,7 @@ void main() {
     ignoredResponsesRemaining = <String, int>{};
     alwaysBusyMessages = <String>{};
     negativeAcknowledgementBusyMessages = <String>{};
+    omitSummaryAgent = false;
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
       authorizationHeaders.add(
@@ -103,7 +105,7 @@ void main() {
               'request_id': payload['request_id'],
               'ok': true,
               'result': <String, Object?>{
-                'agent': payload['agent'],
+                if (!omitSummaryAgent) 'agent': payload['agent'],
                 'summary': 'The requested fixture is still running.',
                 'detail': 'Synthetic fixture detail.',
                 'detail_lines': <String>['Synthetic fixture detail.'],
@@ -641,6 +643,142 @@ void main() {
     expect(event.agent, 'Agent One');
     expect(event.kind, VoiceWebSocketInboundKind.summary);
   });
+
+  test(
+    'checks in on a configured agent that was never sent a command',
+    () async {
+      final inbound = Completer<VoiceWebSocketInboundEvent>();
+      final store = VoiceWebSocketConfigStore(
+        supportDirectory: () async => temp,
+      );
+      final client = VoiceWebSocketClient(
+        configStore: store,
+        reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+        readyTimeout: const Duration(seconds: 1),
+        acknowledgementTimeout: const Duration(seconds: 1),
+        onInboundEvent: (event) async {
+          if (event.kind == VoiceWebSocketInboundKind.summary &&
+              !inbound.isCompleted) {
+            inbound.complete(event);
+          }
+        },
+      );
+      addTearDown(client.close);
+      await client.initialize();
+      await client.saveConfig(
+        VoiceWebSocketConfig.validate(
+          host: '127.0.0.1',
+          port: server.port,
+          secret: 'example-secret',
+          authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+          agentNames: const <String>['Agent One', 'Agent Two'],
+        ),
+      );
+      await _waitUntil(() => client.isReady);
+
+      // No command has ever been acknowledged, so the double-tap shortcut has
+      // no target while an explicit selection still checks in.
+      expect(
+        await client.requestLastSentAgentSummary(),
+        VoiceWebSocketSummaryRequestOutcome.noSentAgent,
+      );
+
+      final summary = await client.requestAgentSummary('agent two');
+      final event = await inbound.future.timeout(const Duration(seconds: 1));
+
+      expect(summary.outcome, VoiceWebSocketSummaryRequestOutcome.sent);
+      expect(summary.agent, 'Agent Two', reason: 'Canonical name is restored.');
+      final request = received.firstWhere(
+        (payload) => payload['type'] == 'summary.request',
+      );
+      expect(request['agent'], 'Agent Two');
+      expect(request['request_id'], summary.requestId);
+      expect(
+        received.any((payload) => payload['type'] == 'message.send'),
+        isFalse,
+        reason: 'A check-in never enters the command FIFO.',
+      );
+      expect(event.requestId, summary.requestId);
+    },
+  );
+
+  test('rejects a check-in for an agent that is not configured', () async {
+    final store = VoiceWebSocketConfigStore(supportDirectory: () async => temp);
+    final client = VoiceWebSocketClient(
+      configStore: store,
+      reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+      readyTimeout: const Duration(seconds: 1),
+      acknowledgementTimeout: const Duration(seconds: 1),
+    );
+    addTearDown(client.close);
+    await client.initialize();
+    await client.saveConfig(
+      VoiceWebSocketConfig.validate(
+        host: '127.0.0.1',
+        port: server.port,
+        secret: 'example-secret',
+        authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+        agentNames: const <String>['Agent One'],
+      ),
+    );
+    await _waitUntil(() => client.isReady);
+
+    final summary = await client.requestAgentSummary('Removed Agent');
+
+    expect(summary.outcome, VoiceWebSocketSummaryRequestOutcome.noSentAgent);
+    expect(summary.requestId, isNull);
+    expect(
+      received.any((payload) => payload['type'] == 'summary.request'),
+      isFalse,
+    );
+  });
+
+  test(
+    'correlates a summary that omits the agent name by request id',
+    () async {
+      omitSummaryAgent = true;
+      final inbound = Completer<VoiceWebSocketInboundEvent>();
+      final store = VoiceWebSocketConfigStore(
+        supportDirectory: () async => temp,
+      );
+      final client = VoiceWebSocketClient(
+        configStore: store,
+        reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+        readyTimeout: const Duration(seconds: 1),
+        acknowledgementTimeout: const Duration(seconds: 1),
+        onInboundEvent: (event) async {
+          if (event.kind == VoiceWebSocketInboundKind.summary &&
+              !inbound.isCompleted) {
+            inbound.complete(event);
+          }
+        },
+      );
+      addTearDown(client.close);
+      await client.initialize();
+      await client.saveConfig(
+        VoiceWebSocketConfig.validate(
+          host: '127.0.0.1',
+          port: server.port,
+          secret: 'example-secret',
+          authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+          agentNames: const <String>['Agent One'],
+        ),
+      );
+      await _waitUntil(() => client.isReady);
+
+      final summary = await client.requestAgentSummary('Agent One');
+      final event = await inbound.future.timeout(const Duration(seconds: 1));
+
+      // Without an echoed agent the request id is the only correlation the
+      // controller can use to index this summary under the selected agent.
+      expect(event.agent, isNull);
+      expect(event.requestId, summary.requestId);
+      expect(
+        event.message,
+        contains('The requested fixture is still running.'),
+      );
+    },
+  );
 
   test(
     'reconnects and reuses the request id when acknowledgement is lost',

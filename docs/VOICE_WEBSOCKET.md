@@ -186,7 +186,14 @@ ten-second wait bound; a slow document provider therefore cannot delay Sent
 history, inbound display, or later socket work. Explicit refresh and recovery
 sync retain the durable app-private file as their source.
 
-## Double-tap progress request
+## Summary requests
+
+Work Bench asks an agent for a fresh summary in two places: a G2/R1 double tap
+outside an active voice memo targets the last successfully sent agent, and
+selecting an agent in the single-tap history selector targets that agent. Both
+send the same envelope and share the same correlation and persistence rules.
+
+### Double-tap progress request
 
 After a command receives a positive `message.accepted`, Work Bench
 retains that command's canonical agent name in app-process memory. A G2/R1
@@ -215,6 +222,18 @@ supersedes it when received. Its `result.summary`, `result.detail`, or
 shared-folder export, Messages-tab, and G2 `Received:` path as other readable
 inbound events. Voice memo finalization retains priority over this action.
 
+### Selection check-in
+
+Tapping an agent row in the single-tap selector sends the same `summary.request`
+for that agent, whether or not it has ever been sent a command. The request is
+issued without being awaited, so it never delays the page. While it is
+outstanding the agent's name carries ` · Checking in` in both its selector row
+and its detail title; a correlated `summary.result` clears the annotation and
+appears as an ordinary `[HH:mm]` history row. An unavailable endpoint shows
+` · Unavailable` and thirty seconds without a correlated response shows
+` · No update`, each for two seconds. One check-in per agent may be outstanding,
+and a configuration change clears every pending check-in.
+
 ## Single-tap history selector
 
 When no transcript is visibly `Queued:`, the single-tap interaction expands
@@ -222,7 +241,8 @@ progress lookup into a gesture-controlled selector with `Dismiss` selected
 first, a moving window over all configured agent rows, and the local Memo row
 last. Tapping an agent loads every exchange retained for it in the bounded ledger and lists each
 message as `[HH:mm] Message`; swipe up/down pages through the complete content
-without a network request.
+without a network request. Only the initial selection issues the bounded
+summary request described above; paging and swiping never do.
 Every successfully indexed inbound response for that open agent reloads the
 durable newest-first list and rebuilds page 1 immediately. Responses for other
 agents remain saved without interrupting the current detail.

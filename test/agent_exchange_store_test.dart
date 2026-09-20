@@ -202,6 +202,65 @@ void main() {
   );
 
   test(
+    'indexes a check-in summary for an agent with no prior command',
+    () async {
+      final response = File('${temp.path}/summary.received.message.txt')
+        ..writeAsStringSync('Agent Two: synthetic check-in summary\n');
+      final store = AgentExchangeStore(
+        supportDirectory: () async => temp,
+        now: () => DateTime.utc(2026, 3, 1, 9, 30),
+      );
+      await store.initialize();
+
+      // Selecting an agent that has never been sent a command leaves no
+      // exchange to correlate against, so the agent name alone must index it.
+      expect(
+        await store.attachResponse(
+          responsePath: response.path,
+          kind: 'summary',
+          requestId: 'check-in-request',
+          agent: 'Agent Two',
+        ),
+        isNull,
+      );
+
+      final history = await store.retainedMessagesForAgents(const <String>[
+        'Agent Two',
+      ]);
+
+      expect(history, hasLength(1));
+      expect(history.single.agent, 'Agent Two');
+      expect(history.single.direction, AgentMessageDirection.received);
+      expect(history.single.message, 'synthetic check-in summary');
+      expect(history.single.updatedAt, DateTime.utc(2026, 3, 1, 9, 30));
+    },
+  );
+
+  test(
+    'drops a check-in summary that carries neither correlation nor agent',
+    () async {
+      final response = File('${temp.path}/orphan.received.message.txt')
+        ..writeAsStringSync('synthetic orphan summary\n');
+      final store = AgentExchangeStore(supportDirectory: () async => temp);
+      await store.initialize();
+
+      expect(
+        await store.attachResponse(
+          responsePath: response.path,
+          kind: 'summary',
+          requestId: 'unknown-request',
+        ),
+        isNull,
+      );
+
+      expect(
+        await store.retainedMessagesForAgents(const <String>['Agent Two']),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
     'indexes an early response after its sent record supplies the agent',
     () async {
       final response = File('${temp.path}/early.received.message.txt')
