@@ -27,6 +27,27 @@ bool isLiveTranscriptCorrectionEligible(
   required bool explicitlyTargeted,
 }) => explicitlyTargeted || transcriptBeginsWithWakeWord(transcript);
 
+/// The KV budget configured for the native LiteRT-LM engine, mirrored here so
+/// an oversized prompt is refused before it reaches the correction process.
+/// Keep these values aligned with `GemmaCorrectionService`.
+const int gemmaContextTokens = 4096;
+const int gemmaReservedResponseTokens = 512;
+const int gemmaChatTemplateTokens = 64;
+const int gemmaCharactersPerToken = 3;
+
+/// LiteRT-LM 0.14.0 aborts its process instead of reporting an overrun, so an
+/// over-budget prompt has to be caught before the request is sent. The
+/// characters-per-token floor deliberately over-counts.
+bool promptFitsContextBudget({
+  required String instructions,
+  required String transcript,
+}) {
+  final estimatedTokens =
+      (instructions.length + transcript.length) ~/ gemmaCharactersPerToken +
+      gemmaChatTemplateTokens;
+  return estimatedTokens <= gemmaContextTokens - gemmaReservedResponseTokens;
+}
+
 final class TranscriptCorrectionJob {
   const TranscriptCorrectionJob({
     required this.segmentId,
@@ -160,6 +181,14 @@ final class TranscriptCorrectionSupervisor {
   static const int maximumTranscriptCharacters = 6000;
   static const int maximumCorrectionAttempts = 3;
 
+  /// Transient service failures never consume a correction attempt, so a
+  /// crash-looping Gemma process would otherwise defer a segment forever and a
+  /// spoken command would never reach its agent. Bound the outage by elapsed
+  /// time rather than by failure count: a process that restarts and recovers
+  /// quickly stays tolerated, while one that cannot come back hands the
+  /// segment to the durable raw transcript.
+  static const Duration maximumTransientServiceOutage = Duration(seconds: 20);
+
   TranscriptCorrectionSupervisor({
     required this.speechPath,
     required this.configStore,
@@ -169,6 +198,7 @@ final class TranscriptCorrectionSupervisor {
     required this.onStatus,
     GemmaCorrectionClient? client,
     this.transientRetryDelayOverride,
+    this.transientServiceOutageOverride,
   }) : _client = client ?? PlatformGemmaCorrectionClient();
 
   final String speechPath;
@@ -179,9 +209,11 @@ final class TranscriptCorrectionSupervisor {
   final CorrectionStatusSink onStatus;
   final GemmaCorrectionClient _client;
   final Duration? transientRetryDelayOverride;
+  final Duration? transientServiceOutageOverride;
   final LinkedHashMap<String, TranscriptCorrectionJob> _pending =
       LinkedHashMap<String, TranscriptCorrectionJob>();
   final Map<String, int> _transientFailureCounts = <String, int>{};
+  final Map<String, DateTime> _transientFailureSince = <String, DateTime>{};
 
   Timer? _pumpTimer;
   Future<void> _ledgerWriteTail = Future<void>.value();
@@ -309,6 +341,7 @@ final class TranscriptCorrectionSupervisor {
     await persistSkipped(job, reason: reason);
     _pending.remove(job.segmentId);
     _transientFailureCounts.remove(job.segmentId);
+    _transientFailureSince.remove(job.segmentId);
     await _persistPending();
     onStatus(
       '[WorkBench][Correction] state=skipped_ineligible '
@@ -395,6 +428,7 @@ final class TranscriptCorrectionSupervisor {
     if (!await rawFile.exists()) {
       _pending.remove(job.segmentId);
       _transientFailureCounts.remove(job.segmentId);
+      _transientFailureSince.remove(job.segmentId);
       await _persistPending();
       onStatus(
         '[WorkBench][Correction] state=dropped_missing_raw '
@@ -474,6 +508,26 @@ final class TranscriptCorrectionSupervisor {
         .toUtc()
         .difference(job.queuedAt)
         .inMilliseconds;
+    final instructions = buildCorrectionInstructions(
+      config.instructions,
+      job.correctionTerms,
+    );
+    if (!promptFitsContextBudget(
+      instructions: instructions,
+      transcript: rawText,
+    )) {
+      await _finishWithoutCorrection(
+        job,
+        rawText: rawText,
+        stateName: 'skipped_oversize_prompt',
+        reason: 'prompt_too_long',
+        detail:
+            'instruction_chars=${instructions.length} '
+            'transcript_chars=${rawText.length}',
+        isError: true,
+      );
+      return;
+    }
     state = 'processing';
     onStatus(
       '[WorkBench][Correction] state=processing segment=${job.segmentId} '
@@ -485,10 +539,7 @@ final class TranscriptCorrectionSupervisor {
         GemmaCorrectionRequest(
           modelPath: modelPath,
           modelId: config.modelId,
-          instructions: buildCorrectionInstructions(
-            config.instructions,
-            job.correctionTerms,
-          ),
+          instructions: instructions,
           transcript: rawText,
           timeoutMs: config.timeoutMs,
         ),
@@ -534,6 +585,7 @@ final class TranscriptCorrectionSupervisor {
       });
       _pending.remove(job.segmentId);
       _transientFailureCounts.remove(job.segmentId);
+      _transientFailureSince.remove(job.segmentId);
       await _persistPending();
       activeProvider = result.provider;
       state = 'ready';
@@ -584,6 +636,28 @@ final class TranscriptCorrectionSupervisor {
     if (_isTransientServiceFailure(errorCode)) {
       final failures = (_transientFailureCounts[job.segmentId] ?? 0) + 1;
       _transientFailureCounts[job.segmentId] = failures;
+      final now = DateTime.now().toUtc();
+      final outageStart = _transientFailureSince.putIfAbsent(
+        job.segmentId,
+        () => now,
+      );
+      final outage = now.difference(outageStart);
+      final outageLimit =
+          transientServiceOutageOverride ?? maximumTransientServiceOutage;
+      if (outage >= outageLimit) {
+        await _finishWithoutCorrection(
+          job,
+          rawText: rawText,
+          stateName: 'abandoned',
+          reason: 'service_unavailable',
+          detail:
+              'service_failures=$failures outage_ms=${outage.inMilliseconds} '
+              'error_code=$errorCode',
+          isError: true,
+        );
+        state = 'degraded';
+        return;
+      }
       final backoff =
           transientRetryDelayOverride ??
           switch (failures) {
@@ -665,6 +739,7 @@ final class TranscriptCorrectionSupervisor {
     await persistSkipped(retained, reason: reason);
     _pending.remove(job.segmentId);
     _transientFailureCounts.remove(job.segmentId);
+    _transientFailureSince.remove(job.segmentId);
     await _persistPending();
     onStatus(
       '[WorkBench][Correction] state=$stateName segment=${job.segmentId} '

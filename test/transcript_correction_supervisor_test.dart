@@ -626,6 +626,144 @@ void main() {
     );
   });
 
+  test('the prompt budget leaves room for the model response', () {
+    const terms = <String>['Flux', 'Brock', 'Pike', 'Wolf', 'Hey Memo'];
+    const command = 'Hey Flux, pull the latest changes.';
+    expect(
+      promptFitsContextBudget(
+        instructions: TranscriptCorrectionSupervisor.buildCorrectionInstructions(
+          'W' * 3000,
+          terms,
+        ),
+        transcript: command,
+      ),
+      isTrue,
+    );
+    // The documented maximum editable prompt plus its appended vocabulary
+    // cannot fit, so it has to be refused in Dart instead of aborting the
+    // Gemma process from nativeCreateConversation.
+    expect(
+      promptFitsContextBudget(
+        instructions: TranscriptCorrectionSupervisor.buildCorrectionInstructions(
+          'W' * TranscriptCorrectionConfig.maximumInstructionCharacters,
+          terms,
+        ),
+        transcript: command,
+      ),
+      isFalse,
+    );
+    // A long prompt paired with the longest accepted transcript also overruns.
+    expect(
+      promptFitsContextBudget(
+        instructions: 'W' * 6000,
+        transcript:
+            'W' * TranscriptCorrectionSupervisor.maximumTranscriptCharacters,
+      ),
+      isFalse,
+    );
+  });
+
+  test('refuses a prompt that cannot fit the model context budget', () async {
+    // LiteRT-LM 0.14.0 aborts its own process on an overrun, so the request
+    // must never leave Dart.
+    await configStore.saveInstructions(
+      'W' * TranscriptCorrectionConfig.maximumInstructionCharacters,
+    );
+    final uncorrected = Completer<String>();
+    final statuses = <String>[];
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: (_) {
+        fail('An over-budget prompt must not reach Gemma.');
+      },
+      onUncorrected: (_, _, reason) => uncorrected.complete(reason),
+      onStatus: (message, {isError = false}) => statuses.add(message),
+    );
+    addTearDown(supervisor.dispose);
+    await supervisor.start();
+    final raw = File('${speech.path}/oversize-prompt.raw.txt')
+      ..writeAsStringSync('Hey Flux, pull the latest changes.\n');
+
+    await supervisor.queue(
+      TranscriptCorrectionJob(
+        segmentId: 'oversize-prompt',
+        rawPath: raw.path,
+        sttModel: 'parakeet-0.6b',
+        sttProvider: 'nnapi',
+        audioMs: 5000,
+        sttDecodeMs: 500,
+        sttTotalMs: 550,
+        queuedAt: DateTime.now().toUtc(),
+        correctionTerms: const <String>['Flux', 'Brock', 'Pike', 'Wolf'],
+        routeWhenCorrected: true,
+      ),
+    );
+
+    expect(
+      await uncorrected.future.timeout(const Duration(seconds: 5)),
+      'prompt_too_long',
+    );
+    expect(client.transcripts, isEmpty);
+    expect(statuses, contains(contains('state=skipped_oversize_prompt')));
+    expect(
+      File(
+        '${speech.path}/oversize-prompt.correction-skipped.json',
+      ).readAsStringSync(),
+      contains('"reason":"prompt_too_long"'),
+    );
+  });
+
+  test('stops deferring once the Gemma process stays unreachable', () async {
+    final uncorrected = Completer<String>();
+    final statuses = <String>[];
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      // A crash loop never succeeds, so nothing resets the outage window.
+      client: _RestartingGemmaClient(disconnectsBeforeSuccess: 1000),
+      transientRetryDelayOverride: Duration.zero,
+      transientServiceOutageOverride: Duration.zero,
+      onCorrected: (_) {
+        fail('An unreachable Gemma process cannot produce a correction.');
+      },
+      onUncorrected: (_, _, reason) {
+        if (!uncorrected.isCompleted) {
+          uncorrected.complete(reason);
+        }
+      },
+      onStatus: (message, {isError = false}) => statuses.add(message),
+    );
+    addTearDown(supervisor.dispose);
+    await supervisor.start();
+    final raw = File('${speech.path}/service-down.raw.txt')
+      ..writeAsStringSync('Hey Flux, pull the latest changes.\n');
+
+    await supervisor.queue(
+      TranscriptCorrectionJob(
+        segmentId: 'service-down',
+        rawPath: raw.path,
+        sttModel: 'parakeet-0.6b',
+        sttProvider: 'nnapi',
+        audioMs: 5000,
+        sttDecodeMs: 500,
+        sttTotalMs: 550,
+        queuedAt: DateTime.now().toUtc(),
+        routeWhenCorrected: true,
+      ),
+    );
+
+    expect(
+      await uncorrected.future.timeout(const Duration(seconds: 5)),
+      'service_unavailable',
+    );
+    expect(statuses, contains(contains('state=abandoned')));
+    expect(supervisor.pendingCount, 0);
+  });
+
   test('persists no-wake skips without invoking Gemma', () async {
     final uncorrected = Completer<String>();
     final supervisor = TranscriptCorrectionSupervisor(
