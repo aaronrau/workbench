@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'audio/audio_pipeline_coordinator.dart';
 import 'audio/android_microphone_source.dart';
+import 'audio/keyword_highlights.dart';
 import 'audio/phone_microphone_session.dart';
 import 'audio/transcript_turn_state.dart';
 import 'audio/conversation_analysis_service.dart';
@@ -455,6 +456,7 @@ final class WearableController extends ChangeNotifier
       transcriptCollectionEligibilityProvider: (segmentId) =>
           _selectedAgentCollectionSegments.containsKey(segmentId),
       onCollectedTranscript: _handleCollectedTranscript,
+      onRawTranscript: _handleRawTranscriptForKeywords,
       sharedAudioExportStore: _sharedAudioExportStore,
     );
     _microphone = PhoneMicrophoneSession(
@@ -559,6 +561,10 @@ final class WearableController extends ChangeNotifier
 
   final FlutterReactiveBle _ble;
   final SpeechModelPreferences _speechModelPreferences;
+  final KeywordHighlightPreferences _keywordHighlightPreferences =
+      const KeywordHighlightPreferences();
+  final KeywordHighlights _keywordHighlights = KeywordHighlights();
+  Timer? _keywordHighlightTimer;
   final SharedAudioExportStore _sharedAudioExportStore;
   final WebSocketMessageStore _webSocketMessageStore;
   final AgentExchangeStore _agentExchangeStore;
@@ -822,6 +828,50 @@ final class WearableController extends ChangeNotifier
   }
 
   List<PooledLog> get eventLogs => logs.toList(growable: false);
+  List<String> get keywordHighlightPhrases => _keywordHighlights.phrases;
+  List<KeywordHighlight> get activeKeywordHighlights =>
+      _keywordHighlights.active;
+
+  Future<void> saveKeywordHighlightPhrases(List<String> phrases) async {
+    final validated = KeywordHighlights.validatePhrases(phrases);
+    await _keywordHighlightPreferences.save(validated);
+    _keywordHighlights.setPhrases(validated, DateTime.now());
+    _scheduleKeywordHighlightExpiry();
+    _safeNotify();
+  }
+
+  void _handleRawTranscriptForKeywords(String segmentId, String transcript) {
+    if (_disposed ||
+        !_keywordHighlights.accept(
+          segmentId: segmentId,
+          rawText: transcript,
+          now: DateTime.now(),
+        )) {
+      return;
+    }
+    _scheduleKeywordHighlightExpiry();
+    _safeNotify();
+  }
+
+  void _scheduleKeywordHighlightExpiry() {
+    _keywordHighlightTimer?.cancel();
+    _keywordHighlightTimer = null;
+    final next = _keywordHighlights.nextExpiry;
+    if (next == null || _disposed) {
+      return;
+    }
+    final remaining = next.difference(DateTime.now());
+    _keywordHighlightTimer = Timer(
+      remaining.isNegative ? Duration.zero : remaining,
+      () {
+        _keywordHighlightTimer = null;
+        if (_keywordHighlights.prune(DateTime.now())) {
+          _safeNotify();
+        }
+        _scheduleKeywordHighlightExpiry();
+      },
+    );
+  }
 
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
@@ -901,6 +951,14 @@ final class WearableController extends ChangeNotifier
       unawaited(_syncWebSocketMessages());
     }
     _selectedSpeechModel = await _speechModelPreferences.load();
+    try {
+      _keywordHighlights.setPhrases(
+        await _keywordHighlightPreferences.load(),
+        DateTime.now(),
+      );
+    } on Object {
+      // An optional display setting cannot prevent audio startup.
+    }
     try {
       await _audioPipeline.initialize(transcriptionModel: _selectedSpeechModel);
     } catch (_) {
@@ -3361,6 +3419,9 @@ final class WearableController extends ChangeNotifier
       _audioNotifyTimer = null;
     }
     if (state == AppLifecycleState.resumed) {
+      if (_keywordHighlights.prune(DateTime.now())) {
+        _scheduleKeywordHighlightExpiry();
+      }
       _backgroundNotifyTimer?.cancel();
       _backgroundNotifyTimer = null;
       unawaited(_conversationAnalysis.resumeAfterMemoryPressure());
@@ -3410,6 +3471,7 @@ final class WearableController extends ChangeNotifier
   @override
   void dispose() {
     _disposed = true;
+    _keywordHighlightTimer?.cancel();
     _stopSelectedAgentTranscriptionBlink();
     _selectedAgentPreviewResults.clear();
     _agentHistoryWaitTimer?.cancel();

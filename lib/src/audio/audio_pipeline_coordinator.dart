@@ -34,6 +34,8 @@ typedef TranscriptCollectionEligibilityProvider =
     bool Function(String segmentId);
 typedef CollectedTranscriptHandler =
     Future<void> Function(String segmentId, String transcript);
+typedef RawTranscriptObserver =
+    void Function(String segmentId, String transcript);
 typedef FinalizedSpeechSegmentHandler =
     void Function(String segmentId, String wavPath);
 
@@ -82,8 +84,8 @@ enum TranscriptCorrectionOutcome {
 /// Maps a supervisor skip reason onto the routing outcome it implies.
 TranscriptCorrectionOutcome correctionOutcomeForSkipReason(String reason) =>
     switch (reason) {
-      'no_wake_word' || 'empty_transcript' =>
-        TranscriptCorrectionOutcome.ineligible,
+      'no_wake_word' ||
+      'empty_transcript' => TranscriptCorrectionOutcome.ineligible,
       _ => TranscriptCorrectionOutcome.unavailable,
     };
 
@@ -155,6 +157,7 @@ final class AudioPipelineCoordinator {
     this.explicitCorrectionEligibilityProvider,
     this.transcriptCollectionEligibilityProvider,
     this.onCollectedTranscript,
+    this.onRawTranscript,
     ModelAssetStore? modelStore,
     GemmaModelStore? gemmaModelStore,
     TranscriptCorrectionConfigStore? correctionConfigStore,
@@ -192,6 +195,7 @@ final class AudioPipelineCoordinator {
   final TranscriptCollectionEligibilityProvider?
   transcriptCollectionEligibilityProvider;
   final CollectedTranscriptHandler? onCollectedTranscript;
+  final RawTranscriptObserver? onRawTranscript;
   final ModelAssetStore _modelStore;
   final GemmaModelStore _gemmaModelStore;
   final TranscriptCorrectionConfigStore _correctionConfigStore;
@@ -727,6 +731,18 @@ final class AudioPipelineCoordinator {
           'Pipeline',
           '[WorkBench][Transcript] state=conversation_save_failed '
               'segment=$id raw=preserved error=${_oneLine(error)}',
+          isError: true,
+        );
+      }
+    }
+    if (result.routeEligible && collectedText.isNotEmpty) {
+      try {
+        onRawTranscript?.call(id, collectedText);
+      } on Object {
+        // Keyword highlighting is optional and cannot interrupt transcription.
+        log(
+          'Pipeline',
+          '[WorkBench][KeywordHighlight] state=observer_failed',
           isError: true,
         );
       }

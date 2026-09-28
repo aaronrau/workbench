@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../audio/shared_audio_export_store.dart';
+import '../audio/keyword_highlights.dart';
 import '../audio/voice_memo_models.dart';
 import '../ble/ble_models.dart';
 import '../websocket/agent_exchange_store.dart';
@@ -64,6 +65,50 @@ final class WorkBenchEventRow extends StatelessWidget {
   }
 }
 
+/// Active raw-transcript matches stay above the scrollable Events list.
+final class WorkBenchKeywordHighlightRow extends StatelessWidget {
+  const WorkBenchKeywordHighlightRow({required this.highlights, super.key});
+
+  final List<KeywordHighlight> highlights;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = highlights.map((item) => item.label).join(', ');
+    return Semantics(
+      label: 'Keyword highlights: $summary',
+      child: Container(
+        key: const ValueKey<String>('pinned-keyword-highlights'),
+        height: 36,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        color: keywordHighlightBackgroundColor,
+        child: Row(
+          children: <Widget>[
+            Text(
+              'KEYWORDS',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: keywordHighlightForegroundColor,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                summary,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: keywordHighlightForegroundColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 typedef DirectAgentMessageSender =
     Future<bool> Function({
       required String endpointId,
@@ -77,6 +122,7 @@ typedef QueuedAgentMessageDeleter =
 final class HomeHistoryPanel extends StatefulWidget {
   const HomeHistoryPanel({
     required this.events,
+    this.keywordHighlights = const <KeywordHighlight>[],
     required this.conversations,
     this.voiceMemos = const <VoiceMemoRecord>[],
     required this.analysisEnabled,
@@ -117,6 +163,7 @@ final class HomeHistoryPanel extends StatefulWidget {
   });
 
   final List<PooledLog> events;
+  final List<KeywordHighlight> keywordHighlights;
   final List<SharedConversationTurn> conversations;
   final List<VoiceMemoRecord> voiceMemos;
   final bool analysisEnabled;
@@ -376,27 +423,39 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
 
   Widget _buildEvents(BuildContext context) {
     final events = widget.events.take(30).toList(growable: false);
-    if (events.isEmpty) {
-      return Center(
-        child: Text('No events', style: Theme.of(context).textTheme.bodyMedium),
-      );
+    final list = events.isEmpty
+        ? Center(
+            child: Text(
+              'No events',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          )
+        : ListView.builder(
+            key: const ValueKey<String>('events-list'),
+            itemCount: events.length,
+            itemExtent: WorkBenchEventRow.rowHeight,
+            itemBuilder: (context, index) {
+              final entry = events[index];
+              final time =
+                  '${entry.timestamp.hour.toString().padLeft(2, '0')}:'
+                  '${entry.timestamp.minute.toString().padLeft(2, '0')}';
+              return WorkBenchEventRow(
+                time: time,
+                source: entry.source,
+                message: _singleLine(entry.message),
+                severity: entry.severity,
+              );
+            },
+          );
+    if (widget.keywordHighlights.isEmpty) {
+      return list;
     }
-    return ListView.builder(
-      key: const ValueKey<String>('events-list'),
-      itemCount: events.length,
-      itemExtent: WorkBenchEventRow.rowHeight,
-      itemBuilder: (context, index) {
-        final entry = events[index];
-        final time =
-            '${entry.timestamp.hour.toString().padLeft(2, '0')}:'
-            '${entry.timestamp.minute.toString().padLeft(2, '0')}';
-        return WorkBenchEventRow(
-          time: time,
-          source: entry.source,
-          message: _singleLine(entry.message),
-          severity: entry.severity,
-        );
-      },
+    return Column(
+      children: <Widget>[
+        WorkBenchKeywordHighlightRow(highlights: widget.keywordHighlights),
+        const SizedBox(height: 8),
+        Expanded(child: list),
+      ],
     );
   }
 

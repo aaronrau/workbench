@@ -12,6 +12,7 @@ import 'app_version_label.dart';
 import 'conversation_analysis_settings.dart';
 import 'conversation_enrollment_prompt.dart';
 import 'home_history_panel.dart';
+import 'keyword_highlight_settings.dart';
 import 'transcript_correction_settings.dart';
 import 'voice_websocket_home_status.dart';
 import 'voice_websocket_settings.dart';
@@ -462,6 +463,7 @@ final class _HomePageState extends State<HomePage> {
     return Expanded(
       child: HomeHistoryPanel(
         events: controller.eventLogs,
+        keywordHighlights: controller.activeKeywordHighlights,
         conversations: controller.conversations,
         voiceMemos: controller.voiceMemos,
         messages: controller.sharedWebSocketMessages,
@@ -519,6 +521,11 @@ final class _HomePageState extends State<HomePage> {
         _buildVoiceWebSocketCard(),
         const SizedBox(height: 12),
         _buildTranscriptionSettingsCard(),
+        const SizedBox(height: 12),
+        KeywordHighlightSettings(
+          phrases: controller.keywordHighlightPhrases,
+          onSave: controller.saveKeywordHighlightPhrases,
+        ),
         const SizedBox(height: 12),
         _buildConversationAnalysisCard(),
         const SizedBox(height: 12),
