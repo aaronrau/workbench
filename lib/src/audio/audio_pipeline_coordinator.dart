@@ -773,11 +773,13 @@ final class AudioPipelineCoordinator {
         '[WorkBench][VoiceRoute] state=collected segment=$id '
             'action=manual_send',
       );
-      startup = StartupSnapshot(
-        phase: StartupPhase.ready,
-        message: 'Listening · transcript collected',
-        provider: activeProvider,
-      );
+      if (_vadEndpointMode == VadEndpointMode.selectedAgent) {
+        startup = StartupSnapshot(
+          phase: StartupPhase.ready,
+          message: 'Listening · transcript collected',
+          provider: activeProvider,
+        );
+      }
       onChanged();
       return;
     }
@@ -1662,6 +1664,16 @@ final class AudioPipelineCoordinator {
     _vadEndpointMode = mode;
     final delay = vadEndpointDelayForMode(mode);
     _vad?.setEndpointMode(mode);
+    if (!enabled &&
+        startup.isReady &&
+        startup.message == 'Listening · transcript collected') {
+      startup = StartupSnapshot(
+        phase: StartupPhase.ready,
+        message: 'Local audio ready · $activeModelName · $activeProvider',
+        provider: activeProvider,
+      );
+      onChanged();
+    }
     log(
       'Pipeline',
       '[WorkBench][VAD] state=endpoint_mode '

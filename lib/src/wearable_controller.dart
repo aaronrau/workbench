@@ -676,6 +676,8 @@ final class WearableController extends ChangeNotifier
   int _agentMessageRefreshGeneration = 0;
   bool _disposed = false;
   bool _g2UnexpectedlyDisconnected = false;
+  bool _g2WasConnected = false;
+  bool _r1WasConnected = false;
   bool _linkingController = false;
   bool _sharedMessageViewActive = false;
   bool? _runtimeSessionActive;
@@ -1128,6 +1130,7 @@ final class WearableController extends ChangeNotifier
   }
 
   Future<void> disconnectG2() async {
+    _endAgentHistoryForDisconnect(clearDisplay: false);
     await g2.disconnect();
     _lastControllerLinkKey = null;
     if (!microphoneOwnsInput) {
@@ -1138,12 +1141,14 @@ final class WearableController extends ChangeNotifier
   }
 
   Future<void> disconnectR1() async {
+    _endAgentHistoryForDisconnect(clearDisplay: g2.isConnected);
     await r1.disconnect();
     _lastControllerLinkKey = null;
     await _syncBackgroundService();
   }
 
   Future<void> disconnectAll() async {
+    _endAgentHistoryForDisconnect(clearDisplay: false);
     await stopScan();
     await Future.wait(<Future<void>>[g2.disconnect(), r1.disconnect()]);
     _g2UnexpectedlyDisconnected = false;
@@ -1694,10 +1699,18 @@ final class WearableController extends ChangeNotifier
   }
 
   void _connectionChanged() {
-    if (!g2.isConnected) {
+    final g2Connected = g2.isConnected;
+    final r1Connected = r1.isConnected;
+    if ((_g2WasConnected && !g2Connected) ||
+        (_r1WasConnected && !r1Connected)) {
+      _endAgentHistoryForDisconnect(clearDisplay: g2Connected);
+    }
+    _g2WasConnected = g2Connected;
+    _r1WasConnected = r1Connected;
+    if (!g2Connected) {
       _historyDisplayQueue.reset();
     }
-    if (_g2UnexpectedlyDisconnected && g2.isConnected) {
+    if (_g2UnexpectedlyDisconnected && g2Connected) {
       _g2UnexpectedlyDisconnected = false;
       _audioPipeline.handleWearableReconnect();
     }
@@ -2816,6 +2829,15 @@ final class WearableController extends ChangeNotifier
     }
   }
 
+  void _endAgentHistoryForDisconnect({required bool clearDisplay}) {
+    _cancelSelectedAgentListenSession(source: 'device_disconnect');
+    if (_agentHistory.isOpen || _agentHistoryOpening) {
+      unawaited(_closeAgentHistory(clearDisplay: clearDisplay));
+    } else {
+      _syncSelectedAgentVadMode();
+    }
+  }
+
   Future<void> _requestLastAgentSummary() async {
     if (_voiceWebSocket.lastSentAgent == null) {
       await _glassesStatusQueue.queueTransient(
@@ -3341,6 +3363,7 @@ final class WearableController extends ChangeNotifier
       return;
     }
     _g2UnexpectedlyDisconnected = true;
+    _endAgentHistoryForDisconnect(clearDisplay: false);
     _lastControllerLinkKey = null;
     addLog(
       'Pipeline',

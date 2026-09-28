@@ -619,6 +619,9 @@ gesture-controlled ownership.
   waits for all registered STT chunks, and reuses the current automatic preview
   without a second correction. Further taps while sending are inert, and page
   teardown waits for any active render before restoring the visualizer;
+- a G2 or R1 disconnect closes the detail and cancels active Listen Mode,
+  including when either link drops unexpectedly. In-flight audio and transcript
+  files stay local, but the canceled session cannot send;
 - changing selection after Listen Mode starts cannot change that session's
   target;
 - removing the snapshotted agent from configuration prevents the send;
