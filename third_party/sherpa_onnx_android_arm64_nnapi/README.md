@@ -22,6 +22,12 @@ CPU pyannote and TitaNet conversation worker can use the same pinned runtime.
 The rebuild gate requires both the diarization and speaker-embedding creation
 symbols.
 
+The diarizer also skips speaker segments that are too short for an embedding
+after clipping a padded segmentation window to the real audio. Upstream exits
+the host process on that input, which can repeatedly crash the app when a
+durable conversation job resumes. The patch preserves valid speaker indexes
+and progress callbacks, and returns an empty result if no embeddings survive.
+
 The application does not claim NNAPI merely because a session initializes.
 Each VAD and transcription model is warmed up with ONNX Runtime profiling, and
 `nnapi` is accepted only when the profile contains at least one node assigned
@@ -36,6 +42,14 @@ CPU and NNAPI support, then links the patched Sherpa C API against that result.
 Compiler source paths are mapped to generic `/usr/src/onnxruntime` and
 `/usr/src/workbench/sherpa-onnx` prefixes. No model, device, user, or local
 path is embedded in the checked-in instructions.
+
+Set `DIARIZATION_TEST_OUTPUT` to an absolute temporary output path when rebuilding
+to retain the native regression executable. Run it on an explicitly selected
+Android device through the Work Bench app identity, with the pinned segmentation
+and embedding model paths as its two arguments and the rebuilt ONNX Runtime on
+its library path. It checks short and clipped segments mixed with valid speakers,
+all-short input, preserved speaker indexes and progress, and a later valid call.
+It uses synthetic in-memory samples and never records or plays audio.
 
 Sherpa-ONNX is Apache-2.0 licensed. ONNX Runtime is MIT licensed. See
 `THIRD_PARTY_NOTICES.md` at the repository root and the license files in this

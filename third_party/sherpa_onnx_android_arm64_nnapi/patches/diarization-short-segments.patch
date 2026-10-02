@@ -1,0 +1,37 @@
+diff --git a/sherpa-onnx/csrc/offline-speaker-diarization-pyannote-impl.h b/sherpa-onnx/csrc/offline-speaker-diarization-pyannote-impl.h
+index 083b62d0..e07858ba 100644
+--- a/sherpa-onnx/csrc/offline-speaker-diarization-pyannote-impl.h
++++ b/sherpa-onnx/csrc/offline-speaker-diarization-pyannote-impl.h
+@@ -167,6 +167,12 @@ class OfflineSpeakerDiarizationPyannoteImpl
+       chunk_speaker_samples_list_pair.second = std::move(sample_indexes);
+     }
+ 
++    // Clipping to the actual audio may leave every speaker too short for an
++    // embedding. Do not index an empty matrix or enter clustering in that case.
++    if (embeddings.rows() == 0) {
++      return {};
++    }
++
+     std::vector<int32_t> cluster_labels = clustering_->Cluster(
+         &embeddings(0, 0), embeddings.rows(), embeddings.cols());
+ 
+@@ -500,10 +506,15 @@ class OfflineSpeakerDiarizationPyannoteImpl
+ 
+       stream->InputFinished();
+       if (!embedding_extractor_.IsReady(stream.get())) {
+-        SHERPA_ONNX_LOGE(
+-            "This segment is too short, which should not happen since we have "
+-            "already filtered short segments");
+-        SHERPA_ONNX_EXIT(-1);
++        // Segmentation runs on padded windows, while embeddings use only
++        // real audio. A retained segment can therefore still be too short.
++        // Discard just this speaker and preserve indexes/progress for the rest.
++        SHERPA_ONNX_LOGE("Skipping speaker segment too short for an embedding");
++        k += 1;
++        if (callback) {
++          callback(k, ans.rows(), callback_arg);
++        }
++        continue;
+       }
+ 
+       std::vector<float> embedding = embedding_extractor_.Compute(stream.get());

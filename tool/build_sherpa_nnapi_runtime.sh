@@ -9,7 +9,7 @@ ANDROID_PLATFORM=android-27
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PACKAGE_DIR="$PROJECT_DIR/third_party/sherpa_onnx_android_arm64_nnapi"
 LIB_DIR="$PACKAGE_DIR/android/src/main/jniLibs/arm64-v8a"
-PATCH_FILE="$PACKAGE_DIR/patches/nnapi-no-reference-cpu.patch"
+PATCH_DIRECTORY="$PACKAGE_DIR/patches"
 
 if [ -z "${ANDROID_NDK:-}" ] || [ ! -d "$ANDROID_NDK" ]; then
   echo "Set ANDROID_NDK to an installed Android NDK directory." >&2
@@ -93,8 +93,25 @@ ONNXRUNTIME_INSTALL="$BUILD_ROOT/onnxruntime-install"
 git clone --filter=blob:none --no-checkout "$SHERPA_REPOSITORY" \
   "$BUILD_ROOT/sherpa-onnx"
 git -C "$BUILD_ROOT/sherpa-onnx" checkout --detach "$SHERPA_REVISION"
-git -C "$BUILD_ROOT/sherpa-onnx" apply --check "$PATCH_FILE"
-git -C "$BUILD_ROOT/sherpa-onnx" apply "$PATCH_FILE"
+for patch_file in "$PATCH_DIRECTORY"/*.patch; do
+  git -C "$BUILD_ROOT/sherpa-onnx" apply --check "$patch_file"
+  git -C "$BUILD_ROOT/sherpa-onnx" apply "$patch_file"
+done
+
+# Optionally retain the model-backed native regression executable for a
+# separately selected device. Its synthetic samples never leave memory.
+if [ -n "${DIARIZATION_TEST_OUTPUT:-}" ]; then
+  cp "$PACKAGE_DIR/tests/diarization_short_segments_test.cc" \
+    "$BUILD_ROOT/sherpa-onnx/workbench-diarization-short-segments-test.cc"
+  cat >> "$BUILD_ROOT/sherpa-onnx/CMakeLists.txt" <<'CMAKE'
+
+add_executable(workbench-diarization-short-segments-test
+  workbench-diarization-short-segments-test.cc)
+target_include_directories(workbench-diarization-short-segments-test
+  PRIVATE ${PROJECT_SOURCE_DIR})
+target_link_libraries(workbench-diarization-short-segments-test sherpa-onnx-core)
+CMAKE
+fi
 
 (
   cd "$BUILD_ROOT/sherpa-onnx"
@@ -113,6 +130,11 @@ git -C "$BUILD_ROOT/sherpa-onnx" apply "$PATCH_FILE"
 )
 
 RUNTIME_BUILD_LIB="$BUILD_ROOT/sherpa-onnx/build-android-arm64-v8a/install/lib"
+if [ -n "${DIARIZATION_TEST_OUTPUT:-}" ]; then
+  install -m 0755 \
+    "$BUILD_ROOT/sherpa-onnx/build-android-arm64-v8a/bin/workbench-diarization-short-segments-test" \
+    "$DIARIZATION_TEST_OUTPUT"
+fi
 nm -D "$RUNTIME_BUILD_LIB/libonnxruntime.so" |
   rg --quiet 'OrtSessionOptionsAppendExecutionProvider_Nnapi'
 nm -D "$RUNTIME_BUILD_LIB/libsherpa-onnx-c-api.so" |

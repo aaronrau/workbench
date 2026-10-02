@@ -1,3 +1,3 @@
 f1d1529e06af8162f9a1dc60dec461660e3f246a92c070c6c23796d31217bc2e  android/src/main/jniLibs/arm64-v8a/libonnxruntime.so
-8d11cd73975f1356c0773c6d2c2b4a35a5fa8923dd61b6aac65b574d693df80e  android/src/main/jniLibs/arm64-v8a/libsherpa-onnx-c-api.so
-2939199f5cd8138efa3ec515acb39e480fd6e81f8fb1383efc103225dcc3b364  android/src/main/jniLibs/arm64-v8a/libsherpa-onnx-cxx-api.so
+48641dc9d668372fdcb8bde11492c51e124a62aa9e4a19fed8fabc67f159136b  android/src/main/jniLibs/arm64-v8a/libsherpa-onnx-c-api.so
+7e29e8d26d32a714d26378ffe37477dff9e8ec68fb9ab79d711f57a64c35b2cb  android/src/main/jniLibs/arm64-v8a/libsherpa-onnx-cxx-api.so
