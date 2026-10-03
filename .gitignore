@@ -53,6 +53,7 @@ service-account.*.json
 !service-account.*.example.json
 
 # Local device evidence and diagnostic output
+kill-events.json*
 /artifacts/
 /captures/
 /evidence/

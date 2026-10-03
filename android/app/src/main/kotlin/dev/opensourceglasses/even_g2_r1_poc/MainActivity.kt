@@ -2,7 +2,6 @@ package dev.opensourceglasses.even_g2_r1_poc
 
 import android.app.Activity
 import android.app.ActivityManager
-import android.app.ApplicationExitInfo
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
@@ -56,10 +55,6 @@ class MainActivity : FlutterActivity() {
                 "workbench-history-cache-a.sqlite3",
                 "workbench-history-cache-b.sqlite3",
             )
-        private const val RUNTIME_DIAGNOSTIC_PREFERENCES =
-            "workbench_runtime_diagnostics"
-        private const val LAST_REPORTED_EXIT_TIMESTAMP =
-            "last_reported_exit_timestamp"
         internal const val CORRECTION_PROMPT_FILE_NAME =
             "workbench-correction-prompt.txt"
         private const val MAX_CORRECTION_PROMPT_CHARACTERS = 10_000
@@ -89,7 +84,6 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        reportPreviousProcessExits()
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
             "dev.opensourceglasses/workbench_microphone",
         ).setMethodCallHandler { call, result ->
@@ -402,6 +396,11 @@ class MainActivity : FlutterActivity() {
         ).setMethodCallHandler(gemmaBridge::handle)
     }
 
+    override fun onResume() {
+        super.onResume()
+        reportPreviousProcessExits()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -481,40 +480,17 @@ class MainActivity : FlutterActivity() {
         }
         historyExecutor.execute {
             runCatching {
-                val preferences =
-                    getSharedPreferences(
-                        RUNTIME_DIAGNOSTIC_PREFERENCES,
-                        Context.MODE_PRIVATE,
-                    )
-                val lastReported =
-                    preferences.getLong(LAST_REPORTED_EXIT_TIMESTAMP, 0L)
-                val manager = getSystemService(ActivityManager::class.java)
-                val exits =
-                    manager
-                        .getHistoricalProcessExitReasons(packageName, 0, 8)
-                        .filter { it.timestamp > lastReported }
-                        .sortedBy { it.timestamp }
+                // Persist before logging so a silenced or cleared logcat loses no signal.
+                val exits = ProcessExitJournal(applicationContext).capture()
                 for (exit in exits) {
-                    val process =
-                        if (exit.processName.endsWith(":gemma")) {
-                            "gemma"
-                        } else {
-                            "app"
-                        }
                     Log.i(
                         "WorkBench",
                         "[WorkBench][Runtime] state=previous_exit " +
-                            "process=$process reason=${exitReason(exit.reason)} " +
+                            "process=${exit.process} reason=${exit.reason} " +
+                            "status=${exit.status} signal=${exit.signalName ?: "unreported"} " +
                             "importance=${exit.importance} " +
-                            "pss_kb=${exit.pss} rss_kb=${exit.rss}",
+                            "pss_kb=${exit.lastSamplePssKb} rss_kb=${exit.lastSampleRssKb}",
                     )
-                }
-                val newest = exits.maxOfOrNull { it.timestamp }
-                if (newest != null) {
-                    preferences
-                        .edit()
-                        .putLong(LAST_REPORTED_EXIT_TIMESTAMP, newest)
-                        .apply()
                 }
             }.onFailure {
                 Log.i(
@@ -524,24 +500,6 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
-
-    private fun exitReason(reason: Int): String =
-        when (reason) {
-            ApplicationExitInfo.REASON_LOW_MEMORY -> "low_memory"
-            ApplicationExitInfo.REASON_CRASH_NATIVE -> "native_crash"
-            ApplicationExitInfo.REASON_CRASH -> "crash"
-            ApplicationExitInfo.REASON_ANR -> "anr"
-            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE ->
-                "excessive_resource_usage"
-            ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency_died"
-            ApplicationExitInfo.REASON_INITIALIZATION_FAILURE ->
-                "initialization_failure"
-            ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "permission_change"
-            ApplicationExitInfo.REASON_SIGNALED -> "signaled"
-            ApplicationExitInfo.REASON_USER_REQUESTED -> "user_requested"
-            ApplicationExitInfo.REASON_USER_STOPPED -> "user_stopped"
-            else -> "other"
-        }
 
     private fun chooseDirectory(result: MethodChannel.Result) {
         if (pendingDirectoryResult != null) {

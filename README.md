@@ -364,6 +364,37 @@ into app-private storage, verifies every model, and launches Work Bench. It uses
 assets, while Parakeet, diarization, and Gemma weights are versioned in Git
 LFS and copied as part of the same installation workflow.
 
+### Capture process kill signals
+
+On Android 11 or later, Work Bench reads Android's process-exit history on
+startup and when returning to the foreground. It atomically retains the latest
+64 signal exits and low-memory kills in the app-private
+`files/workbench/runtime/kill-events.json`. Each record contains only the event
+time, `app` or `gemma` process label, process ID, exit reason, status, reported
+signal, importance, and Android's last sampled memory usage. Ordinary exits,
+transcripts, configuration, logcat contents, and native traces are excluded.
+
+SIGKILL cannot run an app signal handler, so its record is saved after the next
+launch or foreground transition. This works with logcat disabled and without a
+connected computer. Duplicate exits are merged, and repeated launches preserve
+earlier records. A SIGKILL record alone does not identify the sender or prove
+memory pressure; the document also records whether Android supports explicit
+low-memory kill reporting. Memory values are the last sample, not an exact
+measurement at the moment of death.
+
+Read the private metadata from a debug installation without collecting general
+logs:
+
+```sh
+adb -s <android-serial> shell run-as dev.opensourceglasses.even_g2_r1_poc \
+  cat files/workbench/runtime/kill-events.json
+```
+
+`python3 tool/validate_android_kill_capture.py --device <android-serial>`
+deliberately kills the debug app, relaunches it, and verifies the signal record,
+preserved earlier evidence, and deduplication on another foreground transition.
+Run this validation while the app is idle.
+
 ### Copy Gemma 4 E4B to Android
 
 Gemma is stored under `models/llm/` as four Git LFS chunks. Splitting keeps
