@@ -34,6 +34,7 @@ final class _HomePageState extends State<HomePage> {
   );
   G2Side _rawSide = G2Side.right;
   bool _busy = false;
+  bool _deviceBusy = false;
   bool _showTools = false;
   bool _speakerResetBusy = false;
 
@@ -47,11 +48,22 @@ final class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  Future<void> _run(Future<void> Function() operation) async {
-    if (_busy) {
+  Future<void> _run(
+    Future<void> Function() operation, {
+    bool deviceOperation = false,
+  }) async {
+    if (deviceOperation ? _deviceBusy : _busy) {
       return;
     }
-    setState(() => _busy = true);
+    void setBusy(bool value) => setState(() {
+      if (deviceOperation) {
+        _deviceBusy = value;
+      } else {
+        _busy = value;
+      }
+    });
+
+    setBusy(true);
     try {
       await operation();
     } catch (error) {
@@ -62,7 +74,7 @@ final class _HomePageState extends State<HomePage> {
       }
     } finally {
       if (mounted) {
-        setState(() => _busy = false);
+        setBusy(false);
       }
     }
   }
@@ -164,11 +176,14 @@ final class _HomePageState extends State<HomePage> {
                               ),
                             ),
                             onPressed:
-                                _busy ||
+                                _deviceBusy ||
                                     controller.microphoneOwnsInput ||
                                     (!hasSession && !controller.canConnect)
                                 ? null
-                                : () => _run(_connectOrDisconnectDevices),
+                                : () => _run(
+                                    _connectOrDisconnectDevices,
+                                    deviceOperation: true,
+                                  ),
                             icon: Icon(
                               hasSession
                                   ? Icons.link_off
@@ -180,7 +195,7 @@ final class _HomePageState extends State<HomePage> {
                                   : !controller.canConnect &&
                                         !controller.microphoneOwnsInput
                                   ? 'Preparing audio…'
-                                  : _busy || controller.scanning
+                                  : _deviceBusy || controller.scanning
                                   ? 'Connecting…'
                                   : 'Connect devices',
                             ),
@@ -196,7 +211,8 @@ final class _HomePageState extends State<HomePage> {
                                 controller.microphonePhase !=
                                     MicrophonePhase.stopping &&
                                 (controller.microphoneOwnsInput ||
-                                    (!_busy && controller.canStartMicrophone)),
+                                    (!_deviceBusy &&
+                                        controller.canStartMicrophone)),
                             onPressed: _toggleMicrophone,
                           ),
                         ],

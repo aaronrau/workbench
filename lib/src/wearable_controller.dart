@@ -399,7 +399,7 @@ VoiceWebSocketDeliveryMode deliveryModeForAgentRoute({
   required bool explicitlySelected,
 }) => VoiceWebSocketDeliveryMode.queued;
 
-final class WearableController extends ChangeNotifier
+base class WearableController extends ChangeNotifier
     with WidgetsBindingObserver {
   static const int _maximumSelectedAgentSpeechRoutes = 32;
   static const Duration defaultAgentCheckInTimeout = Duration(seconds: 30);

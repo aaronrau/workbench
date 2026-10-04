@@ -59,6 +59,30 @@ void main() {
     mic.dispose();
   });
 
+  test(
+    'each restart opens new capture after the previous durable flush',
+    () async {
+      final mic = session();
+      for (var cycle = 0; cycle < 3; cycle++) {
+        await mic.start();
+        expect(mic.recording, isTrue);
+        await mic.stop();
+        expect(mic.phase, MicrophonePhase.off);
+        expect(mic.ownsInput, isFalse);
+      }
+      expect(events, [
+        for (var cycle = 0; cycle < 3; cycle++) ...[
+          'permission',
+          'journal',
+          'record',
+          'stop',
+          'flush',
+        ],
+      ]);
+      mic.dispose();
+    },
+  );
+
   test('stop during permission prevents later recorder startup', () async {
     final permission = Completer<void>();
     final mic = session(permission: () => permission.future);
