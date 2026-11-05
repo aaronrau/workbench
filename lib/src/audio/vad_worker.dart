@@ -265,6 +265,10 @@ final class VadSupervisor {
     required this.onSegment,
     required this.onStatus,
     this.onSpeechEvent,
+    this.preferredSegmentDuration = preferredVadSegmentDuration,
+    this.maximumSegmentDuration = maximumVadSegmentDuration,
+    this.preRollDuration = vadPreRollDuration,
+    this.endpointDelayOverride,
     VadEndpointMode endpointMode = VadEndpointMode.defaultFlow,
   }) : _endpointMode = endpointMode;
 
@@ -274,6 +278,10 @@ final class VadSupervisor {
   final SpeechSegmentSink onSegment;
   final VadStatusSink onStatus;
   final VadSpeechEventSink? onSpeechEvent;
+  final Duration preferredSegmentDuration;
+  final Duration maximumSegmentDuration;
+  final Duration preRollDuration;
+  final Duration? endpointDelayOverride;
   VadEndpointMode _endpointMode;
 
   ReceivePort? _events;
@@ -344,7 +352,7 @@ final class VadSupervisor {
       return;
     }
     _endpointMode = mode;
-    final duration = vadEndpointDelayForMode(mode);
+    final duration = endpointDelayOverride ?? vadEndpointDelayForMode(mode);
     _commands?.send(<String, Object>{
       'type': 'set_endpoint_mode',
       'mode': mode.name,
@@ -393,9 +401,12 @@ final class VadSupervisor {
         'modelPath': modelPath,
         'outputPath': outputPath,
         'providers': providers,
-        'endpointDelayMs': vadEndpointDelayForMode(
-          _endpointMode,
-        ).inMilliseconds,
+        'endpointDelayMs':
+            (endpointDelayOverride ?? vadEndpointDelayForMode(_endpointMode))
+                .inMilliseconds,
+        'preferredSegmentMs': preferredSegmentDuration.inMilliseconds,
+        'maximumSegmentMs': maximumSegmentDuration.inMilliseconds,
+        'preRollMs': preRollDuration.inMilliseconds,
       },
       debugName: 'workbench-vad',
       errorsAreFatal: true,
@@ -620,7 +631,7 @@ void _vadWorker(Map<String, Object> bootstrap) {
   final preRollBytes =
       sampleRate *
       2 *
-      vadPreRollDuration.inMilliseconds ~/
+      (bootstrap['preRollMs'] as int? ?? vadPreRollDuration.inMilliseconds) ~/
       Duration.millisecondsPerSecond;
   final rolloverOverlapBytes =
       sampleRate *
@@ -641,7 +652,19 @@ void _vadWorker(Map<String, Object> bootstrap) {
     sampleRate: sampleRate,
     duration: endpointDelay,
   );
-  final segmentDuration = VadSegmentDurationTracker(sampleRate: sampleRate);
+  final segmentDuration = VadSegmentDurationTracker(
+    sampleRate: sampleRate,
+    preferredDuration: Duration(
+      milliseconds:
+          bootstrap['preferredSegmentMs'] as int? ??
+          preferredVadSegmentDuration.inMilliseconds,
+    ),
+    maximumDuration: Duration(
+      milliseconds:
+          bootstrap['maximumSegmentMs'] as int? ??
+          maximumVadSegmentDuration.inMilliseconds,
+    ),
+  );
   final wordBoundary = VadWordBoundaryDetector(sampleRate: sampleRate);
   RandomAccessFile? segmentFile;
   String? segmentId;

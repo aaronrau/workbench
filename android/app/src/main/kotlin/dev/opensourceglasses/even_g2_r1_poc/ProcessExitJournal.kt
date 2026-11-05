@@ -28,6 +28,7 @@ internal class ProcessExitJournal(private val context: Context) {
                 val process = when (exit.processName) {
                     context.packageName -> "app"
                     "${context.packageName}:gemma" -> "gemma"
+                    "${context.packageName}:moss" -> "moss"
                     else -> return@mapNotNull null
                 }
                 if (!KillExitEvent.isKillReason(exit.reason)) {
@@ -114,7 +115,7 @@ internal data class KillExitEvent(
 
     init {
         require(timestampMs > 0 && pid > 0)
-        require(process == "app" || process == "gemma")
+        require(process == "app" || process == "gemma" || process == "moss")
         require(isKillReason(reasonCode) && status in 0..255)
         require(importance >= 0 && lastSamplePssKb >= 0 && lastSampleRssKb >= 0)
     }

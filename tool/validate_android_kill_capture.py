@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kill and relaunch a debug Work Bench app to validate its private SIGKILL journal."""
+"""Validate private SIGKILL records after an app relaunch or live Gemma death."""
 
 import argparse
 import json
@@ -38,7 +38,7 @@ def read_journal(adb):
         raise RuntimeError("The kill journal exceeds its retention bound.")
     identities = set()
     for event in events:
-        if set(event) != EVENT_FIELDS or event["process"] not in {"app", "gemma"}:
+        if set(event) != EVENT_FIELDS or event["process"] not in {"app", "gemma", "moss"}:
             raise RuntimeError("The journal contains unexpected event fields.")
         if event["reason_code"] not in {2, 3}:
             raise RuntimeError("The journal contains an ordinary process exit.")
@@ -130,8 +130,48 @@ def validate(adb):
             "retained_events": len(again["events"])}
 
 
+def validate_gemma(adb):
+    # Do not launch or foreground the app: that would mask a missing binder-
+    # death collection hook. Both processes must already be running.
+    def process_pid(name):
+        result = subprocess.run([*adb, "shell", "pidof", name],
+                                capture_output=True, timeout=10)
+        pids = result.stdout.split()
+        if result.returncode or len(pids) != 1 or not pids[0].isdigit():
+            raise RuntimeError("Keep Work Bench and its Gemma worker running before this test.")
+        return int(pids[0])
+
+    main_pid = process_pid(PACKAGE)
+    gemma_pid = process_pid(PACKAGE + ":gemma")
+    before = read_journal(adb)
+    if before is None:
+        raise RuntimeError("The private kill journal must exist before the controlled kill.")
+    old = {(e["timestamp_ms"], e["process"], e["pid"]) for e in before["events"]}
+    killed = subprocess.run([*adb, "shell", "run-as", PACKAGE, "kill", "-9", str(gemma_pid)],
+                            capture_output=True, timeout=10)
+    if killed.returncode:
+        raise RuntimeError("The controlled Gemma SIGKILL could not be delivered.")
+    after = wait_for_journal(adb, lambda document: any(
+        event["process"] == "gemma" and event["pid"] == gemma_pid
+        and event["reason_code"] == 2 and event["status"] == 9
+        and (event["timestamp_ms"], event["process"], event["pid"]) not in old
+        for event in document["events"]
+    ), timeout=15)
+    if process_pid(PACKAGE) != main_pid:
+        raise RuntimeError("The main process restarted during the Gemma-only validation.")
+    new = {(e["timestamp_ms"], e["process"], e["pid"]) for e in after["events"]}
+    if new != set(sorted(old | new, key=lambda item: (item[0], item[2]))[-64:]):
+        raise RuntimeError("Earlier retained kill evidence was lost.")
+    return {"passed": True, "controlled_test": True, "process": "gemma",
+            "signal": "SIGKILL", "signal_number": 9,
+            "captured_without_foreground_transition": True, "main_process_unchanged": True,
+            "general_logs_collected": False, "retained_events": len(after["events"])}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True, help="Explicit Android device serial")
+    parser.add_argument("--process", choices=["app", "gemma"], default="app")
     args = parser.parse_args()
-    print(json.dumps(validate(["adb", "-s", args.device]), sort_keys=True))
+    validator = validate_gemma if args.process == "gemma" else validate
+    print(json.dumps(validator(["adb", "-s", args.device]), sort_keys=True))

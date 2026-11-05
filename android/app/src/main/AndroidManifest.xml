@@ -66,6 +66,8 @@
             android:exported="false"
             android:process=":gemma"
             android:stopWithTask="false" />
+        <service android:name=".MossService" android:exported="false"
+            android:process=":moss" android:stopWithTask="true" />
         <receiver
             android:name=".KokoroTestAudioReceiver"
             android:enabled="@bool/enable_kokoro_test_receiver"

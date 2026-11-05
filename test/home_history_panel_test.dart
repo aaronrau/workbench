@@ -13,6 +13,122 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   _eventRowTests();
+  testWidgets(
+    'shows MOSS profile labels alongside existing conversation turns',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        _app(
+          HomeHistoryPanel(
+            events: const [],
+            conversations: [
+              SharedConversationTurn(
+                id: 'moss-sample-1',
+                conversationId: 'moss-sample',
+                speakerId: 'primary-user',
+                speakerLabel: 'You',
+                text: 'Synthetic MOSS phrase.',
+                startMs: 0,
+                endMs: 2000,
+                confidence: .9,
+                updatedAt: DateTime(2026),
+                isPrimary: true,
+                isOverlap: false,
+              ),
+              _turn(
+                id: 'existing',
+                label: 'Speaker 2',
+                text: 'Synthetic conversation phrase.',
+                updatedAt: DateTime(2026),
+              ),
+            ],
+            mossConversationMode: true,
+            analysisEnabled: true,
+            needsEnrollment: false,
+            analysisState: 'paused',
+            knownSpeakerCount: 2,
+            pendingConversationCount: 0,
+            isLoadingConversations: false,
+            isStorageBusy: false,
+          ),
+        ),
+      );
+      await tester.tap(find.text('Conversation'));
+      await tester.pumpAndSettle();
+      expect(find.text('You'), findsOneWidget);
+      expect(find.text('Speaker 2'), findsOneWidget);
+      expect(find.text('Synthetic MOSS phrase.'), findsOneWidget);
+      expect(find.text('Synthetic conversation phrase.'), findsOneWidget);
+      expect(find.textContaining('MOSS · '), findsWidgets);
+      expect(find.textContaining('Conversation · '), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  for (final hasTurns in [false, true]) {
+    testWidgets(
+      'MOSS conversation history hasTurns=$hasTurns bypasses legacy enrollment',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.pumpWidget(
+          _app(
+            HomeHistoryPanel(
+              events: const [],
+              conversations: [
+                if (hasTurns)
+                  SharedConversationTurn(
+                    id: 'moss-clip-turn-1',
+                    conversationId: 'moss-clip',
+                    speakerId: 'moss:clip:S01',
+                    speakerLabel: 'Speaker 1 (clip)',
+                    text: 'Synthetic overlapping phrase.',
+                    startMs: 100,
+                    endMs: 1200,
+                    confidence: 0,
+                    updatedAt: DateTime(2026),
+                    isPrimary: false,
+                    isOverlap: true,
+                  ),
+              ],
+              mossConversationMode: true,
+              analysisEnabled: false,
+              needsEnrollment: true,
+              enrollmentPending: true,
+              analysisState: 'paused',
+              knownSpeakerCount: 0,
+              pendingConversationCount: 0,
+              isLoadingConversations: false,
+              isStorageBusy: false,
+            ),
+          ),
+        );
+        await tester.tap(find.text('Conversation'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('Voice sample'), findsNothing);
+        expect(
+          find.textContaining('Enable Conversation analysis'),
+          findsNothing,
+        );
+        if (hasTurns) {
+          expect(find.text('Speaker 1 (clip) · overlap'), findsOneWidget);
+          expect(find.text('Synthetic overlapping phrase.'), findsOneWidget);
+          expect(
+            find.textContaining('MOSS · voice profile matching'),
+            findsOneWidget,
+          );
+        } else {
+          expect(
+            find.textContaining(
+              'MOSS speaker turns appear here after transcription.',
+            ),
+            findsOneWidget,
+          );
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
   for (final folderUnavailable in [false, true]) {
     testWidgets(
       'shows local messages when shared folder unavailable=$folderUnavailable',

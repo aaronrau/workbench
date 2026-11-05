@@ -12,6 +12,9 @@ import 'gemma_model.dart';
 import 'inference_capabilities.dart';
 import 'lc3_decoder.dart';
 import 'model_asset_store.dart';
+import 'moss_audio.dart';
+import 'moss_pipeline.dart';
+import 'package:path_provider/path_provider.dart';
 import 'pcm_gain.dart';
 import 'shared_audio_export_store.dart';
 import 'speech_model.dart';
@@ -152,6 +155,7 @@ final class AudioPipelineCoordinator {
     this.onQueuedTranscript,
     this.onFinalTranscript,
     this.onFinalizedSpeechSegment,
+    this.onMossDiarizationReady,
     this.onVadSpeechEvent,
     this.correctionTermsProvider,
     this.explicitCorrectionEligibilityProvider,
@@ -188,6 +192,7 @@ final class AudioPipelineCoordinator {
   final TranscriptHandler? onQueuedTranscript;
   final FinalTranscriptHandler? onFinalTranscript;
   final FinalizedSpeechSegmentHandler? onFinalizedSpeechSegment;
+  final FutureOr<void> Function(String metadataPath)? onMossDiarizationReady;
   final VadSpeechEventSink? onVadSpeechEvent;
   final CorrectionTermsProvider? correctionTermsProvider;
   final ExplicitCorrectionEligibilityProvider?
@@ -216,6 +221,27 @@ final class AudioPipelineCoordinator {
   int microphoneLevel = 0;
   DateTime? lastMicrophonePcmAt;
   VadSupervisor? _vad;
+  MossPipeline? _moss;
+  AudioSystem audioSystem = AudioSystem.modular;
+  MossExecutionProvider mossExecutionProvider = MossExecutionProvider.opencl;
+  MossQuantization mossQuantization = MossQuantization.q5K;
+  bool get usesMoss => audioSystem == AudioSystem.moss;
+  int get pendingMossWindows => _moss?.pendingCount ?? 0;
+  String get mossPerformance {
+    final processor = mossExecutionProvider == MossExecutionProvider.opencl
+        ? 'GPU OpenCL'
+        : 'CPU';
+    final failed = _moss?.failedCount ?? 0;
+    if (failed > 0) {
+      return '$processor · $failed failed · switch away and back to retry';
+    }
+    final decode = _moss?.lastDecodeMs;
+    final audio = _moss?.lastAudioMs;
+    return decode == null || audio == null
+        ? '$processor · $pendingMossWindows queued'
+        : '$processor · $pendingMossWindows queued · last ${(decode / 1000).toStringAsFixed(1)}s / ${(audio / 1000).toStringAsFixed(1)}s audio';
+  }
+
   TranscriptionSupervisor? _transcription;
   TranscriptCorrectionSupervisor? _correction;
   TranscriptTurnAssembler? _transcriptTurnAssembler;
@@ -227,6 +253,7 @@ final class AudioPipelineCoordinator {
   bool _vadWasReady = false;
   VadEndpointMode _vadEndpointMode = VadEndpointMode.defaultFlow;
   bool _modelSwitching = false;
+  bool _systemSwitching = false;
   bool _refreshSharedTranscriptsAfterExport = false;
   bool _decodeBackpressureReported = false;
   int _vadRecoveryBytes = 0;
@@ -275,20 +302,29 @@ final class AudioPipelineCoordinator {
       _correctionConfigStore.config;
   String? get correctionConfigValidationError =>
       _correctionConfigStore.validationError;
-  String get correctionState => _correction?.state ?? 'starting';
+  String get correctionState =>
+      usesMoss ? 'bypassed' : _correction?.state ?? 'starting';
   int get pendingCorrections => _correction?.pendingCount ?? 0;
 
   void setSharedTranscriptRefreshEnabled(bool enabled) {
     _refreshSharedTranscriptsAfterExport = enabled;
   }
 
-  Future<void> initialize({SpeechModelDefinition? transcriptionModel}) async {
+  Future<void> initialize({
+    SpeechModelDefinition? transcriptionModel,
+    AudioSystem? system,
+  }) async {
     if (_initialized || _disposed) {
       return;
     }
     final requestedModel = transcriptionModel ?? _selectedModel;
     _initialized = true;
+    audioSystem = system ?? audioSystem;
     try {
+      if (usesMoss) {
+        await _initializeMoss();
+        return;
+      }
       try {
         await _correctionConfigStore.initialize();
       } catch (error) {
@@ -432,6 +468,158 @@ final class AudioPipelineCoordinator {
     }
   }
 
+  Future<void> _initializeMoss() async {
+    _setStartup(StartupPhase.storage, 'Verifying MOSS 0.9B…');
+    final modelPath = await prepareMossModel(quantization: mossQuantization);
+    final support = await getApplicationSupportDirectory();
+    audioFolder = '${support.path}/workbench/audio';
+    _speechPath = '$audioFolder/moss';
+    _capture = CaptureJournalSupervisor(
+      rootPath: '$audioFolder/journal',
+      onCaptured: _decodeCaptured,
+      onStatus: _pipelineStatus,
+      onFatalBackpressure: onCaptureUnsafe,
+    );
+    await _capture!.start();
+    try {
+      await _decoder.initialize();
+      _decoderReady = true;
+    } on Object {
+      _decoderReady = false;
+    }
+    _setStartup(
+      StartupPhase.transcription,
+      'Loading MOSS 0.9B · ${mossExecutionProvider.name}…',
+    );
+    final moss = MossPipeline(
+      speechPath: _speechPath!,
+      modelPath: modelPath,
+      client: MossClient(
+        provider: mossExecutionProvider,
+        quantization: mossQuantization,
+      ),
+      onTranscript: _onTranscript,
+      onDiarizationReady: onMossDiarizationReady,
+      onStatus: _transcriptionStatus,
+      onUnsafe: onCaptureUnsafe,
+    );
+    _moss = moss;
+    await moss.start();
+    activeModelId = mossQuantization.modelId;
+    activeModelName = 'MOSS 0.9B ${mossQuantization.label}';
+    activeProvider = mossExecutionProvider.name;
+    final vadPath = await _modelStore.prepareVad(onStatus: (_) {});
+    _transcriptTurnAssembler = TranscriptTurnAssembler(
+      store: ContinuousTranscriptStore(speechPath: _speechPath!),
+    );
+    _vad = VadSupervisor(
+      modelPath: vadPath,
+      outputPath: _speechPath!,
+      providers: const ['cpu'],
+      onSegment: _onSpeechSegment,
+      onStatus: _vadStatus,
+      onSpeechEvent: onVadSpeechEvent,
+      endpointMode: _vadEndpointMode,
+      preferredSegmentDuration: mossPreferredSegmentDuration,
+      maximumSegmentDuration: mossMaximumSegmentDuration,
+      preRollDuration: const Duration(seconds: 1),
+      endpointDelayOverride: mossEndpointDelay,
+    );
+    activeVadProvider = await _vad!.start();
+    _vadWasReady = true;
+    _initialStartupComplete = true;
+    _setStartup(
+      StartupPhase.ready,
+      'MOSS ready · speech endpoints · $activeProvider',
+      provider: activeProvider,
+    );
+    log(
+      'Pipeline',
+      '[WorkBench][Pipeline] state=ready system=moss model=${mossQuantization.modelId} stt_provider=$activeProvider vad_provider=cpu correction=none',
+    );
+    if (_sharedAudioExportStore.hasSharedFolder) {
+      unawaited(syncSharedAudioExport());
+    }
+  }
+
+  Future<void> selectAudioSystem(AudioSystem system) async {
+    if (_disposed || _modelSwitching) {
+      throw StateError('Wait for audio startup.');
+    }
+    if (system == audioSystem && startup.isReady) return;
+    // Verify before unloading a working system. Never silently fall back to it.
+    if (system == AudioSystem.moss) {
+      await prepareMossModel(quantization: mossQuantization);
+    }
+    final previous = audioSystem;
+    _modelSwitching = true;
+    _systemSwitching = true;
+    try {
+      // Finish accepted frames in their original path before dispatch changes.
+      await _capture?.drain();
+      await _drainDecodeQueue();
+      await flushCurrentSpeechAndWait();
+      audioSystem = system;
+      await _resetAndInitialize(_selectedModel);
+    } on Object {
+      audioSystem = previous;
+      await _resetAndInitialize(_selectedModel);
+      rethrow;
+    } finally {
+      _modelSwitching = false;
+      _systemSwitching = false;
+      onChanged();
+    }
+  }
+
+  Future<void> selectMossExecutionProvider(
+    MossExecutionProvider provider,
+  ) async {
+    if (_modelSwitching || !usesMoss) {
+      throw StateError('Stop input before changing MOSS execution.');
+    }
+    final previous = mossExecutionProvider;
+    _modelSwitching = true;
+    _systemSwitching = true;
+    try {
+      mossExecutionProvider = provider;
+      await _resetAndInitialize(_selectedModel);
+    } on Object {
+      mossExecutionProvider = previous;
+      await _resetAndInitialize(_selectedModel);
+      rethrow;
+    } finally {
+      _modelSwitching = false;
+      _systemSwitching = false;
+      onChanged();
+    }
+  }
+
+  Future<void> selectMossQuantization(MossQuantization quantization) async {
+    if (_modelSwitching || !usesMoss) {
+      throw StateError('Stop input before changing MOSS weights.');
+    }
+    if (quantization == mossQuantization && startup.isReady) return;
+    await prepareMossModel(quantization: quantization);
+    final previous = mossQuantization;
+    _modelSwitching = true;
+    _systemSwitching = true;
+    try {
+      mossQuantization = quantization;
+      await _resetAndInitialize(_selectedModel);
+    } on Object {
+      mossQuantization = previous;
+      await _resetAndInitialize(_selectedModel);
+      rethrow;
+    } finally {
+      _modelSwitching = false;
+      _systemSwitching = false;
+      onChanged();
+    }
+  }
+
+  void setMossInputActive(bool active) => _moss?.setInputActive(active);
+
   Future<void> startMicrophoneCapture() async {
     if (!canCapturePcm || _microphoneCapture != null) {
       throw StateError('Local audio is not ready for microphone capture.');
@@ -440,6 +628,7 @@ final class AudioPipelineCoordinator {
     await _capture?.drain();
     await _drainDecodeQueue();
     await _finishAudioSource();
+    setMossInputActive(true);
     final capture = CaptureJournalSupervisor(
       rootPath: '$audioFolder/journal',
       pcm16: true,
@@ -492,6 +681,7 @@ final class AudioPipelineCoordinator {
     }
     _replayVadRecovery();
     await flushCurrentSpeechAndWait();
+    setMossInputActive(false);
     if (clearPreview) _transcriptTurn.endSession();
     _meterSamples = 0;
     _meterSquareSum = 0;
@@ -503,6 +693,7 @@ final class AudioPipelineCoordinator {
 
   void _acceptDecodedPcm(Uint8List pcm) {
     if (_disposed) return;
+    setMossInputActive(true);
     _meterPcm(pcm);
     final vad = _vad;
     if (vad?.isReady ?? false) {
@@ -658,6 +849,10 @@ final class AudioPipelineCoordinator {
     unawaited(
       _exportSharedFiles(<String>[wavPath], reason: 'audio', segmentId: id),
     );
+    if (usesMoss) {
+      _moss?.transcribeSegment(segment);
+      return;
+    }
     dispatchFinalizedSpeechConsumers(
       dispatchPrimaryTranscription: () =>
           _transcription?.transcribe(id, wavPath),
@@ -678,8 +873,9 @@ final class AudioPipelineCoordinator {
 
   void _onTranscript(TranscriptionResult result) {
     final segment = _speechSegments.remove(result.segmentId);
+    final mayRoute = result.routeEligible && !_systemSwitching;
     final operation = _transcriptHandlingTail.then(
-      (_) => _processTranscript(result, segment),
+      (_) => _processTranscript(result, segment, mayRoute: mayRoute),
     );
     _transcriptHandlingTail = operation.then<void>(
       (_) {},
@@ -697,18 +893,21 @@ final class AudioPipelineCoordinator {
 
   Future<void> _processTranscript(
     TranscriptionResult result,
-    VadSpeechSegment? segment,
-  ) async {
+    VadSpeechSegment? segment, {
+    required bool mayRoute,
+  }) async {
     final id = result.segmentId;
     lastTranscriptPath = result.transcriptPath;
-    var displayedText = result.text;
+    var displayedText = result.model.startsWith('moss-')
+        ? await File(result.transcriptPath).readAsString()
+        : result.text;
     var collectedText = result.text.trim();
     String? actionText = segment == null || segment.isConversationFinal
         ? result.text.trim()
         : null;
     final exportPaths = <String>[result.transcriptPath];
     final turnAssembler = _transcriptTurnAssembler;
-    if (result.routeEligible && segment != null && turnAssembler != null) {
+    if (mayRoute && segment != null && turnAssembler != null) {
       try {
         final assembly = await turnAssembler.append(
           conversationId: segment.conversationId,
@@ -735,7 +934,7 @@ final class AudioPipelineCoordinator {
         );
       }
     }
-    if (result.routeEligible && collectedText.isNotEmpty) {
+    if (mayRoute && collectedText.isNotEmpty) {
       try {
         onRawTranscript?.call(id, collectedText);
       } on Object {
@@ -751,6 +950,9 @@ final class AudioPipelineCoordinator {
       _exportSharedFiles(exportPaths, reason: 'transcript', segmentId: id),
     );
     completedTranscripts++;
+    if (result.model.startsWith('moss-')) {
+      _transcriptTurn.startTurn(segment?.conversationId ?? id);
+    }
     final displayed = _transcriptTurn.completeTurn(
       segment?.conversationId ?? id,
       displayedText,
@@ -783,7 +985,7 @@ final class AudioPipelineCoordinator {
       onChanged();
       return;
     }
-    if (!result.routeEligible) {
+    if (!mayRoute) {
       log(
         'Pipeline',
         '[WorkBench][VoiceRoute] state=suppressed segment=$id '
@@ -880,7 +1082,7 @@ final class AudioPipelineCoordinator {
       }
     } else {
       final reason = correctionEligible
-          ? 'correction_unavailable'
+          ? (usesMoss ? 'disabled' : 'correction_unavailable')
           : 'no_wake_word';
       await TranscriptCorrectionSupervisor.persistSkipped(
         correctionJob,
@@ -1212,6 +1414,7 @@ final class AudioPipelineCoordinator {
 
   void _transcriptionStatus(String message, {bool isError = false}) {
     log('Pipeline', message, isError: isError);
+    if (usesMoss) onChanged();
     if (!_initialStartupComplete) {
       if (message.contains('state=loading')) {
         final provider = RegExp(
@@ -1298,6 +1501,7 @@ final class AudioPipelineCoordinator {
   }
 
   void handleWearableDisconnect({required bool expected}) {
+    setMossInputActive(false);
     _transcriptTurn.endSession();
     _vad?.flush();
     log(
@@ -1322,6 +1526,7 @@ final class AudioPipelineCoordinator {
   }
 
   void handleWearableReconnect() {
+    setMossInputActive(true);
     log(
       'Pipeline',
       '[WorkBench][Bluetooth] state=connected recovered=true '
@@ -1693,6 +1898,11 @@ final class AudioPipelineCoordinator {
   Future<void> selectTranscriptionModel(
     SpeechModelDefinition requestedModel,
   ) async {
+    if (usesMoss) {
+      throw StateError(
+        'Choose the modular audio system to change its speech model.',
+      );
+    }
     if (_disposed) {
       throw StateError('The local audio system is closed.');
     }
@@ -1871,6 +2081,8 @@ final class AudioPipelineCoordinator {
     _microphoneCapture = null;
     await _capture?.dispose();
     await _drainDecodeQueue();
+    await _moss?.dispose();
+    _moss = null;
     await _vad?.dispose();
     await _transcription?.dispose();
     await _transcriptHandlingTail;
@@ -1923,6 +2135,8 @@ final class AudioPipelineCoordinator {
     _microphoneCapture = null;
     await _capture?.dispose();
     await _drainDecodeQueue();
+    await _moss?.dispose();
+    _moss = null;
     await _vad?.dispose();
     await _transcription?.dispose();
     await _transcriptHandlingTail;

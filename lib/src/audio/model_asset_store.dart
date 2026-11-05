@@ -37,6 +37,22 @@ final class ModelAssetStore {
   final AssetBundle _bundle;
   final Future<Directory> Function() _supportDirectory;
 
+  Future<String> prepareVad({required ModelStageStatus onStatus}) async {
+    final support = await _supportDirectory();
+    final root = Directory('${support.path}/workbench/models');
+    await root.create(recursive: true);
+    final manifest =
+        jsonDecode(await _bundle.loadString('assets/models/vad/model.json'))
+            as Map<String, dynamic>;
+    return (await _stage(
+      asset: 'assets/models/vad/${manifest['file']}',
+      sha256Hex: manifest['sha256'] as String,
+      root: root,
+      onStatus: onStatus,
+      label: 'voice detector',
+    )).path;
+  }
+
   Future<SpeechModelPaths> prepare({
     required SpeechModelDefinition transcriptionModel,
     required ModelStageStatus onStatus,

@@ -37,6 +37,18 @@ final class ConversationModelStore {
     );
   }
 
+  Future<String> prepareEmbedding() async {
+    final support = await _supportDirectory();
+    final file = await _verify(
+      File(
+        '${support.path}/workbench/models/diarization/nemo_en_titanet_small.onnx',
+      ),
+      embeddingSha256,
+      'speaker embedding model',
+    );
+    return file.path;
+  }
+
   Future<File> _verify(File file, String expected, String label) async {
     if (!await file.exists()) {
       throw StateError(

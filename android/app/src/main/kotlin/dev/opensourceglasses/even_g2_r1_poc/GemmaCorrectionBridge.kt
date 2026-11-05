@@ -15,7 +15,10 @@ import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.atomic.AtomicLong
 
 /** Bridges Flutter requests to the cross-process Gemma service with Messenger. */
-internal class GemmaCorrectionBridge(private val context: Context) :
+internal class GemmaCorrectionBridge(
+    private val context: Context,
+    private val requestExitReport: () -> Unit,
+) :
     ServiceConnection {
     private data class PendingRequest(
         val message: Message,
@@ -250,6 +253,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
                         "service_unavailable",
                         "The Gemma process did not start in time.",
                     )
+                    runCatching { requestExitReport() }
                 }
             },
             CONNECT_TIMEOUT_MS,
@@ -271,6 +275,9 @@ internal class GemmaCorrectionBridge(private val context: Context) :
                 )
             send(checkNotNull(service), requestId, pending.message)
         }
+        // A worker may die before ever publishing its binder, in which case
+        // no disconnect callback arrives. Recover that exit on connection too.
+        runCatching { requestExitReport() }
     }
 
     override fun onServiceDisconnected(name: ComponentName?) {
@@ -280,6 +287,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
             "service_disconnected",
             "The Gemma process stopped. The transcript remains safely queued.",
         )
+        runCatching { requestExitReport() }
     }
 
     override fun onBindingDied(name: ComponentName?) {
@@ -288,6 +296,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
             "service_disconnected",
             "The Gemma process stopped. The transcript remains safely queued.",
         )
+        runCatching { requestExitReport() }
     }
 
     private fun send(target: Messenger, requestId: Long, message: Message) {
@@ -300,6 +309,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
                 null,
             )
             resetDeadBinding()
+            runCatching { requestExitReport() }
         }
     }
 

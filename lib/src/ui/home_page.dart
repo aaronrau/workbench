@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../audio/conversation_models.dart';
+import '../audio/moss_audio.dart';
 import '../audio/phone_microphone_session.dart';
 import '../audio/speech_model.dart';
 import '../ble/ble_models.dart';
@@ -9,6 +10,7 @@ import '../util/hex.dart';
 import '../wearable_controller.dart';
 import '../websocket/voice_websocket_connections.dart';
 import 'app_version_label.dart';
+import 'audio_system_settings.dart';
 import 'conversation_analysis_settings.dart';
 import 'conversation_enrollment_prompt.dart';
 import 'home_history_panel.dart';
@@ -491,6 +493,7 @@ final class _HomePageState extends State<HomePage> {
         supportsSharedFolder: controller.supportsSharedAudioFolder,
         sharedFolderName: controller.sharedAudioFolder?.displayName,
         analysisEnabled: controller.conversationAnalysisEnabled,
+        mossConversationMode: controller.usesMoss,
         needsEnrollment: controller.conversationNeedsEnrollment,
         enrollmentPending: controller.conversationEnrollmentPending,
         acceptedEnrollmentSamples:
@@ -543,7 +546,7 @@ final class _HomePageState extends State<HomePage> {
           onSave: controller.saveKeywordHighlightPhrases,
         ),
         const SizedBox(height: 12),
-        _buildConversationAnalysisCard(),
+        if (!controller.usesMoss) _buildConversationAnalysisCard(),
         const SizedBox(height: 12),
         _buildDisplayToolsCard(),
         const SizedBox(height: 12),
@@ -625,43 +628,65 @@ final class _HomePageState extends State<HomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            Text('Transcription', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 4),
-            Text(
-              'Choose the local speech model. Parakeet 0.6B is the default.',
-              style: theme.textTheme.bodySmall,
+            Text('Audio processing', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 12),
+            AudioSystemSettings(
+              system: controller.audioSystem,
+              provider: controller.mossExecutionProvider,
+              quantization: controller.mossQuantization,
+              onQuantizationChanged: (quantization) =>
+                  _run(() => controller.selectMossQuantization(quantization)),
+              onProviderChanged: (provider) =>
+                  _run(() => controller.selectMossExecutionProvider(provider)),
+              enabled: !_busy && controller.canSwitchAudioSystem,
+              onChanged: (system) =>
+                  _run(() => controller.selectAudioSystem(system)),
             ),
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              key: ValueKey<String>(controller.selectedSpeechModelId),
-              initialValue: controller.selectedSpeechModelId,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Speech model'),
-              items: <DropdownMenuItem<String>>[
-                for (final model in controller.speechModels)
-                  DropdownMenuItem<String>(
-                    value: model.id,
-                    child: Text(
-                      model.id == defaultSpeechModelId
-                          ? '${model.displayName} · default'
-                          : model.displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+            if (!controller.usesMoss) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Choose the local speech model. Parakeet 0.6B is the default.',
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                key: ValueKey<String>(controller.selectedSpeechModelId),
+                initialValue: controller.selectedSpeechModelId,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Speech model'),
+                items: <DropdownMenuItem<String>>[
+                  for (final model in controller.speechModels)
+                    DropdownMenuItem<String>(
+                      value: model.id,
+                      child: Text(
+                        model.id == defaultSpeechModelId
+                            ? '${model.displayName} · default'
+                            : model.displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-              ],
-              onChanged: selectionEnabled
-                  ? (modelId) async {
-                      if (modelId != null &&
-                          modelId != controller.selectedSpeechModelId) {
-                        await _run(() => controller.selectSpeechModel(modelId));
+                ],
+                onChanged: selectionEnabled
+                    ? (modelId) async {
+                        if (modelId != null &&
+                            modelId != controller.selectedSpeechModelId) {
+                          await _run(
+                            () => controller.selectSpeechModel(modelId),
+                          );
+                        }
                       }
-                    }
-                  : null,
-            ),
+                    : null,
+              ),
+            ],
             const SizedBox(height: 8),
             Text(
-              controller.isSwitchingSpeechModel
+              controller.usesMoss
+                  ? controller.startup.isReady
+                        ? controller.mossPerformance
+                        : 'MOSS · not loaded'
+                  : controller.isSwitchingSpeechModel
                   ? controller.startup.message
                   : controller.startup.provider == null
                   ? 'Selected: ${controller.selectedSpeechModelName} · '
@@ -673,29 +698,31 @@ final class _HomePageState extends State<HomePage> {
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodySmall,
             ),
-            const SizedBox(height: 4),
-            Text(
-              'Changes apply immediately and persist. Audio capture and ring '
-              'input continue while transcription reloads.',
-              style: theme.textTheme.bodySmall,
-            ),
-            const SizedBox(height: 16),
-            TranscriptCorrectionSettings(
-              config: controller.correctionConfig,
-              runtimeState: controller.correctionState,
-              provider: controller.correctionProvider,
-              validationError: controller.correctionConfigValidationError,
-              pendingCount: controller.pendingCorrections,
-              completedCount: controller.completedCorrections,
-              busy: _busy,
-              onEnabledChanged: (enabled) =>
-                  _run(() => controller.setCorrectionEnabled(enabled)),
-              onSaveInstructions: (instructions) => _run(
-                () => controller.saveCorrectionInstructions(instructions),
+            if (!controller.usesMoss) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Changes apply immediately and persist. Audio capture and ring '
+                'input continue while transcription reloads.',
+                style: theme.textTheme.bodySmall,
               ),
-              onResetInstructions: () =>
-                  _run(controller.resetCorrectionInstructions),
-            ),
+              const SizedBox(height: 16),
+              TranscriptCorrectionSettings(
+                config: controller.correctionConfig,
+                runtimeState: controller.correctionState,
+                provider: controller.correctionProvider,
+                validationError: controller.correctionConfigValidationError,
+                pendingCount: controller.pendingCorrections,
+                completedCount: controller.completedCorrections,
+                busy: _busy,
+                onEnabledChanged: (enabled) =>
+                    _run(() => controller.setCorrectionEnabled(enabled)),
+                onSaveInstructions: (instructions) => _run(
+                  () => controller.saveCorrectionInstructions(instructions),
+                ),
+                onResetInstructions: () =>
+                    _run(controller.resetCorrectionInstructions),
+              ),
+            ],
             const SizedBox(height: 16),
             Text('File storage', style: theme.textTheme.titleSmall),
             const SizedBox(height: 4),
@@ -914,13 +941,19 @@ final class _HomePageState extends State<HomePage> {
               runSpacing: 8,
               children: <Widget>[
                 OutlinedButton(
-                  onPressed: _busy || !controller.startup.isReady
+                  onPressed:
+                      _busy ||
+                          controller.usesMoss ||
+                          !controller.startup.isReady
                       ? null
                       : () => _run(controller.restartTranscriptionForTest),
                   child: const Text('Restart transcription'),
                 ),
                 OutlinedButton(
-                  onPressed: _busy || !controller.startup.isReady
+                  onPressed:
+                      _busy ||
+                          controller.usesMoss ||
+                          !controller.startup.isReady
                       ? null
                       : () => _run(controller.restartVadForTest),
                   child: const Text('Restart VAD'),
@@ -948,6 +981,14 @@ final class _HomePageState extends State<HomePage> {
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 16),
+            Text('Audio system', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            AudioSystemSettings(
+              system: AudioSystem.modular,
+              enabled: false,
+              onChanged: (_) {},
+            ),
+            const SizedBox(height: 12),
             Text('Audio input', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
             IgnorePointer(

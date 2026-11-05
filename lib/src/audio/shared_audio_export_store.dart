@@ -91,6 +91,7 @@ final class SharedAudioExportStore extends ChangeNotifier {
       'workbench-agent-servers.json';
   static const String speakerSignatureRecoveryFileName =
       'workbench-speaker-signatures.wbprofiles';
+  static const int maximumExportBatchFiles = 32;
   static const int maximumVisibleTranscripts = 100;
   static const int maximumVisibleMessages = 100;
   static const int maximumVisibleConversationTurns = 100;
@@ -179,11 +180,23 @@ final class SharedAudioExportStore extends ChangeNotifier {
     if (stablePaths.isEmpty) {
       return 0;
     }
-    final exported = await _channel.invokeMethod<int>(
-      'exportFiles',
-      <String, Object>{'paths': stablePaths},
-    );
-    return exported ?? 0;
+    var exported = 0;
+    for (
+      var offset = 0;
+      offset < stablePaths.length;
+      offset += maximumExportBatchFiles
+    ) {
+      final end = (offset + maximumExportBatchFiles).clamp(
+        0,
+        stablePaths.length,
+      );
+      exported +=
+          await _channel.invokeMethod<int>('exportFiles', <String, Object>{
+            'paths': stablePaths.sublist(offset, end),
+          }) ??
+          0;
+    }
+    return exported;
   }
 
   Future<void> indexConversation(ConversationRecord record) =>
@@ -583,6 +596,7 @@ final class SharedAudioExportStore extends ChangeNotifier {
   bool _isShareablePath(String path) {
     final lower = path.toLowerCase();
     return (lower.endsWith('.wav') || lower.endsWith('.txt')) &&
+        !lower.endsWith('.moss.txt') &&
         !lower.endsWith('.part.wav') &&
         !lower.endsWith('.part.txt');
   }

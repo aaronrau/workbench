@@ -94,14 +94,20 @@ final class ConversationRecordStore {
   ConversationRecordStore({
     Future<Directory> Function() supportDirectory =
         getApplicationSupportDirectory,
-  }) : _supportDirectory = supportDirectory;
+    String namespace = '',
+  }) : assert(namespace == '' || namespace == 'moss'),
+       _namespace = namespace,
+       _supportDirectory = supportDirectory;
 
   final Future<Directory> Function() _supportDirectory;
+  final String _namespace;
   Directory? _root;
 
   Future<void> initialize() async {
     final support = await _supportDirectory();
-    _root = Directory('${support.path}/workbench/conversation');
+    _root = Directory(
+      '${support.path}/workbench/conversation${_namespace.isEmpty ? '' : '/$_namespace'}',
+    );
     await _root!.create(recursive: true);
   }
 
@@ -145,8 +151,7 @@ final class ConversationRecordStore {
     );
   }
 
-  Future<List<ConversationRecord>> loadRecords() async {
-    final records = <ConversationRecord>[];
+  Stream<ConversationRecord> streamRecords() async* {
     await for (final entity in _requireRoot().list()) {
       if (entity is! File || !entity.path.endsWith('.conversation.json')) {
         continue;
@@ -154,12 +159,34 @@ final class ConversationRecordStore {
       try {
         final decoded = jsonDecode(await entity.readAsString());
         if (decoded is Map<String, Object?>) {
-          records.add(ConversationRecord.fromJson(decoded));
+          yield ConversationRecord.fromJson(decoded);
         }
       } on Object {
         continue;
       }
     }
+  }
+
+  Future<ConversationRecord?> readRecord(String id) async {
+    if (!RegExp(r'^[A-Za-z0-9][A-Za-z0-9_.-]*$').hasMatch(id) ||
+        id.contains('..')) {
+      throw const FormatException('Invalid conversation record ID.');
+    }
+    final file = File('${_requireRoot().path}/$id.conversation.json');
+    if (!await file.exists()) return null;
+    try {
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is Map<String, Object?>) {
+        return ConversationRecord.fromJson(decoded);
+      }
+    } on Object {
+      return null;
+    }
+    return null;
+  }
+
+  Future<List<ConversationRecord>> loadRecords() async {
+    final records = await streamRecords().toList();
     records.sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
     return records;
   }
@@ -209,6 +236,8 @@ final class ConversationRecordStore {
       metadataPath: metadata.path,
       utterances: source.utterances,
       updatedAt: source.updatedAt,
+      speakerIdentificationVersion: source.speakerIdentificationVersion,
+      speakerProfileRevision: source.speakerProfileRevision,
     );
     await _atomicWrite(metadata, '${retained.encode()}\n');
     return retained;
@@ -337,9 +366,6 @@ final class ConversationRecordStore {
       await partial.delete();
     }
     await partial.writeAsString(value, flush: true);
-    if (await target.exists()) {
-      await target.delete();
-    }
     await partial.rename(target.path);
   }
 

@@ -11,3 +11,4 @@
 # Keep the Kotlin metadata the library reads back for its own types.
 -keepattributes RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations
 -keepattributes InnerClasses,Signature,EnclosingMethod
+-keep class dev.opensourceglasses.even_g2_r1_poc.MossNative { *; }

@@ -126,6 +126,7 @@ final class HomeHistoryPanel extends StatefulWidget {
     required this.conversations,
     this.voiceMemos = const <VoiceMemoRecord>[],
     required this.analysisEnabled,
+    this.mossConversationMode = false,
     required this.needsEnrollment,
     this.enrollmentPending = false,
     this.acceptedEnrollmentSamples = 0,
@@ -167,6 +168,7 @@ final class HomeHistoryPanel extends StatefulWidget {
   final List<SharedConversationTurn> conversations;
   final List<VoiceMemoRecord> voiceMemos;
   final bool analysisEnabled;
+  final bool mossConversationMode;
   final bool needsEnrollment;
   final bool enrollmentPending;
   final int acceptedEnrollmentSamples;
@@ -1065,7 +1067,9 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         label: 'Loading conversations…',
       );
     }
-    final enrollmentNeeded = widget.needsEnrollment || widget.enrollmentPending;
+    final enrollmentNeeded =
+        !widget.mossConversationMode &&
+        (widget.needsEnrollment || widget.enrollmentPending);
     final enrollmentPrompt =
         'Voice sample ${widget.acceptedEnrollmentSamples + 1} of '
         '${widget.requiredEnrollmentSamples}: speak one clear sentence, '
@@ -1115,7 +1119,10 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               Text(
-                widget.analysisEnabled
+                widget.mossConversationMode
+                    ? 'MOSS speaker turns appear here after transcription. '
+                          'Saved voice profiles identify matching speakers; other labels reset per clip.'
+                    : widget.analysisEnabled
                     ? 'No conversations or voice memos yet. Say “Hey Memo” '
                           'to start a memo.'
                     : 'Say “Hey Memo” to create a note here. Enable '
@@ -1141,7 +1148,10 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Text(
-          widget.analysisEnabled
+          widget.mossConversationMode
+              ? 'MOSS · voice profile matching · '
+                    '${widget.pendingConversationCount} pending'
+              : widget.analysisEnabled
               ? '${widget.knownSpeakerCount} saved speakers · '
                     '${widget.pendingConversationCount} pending · '
                     '${widget.voiceMemos.length} '
@@ -1155,7 +1165,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
           style: theme.textTheme.bodySmall,
         ),
         const SizedBox(height: 8),
-        if (widget.analysisEnabled) ...<Widget>[
+        if (!widget.mossConversationMode && widget.analysisEnabled) ...<Widget>[
           if (enrollmentNeeded)
             Text(enrollmentPrompt, style: theme.textTheme.bodyMedium),
           const SizedBox(height: 8),
@@ -1225,7 +1235,12 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         ? conversationUserMarkerColor
         : colors.surfaceContainerHighest;
     final foreground = colors.onSurface;
-    final label = turn.isOverlap ? 'Overlapping speakers' : turn.speakerLabel;
+    final isMoss = turn.conversationId.startsWith('moss-');
+    final label = isMoss || turn.speakerId.startsWith('moss:')
+        ? '${turn.speakerLabel}${turn.isOverlap ? ' · overlap' : ''}'
+        : turn.isOverlap
+        ? 'Overlapping speakers'
+        : turn.speakerLabel;
     return Semantics(
       label: '$label said ${turn.text}',
       child: Align(
@@ -1273,6 +1288,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                 ),
                 const SizedBox(height: 4),
                 Text(
+                  '${isMoss ? 'MOSS' : 'Conversation'} · '
                   '${_savedLabel(context, turn.updatedAt)} · '
                   '${_durationLabel(turn.startMs, turn.endMs)}',
                   style: theme.textTheme.bodySmall?.copyWith(

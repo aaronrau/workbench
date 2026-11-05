@@ -50,6 +50,40 @@ void main() {
     expect(store.folder?.displayName, 'Current');
   });
 
+  test(
+    'bulk exports bound native work and preserve every path and count',
+    () async {
+      final batches = <List<String>>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'currentDirectory') return {'displayName': 'Shared'};
+        if (call.method == 'exportFiles') {
+          final paths = ((call.arguments as Map)['paths'] as List)
+              .cast<String>();
+          batches.add(paths);
+          return paths.length;
+        }
+        fail('Unexpected method ${call.method}');
+      });
+      final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+      addTearDown(store.dispose);
+      await store.initialize();
+      final paths = List.generate(
+        99,
+        (i) => '/private/synthetic-$i.conversation.txt',
+      );
+      expect(await store.exportFiles(paths), 99);
+      expect(
+        batches.every(
+          (batch) =>
+              batch.length <= SharedAudioExportStore.maximumExportBatchFiles,
+        ),
+        isTrue,
+      );
+      expect(batches.expand((batch) => batch).toList(), paths);
+      expect(batches, hasLength(4));
+    },
+  );
+
   test('exports only final WAV and text files once', () async {
     List<String>? exportedPaths;
     messenger.setMockMethodCallHandler(channel, (call) async {
@@ -75,6 +109,8 @@ void main() {
       '/private/segment.txt',
       '/private/segment.part.wav',
       '/private/transcripts.jsonl',
+      '/private/segment.moss.txt',
+      '/private/segment.moss.json',
     ]);
 
     expect(count, 2);

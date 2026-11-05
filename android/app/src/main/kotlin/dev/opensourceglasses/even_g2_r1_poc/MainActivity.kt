@@ -10,6 +10,8 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -71,6 +73,15 @@ class MainActivity : FlutterActivity() {
     private var pendingDirectoryResult: MethodChannel.Result? = null
     private val storageExecutor = Executors.newSingleThreadExecutor()
     private val historyExecutor = Executors.newSingleThreadExecutor()
+    private val historySnapshotHandler = Handler(Looper.getMainLooper())
+    private val historySnapshotLock = Any()
+    private val documentIndexLock = Any()
+    private var cachedDocumentIndex: MutableMap<String, Uri>? = null
+    private var documentIndexWriteQueued = false
+    @Volatile private var storageClosing = false
+    private var historySnapshotQueued = false
+    private var requestedHistorySnapshot: Pair<Uri, String>? = null
+    private val exitReportHandler = Handler(Looper.getMainLooper())
     private val microphoneExecutor = Executors.newSingleThreadExecutor()
     private var microphoneReadPending = false
     private val sharedHistoryCache by lazy {
@@ -80,6 +91,7 @@ class MainActivity : FlutterActivity() {
     private var sharedAudioPlayer: MediaPlayer? = null
     private var sharedAudioFileName: String? = null
     private lateinit var gemmaBridge: GemmaCorrectionBridge
+    private lateinit var mossBridge: MossBridge
     private lateinit var debugGestureChannel: MethodChannel
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -389,7 +401,13 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-        gemmaBridge = GemmaCorrectionBridge(applicationContext)
+        gemmaBridge = GemmaCorrectionBridge(
+            applicationContext,
+            requestExitReport = ::scheduleProcessExitReport,
+        )
+        mossBridge = MossBridge(applicationContext, ::scheduleProcessExitReport)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "dev.opensourceglasses/workbench_moss").setMethodCallHandler(mossBridge::handle)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             GEMMA_CHANNEL,
@@ -398,7 +416,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
-        reportPreviousProcessExits()
+        scheduleProcessExitReport()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -474,6 +492,18 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun scheduleProcessExitReport() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || isDestroyed) {
+            return
+        }
+        // Android may publish the exit after the binder disconnect. Coalesce
+        // notifications and retry without delaying correction or its recovery.
+        exitReportHandler.removeCallbacksAndMessages(null)
+        for (delayMs in longArrayOf(0, 1_000, 5_000)) {
+            exitReportHandler.postDelayed({ reportPreviousProcessExits() }, delayMs)
+        }
+    }
+
     private fun reportPreviousProcessExits() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             return
@@ -487,6 +517,7 @@ class MainActivity : FlutterActivity() {
                         "WorkBench",
                         "[WorkBench][Runtime] state=previous_exit " +
                             "process=${exit.process} reason=${exit.reason} " +
+                            "timestamp_ms=${exit.timestampMs} pid=${exit.pid} " +
                             "status=${exit.status} signal=${exit.signalName ?: "unreported"} " +
                             "importance=${exit.importance} " +
                             "pss_kb=${exit.lastSamplePssKb} rss_kb=${exit.lastSampleRssKb}",
@@ -551,6 +582,7 @@ class MainActivity : FlutterActivity() {
                 preferences.getString(STORAGE_DIRECTORY_URI, null) != uri.toString()
             if (directoryChanged) {
                 preferences.edit().remove(STORAGE_DOCUMENT_INDEX).apply()
+                synchronized(documentIndexLock) { cachedDocumentIndex = null }
             }
             releaseStoredDirectory(except = uri)
             preferences.edit()
@@ -646,6 +678,7 @@ class MainActivity : FlutterActivity() {
             .remove(STORAGE_DIRECTORY_URI)
             .remove(STORAGE_DOCUMENT_INDEX)
             .apply()
+        synchronized(documentIndexLock) { cachedDocumentIndex = null }
         sharedHistoryCache.reset()
     }
 
@@ -690,7 +723,7 @@ class MainActivity : FlutterActivity() {
                         exported++
                     }
                 }
-                writeSharedHistorySnapshot(directory, reason = "export")
+                queueSharedHistorySnapshot(directory, reason = "export")
                 runOnUiThread { result.success(exported) }
             } catch (_: Exception) {
                 runOnUiThread {
@@ -741,8 +774,7 @@ class MainActivity : FlutterActivity() {
         }
         val target =
             indexedTarget
-                ?: findChild(directory, source.name)
-                ?: predictableExternalStorageChild(directory, source.name)
+                ?: existingExportChild(directory, source.name)
                 ?: DocumentsContract.createDocument(
                     contentResolver,
                     rootDocument,
@@ -783,9 +815,27 @@ class MainActivity : FlutterActivity() {
         directory: Uri,
         reason: String,
     ) {
-        storageExecutor.execute {
-            writeSharedHistorySnapshot(directory, reason)
+        if (storageClosing) return
+        // Retained files and the live index are already durable. Collapse a
+        // burst of index/export updates into one pending recovery copy so old
+        // backup work cannot occupy the file export queue indefinitely.
+        synchronized(historySnapshotLock) {
+            requestedHistorySnapshot = directory to reason
+            if (historySnapshotQueued) return
+            historySnapshotQueued = true
         }
+        historySnapshotHandler.postDelayed({
+            if (storageClosing) return@postDelayed
+            storageExecutor.execute {
+                val request = synchronized(historySnapshotLock) {
+                    historySnapshotQueued = false
+                    requestedHistorySnapshot.also { requestedHistorySnapshot = null }
+                }
+                if (request != null && storedDirectoryUri() == request.first) {
+                    writeSharedHistorySnapshot(request.first, request.second)
+                }
+            }
+        }, 1_000L)
     }
 
     private fun writeSharedHistorySnapshot(
@@ -2062,44 +2112,69 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun documentIndex(): MutableMap<String, Uri> {
-        val stored =
-            getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
-                .getStringSet(STORAGE_DOCUMENT_INDEX, emptySet())
-                .orEmpty()
+    // URI lookups happen for every exported WAV/TXT. Rebuilding the entire
+    // folder map per file makes a large history monopolize the export worker.
+    private fun loadDocumentIndexLocked(): MutableMap<String, Uri> {
+        cachedDocumentIndex?.let { return it }
+        val stored = getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
+            .getStringSet(STORAGE_DOCUMENT_INDEX, emptySet()).orEmpty()
         val documents = mutableMapOf<String, Uri>()
         for (value in stored) {
             val separator = value.indexOf('\n')
-            if (separator <= 0 || separator == value.lastIndex) {
-                continue
-            }
-            val name = value.substring(0, separator)
-            val uri = Uri.parse(value.substring(separator + 1))
-            documents[name] = uri
+            if (separator <= 0 || separator == value.lastIndex) continue
+            documents[value.substring(0, separator)] = Uri.parse(value.substring(separator + 1))
         }
+        cachedDocumentIndex = documents
         return documents
     }
 
-    private fun rememberDocument(
-        name: String,
-        document: Uri,
-    ) {
-        val documents = documentIndex()
-        documents[name] = document
-        val stored = documents.map { (key, value) -> "$key\n$value" }.toSet()
-        getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
-            .edit()
-            .putStringSet(STORAGE_DOCUMENT_INDEX, stored)
-            .apply()
+    private fun documentIndex(): Map<String, Uri> = synchronized(documentIndexLock) {
+        loadDocumentIndexLocked().toMap()
     }
 
-    private fun indexedDocument(
-        directory: Uri,
-        name: String,
-    ): Uri? {
-        val document = documentIndex()[name] ?: return null
+    private fun persistDocumentIndex() {
+        synchronized(documentIndexLock) {
+            documentIndexWriteQueued = false
+            val documents = cachedDocumentIndex ?: return
+            val stored = documents.map { (key, value) -> "$key\n$value" }.toSet()
+            getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
+                .edit().putStringSet(STORAGE_DOCUMENT_INDEX, stored).apply()
+        }
+    }
+
+    private fun rememberDocument(name: String, document: Uri) {
+        if (storageClosing) return
+        synchronized(documentIndexLock) {
+            val documents = loadDocumentIndexLocked()
+            if (documents[name] == document) return
+            documents[name] = document
+            if (documentIndexWriteQueued) return
+            documentIndexWriteQueued = true
+        }
+        // The files and export fingerprints are already durable. This private
+        // URI lookup cache is reconstructable and can be saved in batches.
+        historySnapshotHandler.postDelayed({
+            if (storageClosing) return@postDelayed
+            storageExecutor.execute { persistDocumentIndex() }
+        }, 1_000L)
+    }
+
+    private fun indexedDocument(directory: Uri, name: String): Uri? {
+        val document = synchronized(documentIndexLock) { loadDocumentIndexLocked()[name] }
+            ?: return null
         return document.takeIf {
             documentBelongsToTree(directory, it) && documentExists(it)
+        }
+    }
+
+    private fun existingExportChild(directory: Uri, name: String): Uri? {
+        // ExternalStorageProvider document IDs already contain the full path.
+        // An exact query can establish absence without enumerating a large
+        // folder for each new transcript. Other providers retain the scan.
+        return if (directory.authority == "com.android.externalstorage.documents") {
+            predictableExternalStorageChild(directory, name)
+        } else {
+            findChild(directory, name)
         }
     }
 
@@ -2179,6 +2254,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        storageClosing = true
+        exitReportHandler.removeCallbacksAndMessages(null)
         pendingDirectoryResult?.error(
             "activity_closed",
             "The folder picker was closed.",
@@ -2188,7 +2265,10 @@ class MainActivity : FlutterActivity() {
         if (::gemmaBridge.isInitialized) {
             gemmaBridge.dispose()
         }
+        if (::mossBridge.isInitialized) mossBridge.dispose()
         stopSharedAudio()
+        historySnapshotHandler.removeCallbacksAndMessages(null)
+        persistDocumentIndex()
         storageExecutor.shutdown()
         historyExecutor.shutdown()
         MicrophoneCaptureService.pendingStart?.invoke("Microphone activity closed")

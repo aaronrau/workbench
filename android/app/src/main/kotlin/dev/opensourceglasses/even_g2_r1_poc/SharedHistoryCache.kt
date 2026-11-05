@@ -283,7 +283,7 @@ internal class SharedHistoryCache(
                                 put("conversation_id", conversationId)
                                 put(
                                     "speaker_id",
-                                    "$RECOVERED_SPEAKER_PREFIX$speakerKey",
+                                    "$RECOVERED_SPEAKER_PREFIX$conversationId:$speakerKey",
                                 )
                                 put("speaker_label", turn.speakerLabel)
                                 put(
@@ -1044,6 +1044,7 @@ internal class SharedHistoryCache(
         if (name.isEmpty() ||
             lower == MainActivity.CORRECTION_PROMPT_FILE_NAME ||
             lower.endsWith(".part.wav") ||
+            lower.endsWith(".moss.txt") ||
             lower.endsWith(".part.txt")
         ) {
             return null

@@ -82,6 +82,23 @@ final class ConversationAnalysisService {
   List<SpeakerProfile> _profiles = const <SpeakerProfile>[];
   bool _initialized = false;
   bool _disposed = false;
+  bool _pipelineSuspended = false;
+
+  // Preserve optional jobs; primary capture never awaits this worker release.
+  void setPipelineSuspended(bool suspended) {
+    _pipelineSuspended = suspended;
+    if (suspended) {
+      _idleWorkerReleaseTimer?.cancel();
+      unawaited(
+        _releaseWorker(reason: 'audio_system').catchError((Object _) {}),
+      );
+      state = 'paused_for_audio_system';
+    } else if (_initialized) {
+      unawaited(resumeAfterMemoryPressure());
+    }
+    onChanged();
+  }
+
   bool _starting = false;
   Completer<void>? _startSettled;
   bool _jobActive = false;
@@ -101,6 +118,9 @@ final class ConversationAnalysisService {
   String state = 'disabled';
   String? error;
   int completedConversations = 0;
+
+  List<SpeakerProfile> get speakerProfiles =>
+      List<SpeakerProfile>.unmodifiable(_profiles);
 
   bool get isStarting => _starting && _jobs.isNotEmpty;
   bool get isResetting => _resetting;
@@ -170,6 +190,11 @@ final class ConversationAnalysisService {
       await _reconcilePrimarySpeakerHistoryIfNeeded();
       _jobs.addAll(await _recordStore.loadPendingJobs());
       enabled = recoveredEnabled ?? await _preferences.loadEnabled();
+      if (_pipelineSuspended) {
+        state = 'paused_for_audio_system';
+        onChanged();
+        return;
+      }
       _scheduleSharedRecoveryBackup();
       if (!enabled) {
         state = 'disabled';
@@ -373,7 +398,8 @@ final class ConversationAnalysisService {
   /// This method deliberately returns void so the primary audio pipeline
   /// cannot await conversation analysis.
   void acceptFinalizedSegment(String segmentId, String wavPath) {
-    if (!enabled ||
+    if (_pipelineSuspended ||
+        !enabled ||
         _disposed ||
         _resetting ||
         segmentId.isEmpty ||
@@ -442,6 +468,7 @@ final class ConversationAnalysisService {
   }
 
   Future<void> _start() async {
+    if (_pipelineSuspended) return;
     if (_starting) {
       final settled = _startSettled;
       if (settled != null) {
@@ -452,7 +479,8 @@ final class ConversationAnalysisService {
       }
       return;
     }
-    if (_disposed ||
+    if (_pipelineSuspended ||
+        _disposed ||
         _resetting ||
         _memoryPressureRelease != null ||
         !enabled ||
@@ -484,7 +512,10 @@ final class ConversationAnalysisService {
         signatureMatchThreshold: _speakerMatchThreshold,
       );
       startingWorker = supervisor;
-      if (!_isCurrentGeneration(generation) || !enabled || _jobs.isEmpty) {
+      if (!_isCurrentGeneration(generation) ||
+          _pipelineSuspended ||
+          !enabled ||
+          _jobs.isEmpty) {
         await supervisor.dispose();
         return;
       }
@@ -561,7 +592,8 @@ final class ConversationAnalysisService {
 
   void _dispatch() {
     final supervisor = _supervisor;
-    if (_jobActive ||
+    if (_pipelineSuspended ||
+        _jobActive ||
         _jobs.isEmpty ||
         supervisor == null ||
         !supervisor.isReady ||

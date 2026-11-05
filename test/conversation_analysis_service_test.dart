@@ -16,6 +16,57 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
+    'MOSS suspension preserves durable conversation jobs without loading its models',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final temporary = await Directory.systemTemp.createTemp(
+        'workbench-conversation-system.',
+      );
+      final store = ConversationRecordStore(
+        supportDirectory: () async => temporary,
+      );
+      await store.initialize();
+      final wav = File('${temporary.path}/synthetic.wav');
+      await wav.writeAsBytes([0, 0]);
+      await store.savePendingJobs([
+        ConversationPendingJob(
+          segmentId: 'synthetic',
+          wavPath: wav.path,
+          enrollment: false,
+          queuedAt: DateTime.utc(2026),
+        ),
+      ]);
+      var loads = 0;
+      final service = ConversationAnalysisService(
+        log: (_, _, {bool isError = false}) {},
+        onChanged: () {},
+        sharedAudioExportStore: SharedAudioExportStore(isAndroid: false),
+        recordStore: store,
+        workerLoader:
+            ({
+              required onResult,
+              required onFailure,
+              required signatureMatchThreshold,
+            }) async {
+              loads++;
+              return _FakeConversationWorker(onResult, onFailure);
+            },
+      );
+      addTearDown(() async {
+        await service.dispose();
+        await temporary.delete(recursive: true);
+      });
+      service.setPipelineSuspended(true);
+      await service.initialize();
+      await service.resumeAfterMemoryPressure();
+      expect(loads, 0);
+      expect(await store.loadPendingJobs(), hasLength(1));
+      service.acceptFinalizedSegment('moss-only', wav.path);
+      expect(await store.loadPendingJobs(), hasLength(1));
+    },
+  );
+
+  test(
     'stalled conversation export does not block the next analysis',
     () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});

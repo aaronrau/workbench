@@ -33,3 +33,76 @@ target_compile_options(workbench_lc3 PRIVATE -O3 -ffast-math)
 
 find_library(log_library log)
 target_link_libraries(workbench_lc3 PRIVATE "${log_library}")
+
+# A pinned native runtime. MOSS has its own process and never loads Sherpa or
+# LiteRT-LM. Keep upstream sources in the build cache, not generated repo files.
+include(FetchContent)
+include("${CMAKE_CURRENT_SOURCE_DIR}/moss_opencl.cmake")
+if(NOT ANDROID_ABI STREQUAL "arm64-v8a")
+    set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
+endif()
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(workbench_ggml
+    URL https://codeload.github.com/ggml-org/ggml/tar.gz/eced84c86f8b012c752c016f7fe789adea168e1e
+    URL_HASH SHA256=8036f930dbe909affbcecdda7137d671520764d4396962d2b9c3df476cb29cb0)
+FetchContent_GetProperties(workbench_ggml)
+if(NOT workbench_ggml_POPULATED)
+    FetchContent_Populate(workbench_ggml)
+endif()
+wb_patch_opencl("${workbench_ggml_SOURCE_DIR}/src/ggml-opencl/ggml-opencl.cpp")
+add_subdirectory("${workbench_ggml_SOURCE_DIR}" "${workbench_ggml_BINARY_DIR}")
+if(TARGET ggml-opencl)
+    target_compile_options(ggml-opencl PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/moss_opencl_dispatch.hpp")
+endif()
+# Debug APKs still need optimized matrix kernels for a meaningful phone test.
+foreach(ggml_target ggml ggml-base ggml-cpu ggml-opencl)
+    if(TARGET ${ggml_target})
+        target_compile_options(${ggml_target} PRIVATE -O3)
+    endif()
+endforeach()
+FetchContent_Declare(workbench_moss
+    URL https://codeload.github.com/localai-org/moss-transcribe.cpp/tar.gz/190a569c13b4b247450f2fb3b2a431244e84833e
+    URL_HASH SHA256=bf10df98f16a0755ce7c21b8ab8394ad0a0ae4aa101e55db021dc4f3d528de8a)
+FetchContent_GetProperties(workbench_moss)
+if(NOT workbench_moss_POPULATED)
+    FetchContent_Populate(workbench_moss)
+endif()
+file(GLOB MOSS_SOURCES "${workbench_moss_SOURCE_DIR}/src/*.cpp")
+list(REMOVE_ITEM MOSS_SOURCES "${workbench_moss_SOURCE_DIR}/src/cli.cpp")
+list(REMOVE_ITEM MOSS_SOURCES "${workbench_moss_SOURCE_DIR}/src/backend.cpp"
+    "${workbench_moss_SOURCE_DIR}/src/generate.cpp"
+    "${workbench_moss_SOURCE_DIR}/src/model_loader.cpp")
+file(READ "${workbench_moss_SOURCE_DIR}/src/generate.cpp" MOSS_GENERATE)
+string(REPLACE "if (!ggml_backend_supports_op(backend(), rows)) {"
+    "if (!ggml_backend_supports_op(backend(), rows)) { if (!ggml_backend_is_cpu(backend())) throw std::runtime_error(\"GPU embedding fallback refused\");"
+    MOSS_GENERATE "${MOSS_GENERATE}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/moss_generate.cpp"
+    "#include <stdexcept>\n#include \"ggml-cpu.h\"\n${MOSS_GENERATE}")
+wb_patch_moss_loader("${workbench_moss_SOURCE_DIR}/src/model_loader.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/moss_model_loader.cpp")
+add_library(workbench_moss SHARED workbench_moss.cpp moss_backend.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/moss_generate.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/moss_model_loader.cpp"
+    ${MOSS_SOURCES})
+target_include_directories(workbench_moss PRIVATE
+    "${workbench_moss_SOURCE_DIR}/include" "${workbench_moss_SOURCE_DIR}/src"
+    "${workbench_moss_SOURCE_DIR}/third_party")
+target_compile_options(workbench_moss PRIVATE -O3)
+if(TARGET ggml-opencl)
+    target_compile_definitions(workbench_moss PRIVATE WB_MOSS_OPENCL=1)
+endif()
+target_link_libraries(workbench_moss PRIVATE ggml "${log_library}")
+
+option(WORKBENCH_MOSS_BUILD_PROBE "Build the device qualification probe" OFF)
+if(WORKBENCH_MOSS_BUILD_PROBE)
+    add_executable(workbench_moss_probe moss_probe.cpp)
+    target_include_directories(workbench_moss_probe PRIVATE "${workbench_moss_SOURCE_DIR}/src")
+    target_link_libraries(workbench_moss_probe PRIVATE workbench_moss ggml)
+endif()

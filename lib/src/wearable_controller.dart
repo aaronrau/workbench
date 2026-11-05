@@ -8,6 +8,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'audio/audio_pipeline_coordinator.dart';
+import 'audio/moss_audio.dart';
+import 'audio/moss_conversation_archive.dart';
 import 'audio/android_microphone_source.dart';
 import 'audio/keyword_highlights.dart';
 import 'audio/phone_microphone_session.dart';
@@ -438,6 +440,15 @@ base class WearableController extends ChangeNotifier
       onChanged: _safeNotify,
       sharedAudioExportStore: _sharedAudioExportStore,
     );
+    _mossConversations = MossConversationArchive(
+      sharedStore: _sharedAudioExportStore,
+      speakerProfilesProvider: () => _conversationAnalysis.speakerProfiles,
+      speakerMatchThresholdProvider: () =>
+          _conversationAnalysis.speakerMatchThreshold,
+      onChanged: _safeNotify,
+      onStatus: (message, {bool isError = false}) =>
+          addLog('Conversation', message, isError: isError),
+    );
     _voiceMemo = VoiceMemoService(log: addLog, onChanged: _memoChanged);
     _audioPipeline = AudioPipelineCoordinator(
       log: addLog,
@@ -446,6 +457,7 @@ base class WearableController extends ChangeNotifier
       onQueuedTranscript: _handleQueuedTranscript,
       onFinalTranscript: _handleFinalTranscript,
       onFinalizedSpeechSegment: _handleFinalizedSpeechSegment,
+      onMossDiarizationReady: _mossConversations.accept,
       onVadSpeechEvent: _handleVadSpeechEvent,
       correctionTermsProvider: () => <String>[
         VoiceMemoService.wakePhrase,
@@ -571,6 +583,7 @@ base class WearableController extends ChangeNotifier
   late final AppRuntimeCoordinator _runtime;
   late final VoiceWebSocketConnections _voiceWebSocket;
   late final ConversationAnalysisService _conversationAnalysis;
+  late final MossConversationArchive _mossConversations;
   late final VoiceMemoService _voiceMemo;
   late final AudioPipelineCoordinator _audioPipeline;
   final AndroidMicrophoneSource _microphoneSource = AndroidMicrophoneSource();
@@ -748,6 +761,20 @@ base class WearableController extends ChangeNotifier
   String get selectedSpeechModelId => _selectedSpeechModel.id;
   String get selectedSpeechModelName => _selectedSpeechModel.displayName;
   bool get isSwitchingSpeechModel => _audioPipeline.isSwitchingModel;
+  AudioSystem get audioSystem => _audioPipeline.audioSystem;
+  bool get usesMoss => _audioPipeline.usesMoss;
+  int get pendingMossWindows => _audioPipeline.pendingMossWindows;
+  String get mossPerformance => _audioPipeline.mossPerformance;
+  MossExecutionProvider get mossExecutionProvider =>
+      _audioPipeline.mossExecutionProvider;
+  MossQuantization get mossQuantization => _audioPipeline.mossQuantization;
+  bool get canSwitchAudioSystem =>
+      !g2.isConnected &&
+      !microphoneOwnsInput &&
+      !scanning &&
+      !_deviceOperation &&
+      !_voiceMemo.isActive &&
+      !startup.isBusy;
   VoiceWebSocketConfig get voiceWebSocketConfig => _voiceWebSocket.config;
   VoiceWebSocketSharedSettings get restoredVoiceWebSocketSettings =>
       _restoredVoiceWebSocketSettings;
@@ -794,9 +821,10 @@ base class WearableController extends ChangeNotifier
   bool get conversationAnalysisStarting => _conversationAnalysis.isStarting;
   bool get conversationAnalysisResetting => _conversationAnalysis.isResetting;
   bool get conversationAnalysisReady => _conversationAnalysis.isReady;
-  bool get conversationNeedsEnrollment => _conversationAnalysis.needsEnrollment;
+  bool get conversationNeedsEnrollment =>
+      !usesMoss && _conversationAnalysis.needsEnrollment;
   bool get conversationEnrollmentPending =>
-      _conversationAnalysis.isEnrollmentPending;
+      !usesMoss && _conversationAnalysis.isEnrollmentPending;
   int get acceptedConversationEnrollmentSamples =>
       _conversationAnalysis.acceptedEnrollmentSamples;
   int get requiredConversationEnrollmentSamples =>
@@ -804,9 +832,12 @@ base class WearableController extends ChangeNotifier
   double get conversationSpeakerMatchThreshold =>
       _conversationAnalysis.speakerMatchThreshold;
   String get conversationAnalysisState => _conversationAnalysis.state;
-  String? get conversationAnalysisError => _conversationAnalysis.error;
+  String? get conversationAnalysisError =>
+      usesMoss ? _mossConversations.error : _conversationAnalysis.error;
   int get knownSpeakerCount => _conversationAnalysis.knownSpeakerCount;
-  int get pendingConversationCount => _conversationAnalysis.pendingCount;
+  int get pendingConversationCount => usesMoss
+      ? _mossConversations.pendingCount
+      : _conversationAnalysis.pendingCount;
   int get completedConversations =>
       _conversationAnalysis.completedConversations;
   List<VoiceMemoRecord> get voiceMemos => _voiceMemo.records;
@@ -953,6 +984,20 @@ base class WearableController extends ChangeNotifier
       unawaited(_syncWebSocketMessages());
     }
     _selectedSpeechModel = await _speechModelPreferences.load();
+    final audioPreferences = await SharedPreferences.getInstance();
+    _audioPipeline.mossExecutionProvider =
+        audioPreferences.getString('moss_execution_provider') == 'cpu'
+        ? MossExecutionProvider.cpu
+        : MossExecutionProvider.opencl;
+    _audioPipeline.mossQuantization = mossQuantizationForId(
+      audioPreferences.getString('moss_quantization'),
+    );
+    final selectedSystem = audioPreferences.getString('audio_system') == 'moss'
+        ? AudioSystem.moss
+        : AudioSystem.modular;
+    _conversationAnalysis.setPipelineSuspended(
+      selectedSystem == AudioSystem.moss,
+    );
     try {
       _keywordHighlights.setPhrases(
         await _keywordHighlightPreferences.load(),
@@ -962,13 +1007,21 @@ base class WearableController extends ChangeNotifier
       // An optional display setting cannot prevent audio startup.
     }
     try {
-      await _audioPipeline.initialize(transcriptionModel: _selectedSpeechModel);
+      await _audioPipeline.initialize(
+        transcriptionModel: _selectedSpeechModel,
+        system: selectedSystem,
+      );
     } catch (_) {
       // The pipeline publishes an actionable startup failure. Bluetooth stays
       // gated because connecting without durable capture would violate the
       // audio-safety contract.
     }
-    unawaited(_conversationAnalysis.initialize());
+    unawaited(
+      _conversationAnalysis.initialize().then((_) {
+        _mossConversations.resumeSpeakerMatching();
+      }),
+    );
+    _recoverMossConversations();
     final preferences = await SharedPreferences.getInstance();
     rememberedG2Serial = preferences.getString('remembered_g2_serial');
     rememberedR1Id = preferences.getString('remembered_r1_id');
@@ -1098,6 +1151,7 @@ base class WearableController extends ChangeNotifier
     }
     _deviceOperation = true;
     _safeNotify();
+    _audioPipeline.setMossInputActive(true);
     try {
       await stopScan();
       await _runtime.setWearableSessionActive(true);
@@ -1107,6 +1161,7 @@ base class WearableController extends ChangeNotifier
       await preferences.setString('remembered_g2_serial', pair.serialNumber);
       await _linkRingAndGlasses();
     } finally {
+      _audioPipeline.setMossInputActive(g2.isConnected);
       _deviceOperation = false;
       await _syncBackgroundService();
     }
@@ -1193,6 +1248,60 @@ base class WearableController extends ChangeNotifier
     _safeNotify();
   }
 
+  Future<void> selectAudioSystem(AudioSystem system) async {
+    if (!canSwitchAudioSystem) {
+      throw StateError(
+        'Disconnect devices and stop the microphone before changing audio systems.',
+      );
+    }
+    _deviceOperation = true;
+    _safeNotify();
+    _conversationAnalysis.setPipelineSuspended(true);
+    try {
+      await _audioPipeline.selectAudioSystem(system);
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setString('audio_system', system.name);
+    } finally {
+      _conversationAnalysis.setPipelineSuspended(usesMoss);
+      _deviceOperation = false;
+      _safeNotify();
+    }
+  }
+
+  Future<void> selectMossExecutionProvider(
+    MossExecutionProvider provider,
+  ) async {
+    if (!canSwitchAudioSystem) {
+      throw StateError('Disconnect devices and stop the microphone first.');
+    }
+    _deviceOperation = true;
+    _safeNotify();
+    try {
+      await _audioPipeline.selectMossExecutionProvider(provider);
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setString('moss_execution_provider', provider.name);
+    } finally {
+      _deviceOperation = false;
+      _safeNotify();
+    }
+  }
+
+  Future<void> selectMossQuantization(MossQuantization quantization) async {
+    if (!canSwitchAudioSystem) {
+      throw StateError('Disconnect devices and stop the microphone first.');
+    }
+    _deviceOperation = true;
+    _safeNotify();
+    try {
+      await _audioPipeline.selectMossQuantization(quantization);
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setString('moss_quantization', quantization.id);
+    } finally {
+      _deviceOperation = false;
+      _safeNotify();
+    }
+  }
+
   Future<void> saveCorrectionInstructions(String instructions) async {
     await _audioPipeline.saveCorrectionInstructions(instructions);
     addLog(
@@ -1233,11 +1342,27 @@ base class WearableController extends ChangeNotifier
 
   Future<void> setConversationSpeakerMatchThreshold(double value) async {
     await _conversationAnalysis.setSpeakerMatchThreshold(value);
+    _recoverMossConversations();
     _safeNotify();
   }
 
-  Future<void> refreshConversations() =>
-      _sharedAudioExportStore.refreshConversations();
+  void _recoverMossConversations() {
+    // Recovery never gates capture, inference, routing, or cached history reads.
+    unawaited(
+      _mossConversations.recover().catchError((Object _) {
+        addLog(
+          'Conversation',
+          '[WorkBench][Conversation] state=recovery_deferred source=moss',
+          isError: true,
+        );
+      }),
+    );
+  }
+
+  Future<void> refreshConversations() {
+    _recoverMossConversations();
+    return _sharedAudioExportStore.refreshConversations();
+  }
 
   Future<void> restartConversationWorkerForTest() =>
       _conversationAnalysis.restartWorkerForTest();
@@ -1330,6 +1455,7 @@ base class WearableController extends ChangeNotifier
     );
     _safeNotify();
     await _syncSharedAgentServerSettings();
+    _recoverMossConversations();
     await _conversationAnalysis.syncSharedRecovery();
     await _audioPipeline.syncSharedCorrectionInstructions();
     await _audioPipeline.syncSharedAudioExport();
@@ -2887,7 +3013,8 @@ base class WearableController extends ChangeNotifier
     final transcript = delivery.transcript;
     final selectedRoute = _selectedAgentSpeechRoutes.remove(segmentId);
     _syncSelectedAgentVadMode();
-    if (selectedRoute == null &&
+    if (!usesMoss &&
+        selectedRoute == null &&
         await _voiceMemo.acceptFinalTranscript(segmentId, transcript)) {
       addLog(
         'Memo',
@@ -3015,7 +3142,8 @@ base class WearableController extends ChangeNotifier
     String transcript,
   ) async {
     final selectedRoute = _selectedAgentSpeechRoutes[segmentId];
-    if (selectedRoute == null &&
+    if (!usesMoss &&
+        selectedRoute == null &&
         _voiceMemo.acceptRawTranscript(segmentId, transcript)) {
       addLog(
         'Memo',
@@ -3448,6 +3576,7 @@ base class WearableController extends ChangeNotifier
       _backgroundNotifyTimer?.cancel();
       _backgroundNotifyTimer = null;
       unawaited(_conversationAnalysis.resumeAfterMemoryPressure());
+      _mossConversations.resumeAfterMemoryPressure();
       _safeNotify();
     }
     unawaited(
@@ -3476,6 +3605,7 @@ base class WearableController extends ChangeNotifier
     );
     unawaited(_audioPipeline.handleMemoryPressure());
     unawaited(_conversationAnalysis.handleMemoryPressure());
+    _mossConversations.handleMemoryPressure();
     unawaited(_voiceMemo.handleMemoryPressure());
     unawaited(_closeAgentHistory(clearDisplay: true));
   }
@@ -3515,6 +3645,7 @@ base class WearableController extends ChangeNotifier
     unawaited(g2.dispose());
     unawaited(r1.dispose());
     unawaited(_conversationAnalysis.dispose());
+    unawaited(_mossConversations.dispose());
     unawaited(_voiceMemo.dispose());
     _microphone.removeListener(_safeNotify);
     unawaited(_disposeAudioInputs());

@@ -364,13 +364,112 @@ into app-private storage, verifies every model, and launches Work Bench. It uses
 assets, while Parakeet, diarization, and Gemma weights are versioned in Git
 LFS and copied as part of the same installation workflow.
 
+### Compare the MOSS audio system on Android
+
+Tools → Audio processing → Audio system switches between **Current system**
+and **MOSS 0.9B · experimental**. Disconnect devices and stop the phone
+microphone before switching; the selection persists across launches. Install
+the optional model into an existing debug installation first:
+
+```sh
+python3 tool/stage_android_moss_model.py --device <android-serial>
+```
+
+The default is Q5_K. An optional 535 MB Q4_0 trial can be installed alongside
+it with `--quantization q4_0`, then selected under **MOSS weights** while input
+is disconnected. In matched GPU tests Q4_0 reduced decode time by about 30%,
+but repeated a word error in the longer fixture that Q5_K corrected, so the
+default remains Q5_K. See [the quantization comparison](docs/moss_quantization_comparison.md)
+for timings, accuracy, profiles, and limits.
+
+The helper downloads the revision-pinned GGUF into a host cache,
+verifies its SHA-256, transfers it through the app identity, and verifies the
+device copy before atomically replacing the installed model. It requires no
+root and preserves all existing models and app data. The APK includes both
+runtimes; switching changes which models are loaded, not which are installed.
+
+MOSS runs joint transcription, anonymous speaker labeling, and timestamps in
+its own `:moss` Android process with one serial worker. **MOSS execution**
+selects **GPU · OpenCL** (default) or an explicit four-thread **CPU** path.
+The GPU path opens the phone's public OpenCL driver; no proprietary driver is
+copied into the APK. Unsupported GPUs fail explicitly and can be switched to
+CPU while disconnected. The strict native adapter refuses unsupported graph
+operations and has no CPU graph fallback. Completion requires GPU node counts,
+zero CPU nodes, and positive hardware-event timings. Silero VAD remains CPU;
+its provider is reported independently from MOSS.
+
+This path shares durable capture and LC3 decoding and uses Silero plus MOSS
+for primary transcription. Parakeet, separate speaker segmentation, automatic Gemma correction,
+and voice memo revision are bypassed. Existing speaker profiles and the optional
+conversation queue remain preserved while their worker is suspended.
+
+The model is file-oriented, with a bidirectional Whisper encoder and a padded
+30-second front end; it does not expose an incremental streaming state. Work
+Bench approximates live transcription using speech chunks: about 800 ms of
+quiet closes an utterance; continuous speech splits at the first credible word
+boundary after eight seconds, with a twelve-second hard limit and one-second
+overlap only at that hard limit. Completed chunks update the live transcript;
+only the final assembled conversation can trigger a command. One second of
+pre-roll protects opening words. Stop/disconnect durably flushes the tail.
+Speaker labels restart in each chunk and do not establish cross-chunk identity.
+This is chunked live transcription, with several seconds of inference latency,
+not word-by-word streaming. Speech gating avoids decoding continuous ambient
+noise, but does not guarantee that all hallucinations or recognition errors
+are removed. Queue depth and last decode time appear in the live status.
+
+The speech WAV is durable before inference. Original timestamped model text
+is saved separately from parsed speaker/timing metadata; plain words drive the
+existing wake-word and agent-name matching. Files use `.raw.txt`, `.moss.txt`,
+and `.moss.json`, alongside their WAV. Both audio systems save speaker turns
+in Home's Conversation tab. MOSS also writes `moss-<segment>.conversation.txt`, which exports with the WAV and
+`.raw.txt` to the selected shared folder. Its anonymous labels are scoped to
+each clip, including overlapping turns. A separate, one-thread CPU TitaNet
+worker compares exclusive speech against the existing saved voice profiles;
+confident matches show `You` or the saved label, while short, ambiguous, and
+unmatched voices keep a clip-local label. It loads only the 39 MB embedding
+model, with no second transcription or segmentation model. Signatures stay
+app-private and never enter readable exports or the SQLite index. Both sources
+appear in Conversation with `MOSS` or `Conversation` on each turn. Existing
+completed MOSS files are backfilled on startup and history refresh, and labels
+are refined after the original text is already durable.
+Conversation persistence, indexing, and export run independently of primary
+transcription and delivery. Diagnostic derivatives stay app-private. The JSON
+records model/runtime revisions, Android/app versions, the actual provider,
+and aggregate native execution counts/timing. Restored jobs never route a
+command. Live input pauses recovery dispatch; saved jobs resume after 30 seconds
+of input inactivity. Malformed output is preserved without repeated identical
+decodes. Worker death and the three-minute native watchdog
+leave the WAV available for bounded retries and recovery. Text logs are limited
+to the exact public Kokoro safety fixture; other MOSS transcripts remain private.
+
+A representative RedMagic / Adreno 840 phone on Android 16 completed the same
+11-second public reference WAV in 8.6 seconds with OpenCL versus 17.3 seconds
+on CPU, both with zero word errors. A 33-second repeated reference retained the
+final words with zero word errors in 21.4 seconds. A three-second clip still
+took 5.7 seconds: short chunks do not eliminate the fixed encoder cost.
+These are saved-file development measurements, not an acoustic model ranking,
+a sustained throughput guarantee, or qualification for another phone. See
+[GPU qualification](docs/moss_gpu_qualification.md) for method and limits.
+
+The native implementation uses the MIT-licensed
+[moss-transcribe.cpp](https://github.com/localai-org/moss-transcribe.cpp) at
+`190a569c13b4b247450f2fb3b2a431244e84833e`, with ggml at
+`eced84c86f8b012c752c016f7fe789adea168e1e`. Archive hashes are pinned in CMake;
+license copies are in `native/moss/`. The Apache-2.0
+[Q5_K model](https://huggingface.co/mudler/moss-transcribe.cpp-gguf) is pinned at
+`54e4bbd17da3f84adf1c1bcf7791b9b9266f741e`, SHA-256
+`6fe985fd9a9cd043728f7be49659d10de6901872dad73b49e3c30e1340582e79`.
+NPU execution is not offered for MOSS. Compare models by decoding
+byte-identical saved WAVs under matched device, thread, and thermal conditions;
+separate acoustic replays are not a direct model ranking.
+
 ### Capture process kill signals
 
 On Android 11 or later, Work Bench reads Android's process-exit history on
 startup and when returning to the foreground. It atomically retains the latest
 64 signal exits and low-memory kills in the app-private
 `files/workbench/runtime/kill-events.json`. Each record contains only the event
-time, `app` or `gemma` process label, process ID, exit reason, status, reported
+time, `app`, `gemma`, or `moss` process label, process ID, exit reason, status, reported
 signal, importance, and Android's last sampled memory usage. Ordinary exits,
 transcripts, configuration, logcat contents, and native traces are excluded.
 
@@ -381,6 +480,40 @@ earlier records. A SIGKILL record alone does not identify the sender or prove
 memory pressure; the document also records whether Android supports explicit
 low-memory kill reporting. Memory values are the last sample, not an exact
 measurement at the moment of death.
+
+If Gemma disconnects while the app stays open, Work Bench also collects exit
+records immediately and after one and five seconds to allow Android's history
+to catch up. Connection timeouts and successful connections trigger the same
+collection, covering a worker killed before its binder is ready. This runs
+independently of correction recovery. A killed main process still needs a
+later launch to save its record.
+
+To preserve more evidence about a future kill, enable the narrow Work Bench,
+activity-manager, crash, and low-memory logging tags on an explicitly selected
+phone. This overrides silenced tags without enabling all system logging. The
+settings last until restored or the phone reboots; no root is required. Save
+the original settings and all collected evidence outside this repository:
+
+```sh
+python3 tool/android_kill_logging.py enable --device <android-serial> \
+  --state /tmp/workbench-kill-logging-state.json
+```
+
+After a failure, collect the retained diagnostic logs, process-exit history,
+and current memory snapshots into a new temporary directory:
+
+```sh
+python3 tool/android_kill_logging.py collect --device <android-serial> \
+  --output /tmp/workbench-kill-evidence-new
+python3 tool/android_kill_logging.py restore --device <android-serial> \
+  --state /tmp/workbench-kill-logging-state.json
+```
+
+The helper refuses evidence paths inside the repository. Collected system
+logs are private test evidence and must never be committed. Retained logs may
+identify a power-manager force-stop or a low-memory kill, but Android does not
+guarantee that the sender of an arbitrary SIGKILL is recorded. Memory snapshots
+collected afterward cannot establish the cause of an earlier kill.
 
 Read the private metadata from a debug installation without collecting general
 logs:
@@ -394,6 +527,9 @@ adb -s <android-serial> shell run-as dev.opensourceglasses.even_g2_r1_poc \
 deliberately kills the debug app, relaunches it, and verifies the signal record,
 preserved earlier evidence, and deduplication on another foreground transition.
 Run this validation while the app is idle.
+For the Gemma-only case, add `--process gemma` while both processes are already
+running. That test kills only Gemma and requires the record to appear without
+relaunching or foregrounding the app, with the main process unchanged.
 
 ### Copy Gemma 4 E4B to Android
 

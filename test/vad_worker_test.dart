@@ -1,3 +1,4 @@
+import 'package:even_g2_r1_poc/src/audio/moss_audio.dart';
 import 'dart:typed_data';
 
 import 'package:even_g2_r1_poc/src/audio/vad_worker.dart';
@@ -101,6 +102,37 @@ void main() {
     expect(tracker.samples, 0);
     expect(tracker.shouldPreferVadPause, isFalse);
     expect(tracker.add(160), isFalse);
+  });
+
+  test('MOSS emits bounded chunks within one continuing conversation', () {
+    final tracker = VadSegmentDurationTracker(
+      sampleRate: 16000,
+      preferredDuration: mossPreferredSegmentDuration,
+      maximumDuration: mossMaximumSegmentDuration,
+    );
+    final boundary = VadWordBoundaryDetector(sampleRate: 16000);
+    expect(tracker.add(7 * 16000), isFalse);
+    expect(tracker.shouldPreferVadPause, isFalse);
+    tracker.add(16000);
+    boundary.observe(_pcm(samples: 1600, amplitude: 2000), seekBoundary: false);
+    boundary.observe(
+      _pcm(samples: 1280, amplitude: 50),
+      seekBoundary: tracker.shouldPreferVadPause,
+    );
+    expect(
+      boundary.observe(
+        _pcm(samples: 1600, amplitude: 2000),
+        seekBoundary: tracker.shouldPreferVadPause,
+      ),
+      isTrue,
+    );
+    tracker.reset();
+    // A speaker with no quiet gap must still yield a bounded inference chunk.
+    expect(tracker.add(12 * 16000), isTrue);
+    expect(
+      mossEndpointDelay + vadDetectorSilenceDuration,
+      const Duration(milliseconds: 800),
+    );
   });
 
   test('selects the first credible inter-word quiet gap after soft target', () {

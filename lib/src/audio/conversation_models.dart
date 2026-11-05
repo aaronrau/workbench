@@ -554,6 +554,7 @@ final class ConversationUtterance {
     this.isPrimary = false,
     this.isOverlap = false,
     this.speakerSignature,
+    this.localSpeakerId,
   });
 
   factory ConversationUtterance.fromJson(Map<String, Object?> json) {
@@ -613,6 +614,7 @@ final class ConversationUtterance {
       isPrimary: json['isPrimary'] == true,
       isOverlap: json['isOverlap'] == true,
       speakerSignature: speakerSignature,
+      localSpeakerId: json['localSpeakerId'] as String?,
     );
   }
 
@@ -628,6 +630,7 @@ final class ConversationUtterance {
   final bool isPrimary;
   final bool isOverlap;
   final List<double>? speakerSignature;
+  final String? localSpeakerId;
 
   Map<String, Object> toJson() => <String, Object>{
     'id': id,
@@ -642,6 +645,7 @@ final class ConversationUtterance {
     'isPrimary': isPrimary,
     'isOverlap': isOverlap,
     'speakerSignature': ?speakerSignature,
+    'localSpeakerId': ?localSpeakerId,
   };
 }
 
@@ -653,6 +657,8 @@ final class ConversationRecord {
     required this.metadataPath,
     required this.utterances,
     required this.updatedAt,
+    this.speakerIdentificationVersion = 0,
+    this.speakerProfileRevision,
   });
 
   factory ConversationRecord.fromJson(Map<String, Object?> json) {
@@ -684,6 +690,9 @@ final class ConversationRecord {
           )
           .toList(growable: false),
       updatedAt: updatedAt.toUtc(),
+      speakerIdentificationVersion:
+          json['speakerIdentificationVersion'] as int? ?? 0,
+      speakerProfileRevision: json['speakerProfileRevision'] as String?,
     );
   }
 
@@ -693,9 +702,14 @@ final class ConversationRecord {
   final String metadataPath;
   final List<ConversationUtterance> utterances;
   final DateTime updatedAt;
+  final int speakerIdentificationVersion;
+  final String? speakerProfileRevision;
 
   Map<String, Object> toJson() => <String, Object>{
     'version': 1,
+    if (speakerIdentificationVersion > 0)
+      'speakerIdentificationVersion': speakerIdentificationVersion,
+    'speakerProfileRevision': ?speakerProfileRevision,
     'id': id,
     'audioPath': audioPath,
     'textPath': textPath,
