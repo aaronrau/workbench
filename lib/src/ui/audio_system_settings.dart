@@ -88,7 +88,7 @@ final class AudioSystemSettings extends StatelessWidget {
       ],
       Text(
         system == AudioSystem.moss
-            ? 'Voice detection closes chunks at pauses (about 0.8 s quiet), or after 8–12 s of continuous speech. MOSS transcribes each chunk and labels speakers; '
+            ? 'MOSS transcribes English only. Voice detection closes chunks at pauses (about 0.8 s quiet), or after 8–12 s of continuous speech. MOSS transcribes each chunk and labels speakers; '
                   'saved voice profiles can refine labels afterwards. Unmatched labels restart in each chunk. '
                   'GPU execution never silently falls back to CPU. '
                   'Parakeet, speaker segmentation, and Gemma stay unloaded.'

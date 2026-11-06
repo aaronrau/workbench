@@ -388,6 +388,12 @@ device copy before atomically replacing the installed model. It requires no
 root and preserves all existing models and app data. The APK includes both
 runtimes; switching changes which models are loaded, not which are installed.
 
+MOSS is configured for English transcription. Its native decoder uses an
+English instruction and masks non-Latin writing systems before token selection,
+while keeping accented Latin names, punctuation, timestamps, and speaker labels.
+The prompt requests the spoken English words. The selected language and native
+policy version are recorded in private metadata and readiness/completion markers.
+
 MOSS runs joint transcription, anonymous speaker labeling, and timestamps in
 its own `:moss` Android process with one serial worker. **MOSS execution**
 selects **GPU · OpenCL** (default) or an explicit four-thread **CPU** path.
@@ -418,9 +424,11 @@ noise, but does not guarantee that all hallucinations or recognition errors
 are removed. Queue depth and last decode time appear in the live status.
 
 The speech WAV is durable before inference. Original timestamped model text
-is saved separately from parsed speaker/timing metadata; plain words drive the
-existing wake-word and agent-name matching. Files use `.raw.txt`, `.moss.txt`,
-and `.moss.json`, alongside their WAV. Both audio systems save speaker turns
+is retained in `.moss.txt` with parsed speaker/timing metadata in `.moss.json`
+for conversation saving. Every `[...]` span, including its contents, is removed
+from the `.raw.txt` transcript and from messages, correction, keyword matching,
+and agent delivery. Conversation records retain the annotations. These files
+sit alongside their WAV. Both audio systems save speaker turns
 in Home's Conversation tab. MOSS also writes `moss-<segment>.conversation.txt`, which exports with the WAV and
 `.raw.txt` to the selected shared folder. Its anonymous labels are scoped to
 each clip, including overlapping turns. A separate, one-thread CPU TitaNet

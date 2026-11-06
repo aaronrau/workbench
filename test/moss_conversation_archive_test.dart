@@ -20,11 +20,17 @@ Future<File> _source(
   String id, {
   MossQuantization model = MossQuantization.q5K,
   String annotated = _annotated,
+  bool plainTranscript = false,
 }) async {
   final source = Directory('${support.path}/workbench/audio/moss');
   await source.create(recursive: true);
   await File('${source.path}/$id.wav').writeAsBytes(mossWav(Uint8List(64000)));
-  await File('${source.path}/$id.raw.txt').writeAsString(annotated);
+  if (plainTranscript) {
+    await File('${source.path}/$id.moss.txt').writeAsString(annotated);
+  }
+  await File('${source.path}/$id.raw.txt').writeAsString(
+    plainTranscript ? stripMossAnnotations(annotated) : annotated,
+  );
   final metadata = File('${source.path}/$id.moss.json');
   await metadata.writeAsString(
     jsonEncode({
@@ -68,6 +74,56 @@ final class _Signatures implements MossSpeakerSignatureExtractor {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  for (final model in MossQuantization.values) {
+    test(
+      '${model.id} conversations preserve annotations beside plain transcripts',
+      () async {
+        final support = await Directory.systemTemp.createTemp(
+          'workbench-moss-plain.',
+        );
+        final shared = SharedAudioExportStore(isAndroid: false);
+        final archive = MossConversationArchive(
+          sharedStore: shared,
+          onChanged: () {},
+          onStatus: (_, {bool isError = false}) {},
+          supportDirectory: () async => support,
+        );
+        addTearDown(() async {
+          await archive.dispose();
+          shared.dispose();
+          await support.delete(recursive: true);
+        });
+        const annotated = '[0.10][S01]Hello [laughter], world.[1.20]';
+        archive.accept(
+          (await _source(
+            support,
+            'synthetic',
+            model: model,
+            annotated: annotated,
+            plainTranscript: true,
+          )).path,
+        );
+        await archive.drainImports();
+        await _until(() => shared.conversations.length == 1);
+        final turn = shared.conversations.single;
+        expect(turn.text, 'Hello [laughter], world.');
+        expect(turn.speakerId, 'moss:synthetic:S01');
+        expect(turn.startMs, 100);
+        expect(turn.endMs, 1200);
+        final base = '${support.path}/workbench/audio/moss/synthetic';
+        expect(await File('$base.raw.txt').readAsString(), 'Hello, world.');
+        expect(await File('$base.moss.txt').readAsString(), annotated);
+        expect(
+          await File(
+            '${support.path}/workbench/audio/moss/'
+            'moss-synthetic.conversation.txt',
+          ).readAsString(),
+          contains('Hello [laughter], world.'),
+        );
+      },
+    );
+  }
 
   test(
     'voice matching cannot block saves; restart reuses private signatures when saved labels change',

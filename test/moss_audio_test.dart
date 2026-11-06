@@ -27,7 +27,13 @@ class _Client extends MossClient {
     calls++;
     final result = Completer<Map<String, dynamic>>();
     outputs.add(result);
-    return result.future;
+    return result.future.then(
+      (reply) => {
+        'language': mossTranscriptionLanguage,
+        'languagePolicy': mossLanguagePolicy,
+        ...reply,
+      },
+    );
   }
 
   @override
@@ -67,6 +73,117 @@ Future<void> _enqueue(
 }
 
 void main() {
+  test('removes every bracketed MOSS annotation from downstream text', () {
+    const cases = {
+      '[0.00][S01]Hello[0.75][0.50][S02]Hi[0.90]': 'Hello Hi',
+      'Send [laughter] the [quiet [background noise]] update.':
+          'Send the update.',
+      'Hello [noise], world [laughs]!': 'Hello, world!',
+      '[music]\n[noise]': '',
+      'Keep these words [unfinished annotation': 'Keep these words',
+      'Keep ] these words.': 'Keep these words.',
+      'The café is open.': 'The café is open.',
+    };
+    for (final entry in cases.entries) {
+      expect(stripMossAnnotations(entry.key), entry.value);
+    }
+  });
+
+  for (final quantization in MossQuantization.values) {
+    test(
+      'keeps ${quantization.id} annotations only for conversation saving',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'workbench-moss-annotations.',
+        );
+        final client = _Client(quantization: quantization);
+        final results = <TranscriptionResult>[];
+        final handoffs = <String>[];
+        final pipeline = MossPipeline(
+          speechPath: directory.path,
+          modelPath: 'synthetic-model',
+          client: client,
+          onTranscript: results.add,
+          onDiarizationReady: handoffs.add,
+          onUnsafe: () => fail('unsafe'),
+          onStatus: (_, {bool isError = false}) {},
+        );
+        addTearDown(() async {
+          await pipeline.dispose();
+          await directory.delete(recursive: true);
+        });
+        await pipeline.start();
+        await _enqueue(pipeline, directory, 'synthetic');
+        await _until(() => client.calls == 1);
+        const annotated =
+            '[0][S01]Hey [background [noise]] agent, send the update.[0.4]'
+            '[0.4][S02][laughter] Please.[0.9]';
+        client.outputs.single.complete({'text': annotated, 'decodeMs': 10});
+        await _until(() => results.length == 1 && handoffs.length == 1);
+        const plain = 'Hey agent, send the update. Please.';
+        expect(results.single.text, plain);
+        expect(await File(results.single.transcriptPath).readAsString(), plain);
+        expect(
+          await File('${directory.path}/synthetic.moss.txt').readAsString(),
+          annotated,
+        );
+        final metadata =
+            jsonDecode(await File(handoffs.single).readAsString())
+                as Map<String, dynamic>;
+        expect(
+          (metadata['utterances'] as List).first['text'],
+          'Hey [background [noise]] agent, send the update.',
+        );
+        expect(results.single.routeEligible, isTrue);
+        expect(pipeline.failedCount, 0);
+      },
+    );
+  }
+
+  for (final wrong in [
+    {'language': 'zh'},
+    {'languagePolicy': 'legacy-auto'},
+  ]) {
+    test(
+      'refuses unverified English mode before saving or delivering STT: $wrong',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'workbench-moss-language.',
+        );
+        final client = _Client();
+        final results = <TranscriptionResult>[];
+        final pipeline = MossPipeline(
+          speechPath: directory.path,
+          modelPath: 'synthetic-model',
+          client: client,
+          onTranscript: results.add,
+          onUnsafe: () => fail('unsafe'),
+          onStatus: (_, {bool isError = false}) {},
+        );
+        addTearDown(() async {
+          await pipeline.dispose();
+          await directory.delete(recursive: true);
+        });
+        await pipeline.start();
+        await _enqueue(pipeline, directory, 'synthetic');
+        await _until(() => client.calls == 1);
+        client.outputs.single.complete({
+          'text': '[0][S01]Synthetic phrase.[0.9]',
+          'decodeMs': 10,
+          ...wrong,
+        });
+        await _until(() => pipeline.failedCount == 1);
+        expect(results, isEmpty);
+        expect(client.calls, 1);
+        expect(File('${directory.path}/synthetic.wav').existsSync(), isTrue);
+        expect(
+          File('${directory.path}/synthetic.raw.txt').existsSync(),
+          isFalse,
+        );
+      },
+    );
+  }
+
   for (final mode in ['stalled', 'sync_failure', 'async_failure']) {
     test(
       'conversation handoff $mode never delays or retries primary STT',
@@ -227,7 +344,7 @@ void main() {
       expect(logs.join(), isNot(contains('Synthetic phrase')));
       expect(
         File(results.first.transcriptPath).readAsStringSync(),
-        '[0][S01]Synthetic phrase[0.9]',
+        'Synthetic phrase',
       );
     },
   );
@@ -523,6 +640,8 @@ void main() {
               as Map<String, dynamic>;
       expect(metadata['model'], 'moss-0.9b-q4_0');
       expect(metadata['model_sha256'], MossQuantization.q4Zero.sha256);
+      expect(metadata['language'], mossTranscriptionLanguage);
+      expect(metadata['language_policy'], mossLanguagePolicy);
       expect(
         logs.where((line) => line.contains('state=completed')).single,
         contains('model=moss-0.9b-q4_0'),

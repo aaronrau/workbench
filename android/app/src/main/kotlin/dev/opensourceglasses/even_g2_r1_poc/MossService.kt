@@ -13,6 +13,7 @@ internal object MossNative {
     external fun load(path: String, useGpu: Boolean): Boolean
     external fun transcribe(path: String): String?
     external fun profile(): LongArray
+    external fun languagePolicy(): String
 }
 
 /** One model and one serial worker, isolated from durable capture. */
@@ -43,6 +44,7 @@ class MossService : Service() {
         val began = SystemClock.elapsedRealtime()
         val response = Bundle().apply { putLong("id", message.data.getLong("id")) }
         try {
+            check(message.data.getString("language") == "en")
             when (message.what) {
                 1 -> {
                     val desiredModel = message.data.getString("modelId") ?: "moss-0.9b-q5_k"
@@ -60,7 +62,8 @@ class MossService : Service() {
                     provider = desired
                     loaded = MossNative.load(requested.path, desired == "opencl")
                     check(loaded)
-                    Log.i("WorkBench", "[WorkBench][MOSS] state=ready model=$modelId provider=$provider threads=4 load_ms=${SystemClock.elapsedRealtime() - began}")
+                    check(MossNative.languagePolicy() == "english-latin-v2")
+                    Log.i("WorkBench", "[WorkBench][MOSS] state=ready model=$modelId provider=$provider language=en threads=4 load_ms=${SystemClock.elapsedRealtime() - began}")
                 }
                 2 -> {
                     check(loaded)
@@ -68,19 +71,21 @@ class MossService : Service() {
                     val root = File(filesDir, "workbench/audio/moss").canonicalFile
                     check(wav.canonicalFile.parentFile == root && wav.extension == "wav")
                     check(wav.length() in 45..(90L * 32000 + 44))
-                    Log.i("WorkBench", "[WorkBench][MOSS] state=processing model=$modelId provider=$provider threads=4")
+                    Log.i("WorkBench", "[WorkBench][MOSS] state=processing model=$modelId provider=$provider language=en threads=4")
                     val text = checkNotNull(MossNative.transcribe(wav.path))
                     val profile = MossNative.profile()
                     if (provider == "opencl") check(profile[1] > 0 && profile[2] == 0L && profile[3] > 0 && profile[4] > 0)
                     response.putLongArray("profile", profile)
                     response.putString("provider", provider)
                     response.putString("model", modelId)
+                    response.putString("language", "en")
+                    response.putString("languagePolicy", MossNative.languagePolicy())
                     response.putInt("osApi", Build.VERSION.SDK_INT)
                     response.putString("osRelease", Build.VERSION.RELEASE)
                     response.putLong("appBuild", packageManager.getPackageInfo(packageName, 0).longVersionCode)
                     response.putString("text", text)
                     response.putLong("decodeMs", SystemClock.elapsedRealtime() - began)
-                    Log.i("WorkBench", "[WorkBench][MOSS] state=completed model=$modelId provider=$provider threads=4 decode_ms=${SystemClock.elapsedRealtime() - began} gpu_nodes=${profile[1]} cpu_nodes=${profile[2]} gpu_ns=${profile[3]} gpu_queries=${profile[4]}")
+                    Log.i("WorkBench", "[WorkBench][MOSS] state=completed model=$modelId provider=$provider language=en threads=4 decode_ms=${SystemClock.elapsedRealtime() - began} gpu_nodes=${profile[1]} cpu_nodes=${profile[2]} gpu_ns=${profile[3]} gpu_queries=${profile[4]}")
                 }
                 else -> error("invalid_request")
             }

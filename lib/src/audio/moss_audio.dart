@@ -9,6 +9,9 @@ enum AudioSystem { modular, moss }
 
 enum MossExecutionProvider { cpu, opencl }
 
+const mossTranscriptionLanguage = 'en';
+const mossLanguagePolicy = 'english-latin-v2';
+
 const mossModelSha256 =
     '6fe985fd9a9cd043728f7be49659d10de6901872dad73b49e3c30e1340582e79';
 const mossModelBytes = 648174592;
@@ -89,10 +92,12 @@ class MossClient {
         'modelPath': modelPath,
         'provider': provider.name,
         'modelId': quantization.modelId,
+        'language': mossTranscriptionLanguage,
       });
   Future<Map<String, dynamic>> transcribe(String wavPath) async =>
       (await _channel.invokeMapMethod<String, dynamic>('transcribe', {
         'wavPath': wavPath,
+        'language': mossTranscriptionLanguage,
       }))!;
   Future<void> close() => _channel.invokeMethod<void>('close');
 }
@@ -109,6 +114,32 @@ final class MossUtterance {
     'speaker': speaker,
     'text': text,
   };
+}
+
+/// Only conversation records retain MOSS timestamps, speaker IDs, and events.
+/// An unfinished bracket suppresses the remaining annotation, too.
+String stripMossAnnotations(String value) {
+  final text = StringBuffer();
+  var depth = 0;
+  for (final rune in value.runes) {
+    if (rune == 0x5b) {
+      if (depth == 0) text.write(' ');
+      depth++;
+    } else if (rune == 0x5d) {
+      if (depth > 0) {
+        depth--;
+      } else {
+        text.write(' ');
+      }
+    } else if (depth == 0) {
+      text.writeCharCode(rune);
+    }
+  }
+  return text
+      .toString()
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .replaceAllMapped(RegExp(r'\s+([,.;:!?])'), (match) => match[1]!)
+      .trim();
 }
 
 /// Reject malformed/truncated generation instead of routing an unfinished command.

@@ -63,7 +63,7 @@ final class MossPipeline {
     await client.prepare(modelPath);
     _ready = true;
     onStatus(
-      '[WorkBench][MOSS] state=ready model=$modelId provider=$provider threads=4 pending=${_pending.length}',
+      '[WorkBench][MOSS] state=ready model=$modelId provider=$provider language=$mossTranscriptionLanguage threads=4 pending=${_pending.length}',
     );
     _scheduleRecovery();
   }
@@ -147,6 +147,12 @@ final class MossPipeline {
             if (reportedModel != null && reportedModel != modelId) {
               throw StateError('MOSS model mismatch');
             }
+            if (reply['language'] != mossTranscriptionLanguage ||
+                reply['languagePolicy'] != mossLanguagePolicy) {
+              throw const FormatException(
+                'MOSS English policy was not verified.',
+              );
+            }
             final annotated = reply['text'] as String;
             final actual = reply['provider'] as String? ?? provider;
             if (actual != provider) throw StateError('MOSS provider mismatch');
@@ -167,12 +173,16 @@ final class MossPipeline {
               annotated,
               audioSeconds: audioMs / 1000,
             );
-            final plain = utterances.map((entry) => entry.text).join(' ');
+            final plain = stripMossAnnotations(
+              utterances.map((entry) => entry.text).join(' '),
+            );
             final decodeMs = (reply['decodeMs'] as num).toInt();
             await _atomicText(
               '$speechPath/${job.key}.moss.json',
               jsonEncode({
                 'model': modelId,
+                'language': mossTranscriptionLanguage,
+                'language_policy': mossLanguagePolicy,
                 'model_sha256': client.quantization.sha256,
                 'runtime_revision': mossRuntimeRevision,
                 'ggml_revision': mossGgmlRevision,
@@ -201,7 +211,7 @@ final class MossPipeline {
             final rawPath = '$speechPath/${job.key}.raw.txt';
             await _atomicText(
               rawPath,
-              annotated,
+              plain,
             ); // Completion marker written last.
             _pending.remove(job.key);
             _queuedAt.remove(job.key);
@@ -209,7 +219,7 @@ final class MossPipeline {
             lastDecodeMs = decodeMs;
             lastAudioMs = audioMs;
             onStatus(
-              '[WorkBench][MOSS] state=completed segment=${job.key} model=$modelId provider=$provider threads=4 audio_ms=$audioMs decode_ms=$decodeMs speakers=${utterances.map((entry) => entry.speaker).toSet().length}',
+              '[WorkBench][MOSS] state=completed segment=${job.key} model=$modelId provider=$provider language=$mossTranscriptionLanguage threads=4 audio_ms=$audioMs decode_ms=$decodeMs speakers=${utterances.map((entry) => entry.speaker).toSet().length}',
             );
             if (isMossKokoroFixture(plain)) {
               onStatus(

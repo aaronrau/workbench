@@ -78,20 +78,42 @@ file(GLOB MOSS_SOURCES "${workbench_moss_SOURCE_DIR}/src/*.cpp")
 list(REMOVE_ITEM MOSS_SOURCES "${workbench_moss_SOURCE_DIR}/src/cli.cpp")
 list(REMOVE_ITEM MOSS_SOURCES "${workbench_moss_SOURCE_DIR}/src/backend.cpp"
     "${workbench_moss_SOURCE_DIR}/src/generate.cpp"
-    "${workbench_moss_SOURCE_DIR}/src/model_loader.cpp")
+    "${workbench_moss_SOURCE_DIR}/src/model_loader.cpp"
+    "${workbench_moss_SOURCE_DIR}/src/transcribe.cpp")
 file(READ "${workbench_moss_SOURCE_DIR}/src/generate.cpp" MOSS_GENERATE)
 string(REPLACE "if (!ggml_backend_supports_op(backend(), rows)) {"
     "if (!ggml_backend_supports_op(backend(), rows)) { if (!ggml_backend_is_cpu(backend())) throw std::runtime_error(\"GPU embedding fallback refused\");"
     MOSS_GENERATE "${MOSS_GENERATE}")
+string(FIND "${MOSS_GENERATE}" "int t = argmax_first(logits);" english_argmax_anchor)
+if(english_argmax_anchor EQUAL -1)
+    message(FATAL_ERROR "Pinned MOSS generation anchor changed")
+endif()
+string(REPLACE "int t = argmax_first(logits);" "int t = wb::english_argmax(logits);"
+    MOSS_GENERATE "${MOSS_GENERATE}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/moss_generate.cpp"
-    "#include <stdexcept>\n#include \"ggml-cpu.h\"\n${MOSS_GENERATE}")
+    "#include \"moss_english.hpp\"\n#include <stdexcept>\n#include \"ggml-cpu.h\"\n${MOSS_GENERATE}")
 wb_patch_moss_loader("${workbench_moss_SOURCE_DIR}/src/model_loader.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/moss_model_loader.cpp")
-add_library(workbench_moss SHARED workbench_moss.cpp moss_backend.cpp
+file(READ "${workbench_moss_SOURCE_DIR}/src/transcribe.cpp" MOSS_TRANSCRIBE)
+string(FIND "${MOSS_TRANSCRIBE}" "build_input_ids(tok, c, c.default_prompt, n_tokens);" english_prompt_anchor)
+string(FIND "${MOSS_TRANSCRIBE}" "    std::vector<int32_t> input_ids =" english_scope_anchor)
+if(english_prompt_anchor EQUAL -1 OR english_scope_anchor EQUAL -1)
+    message(FATAL_ERROR "Pinned MOSS transcription anchors changed")
+endif()
+string(REPLACE "c.default_prompt, n_tokens" "wb::english_prompt(c.default_prompt), n_tokens"
+    MOSS_TRANSCRIBE "${MOSS_TRANSCRIBE}")
+string(REPLACE "    std::vector<int32_t> input_ids ="
+    "    wb::EnglishDecoderScope english(tok, c.eos_token_id);\n    std::vector<int32_t> input_ids ="
+    MOSS_TRANSCRIBE "${MOSS_TRANSCRIBE}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/moss_transcribe.cpp"
+    "#include \"moss_english.hpp\"\n${MOSS_TRANSCRIBE}")
+add_library(workbench_moss SHARED workbench_moss.cpp moss_backend.cpp moss_english.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/moss_transcribe.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/moss_generate.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/moss_model_loader.cpp"
     ${MOSS_SOURCES})
 target_include_directories(workbench_moss PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
     "${workbench_moss_SOURCE_DIR}/include" "${workbench_moss_SOURCE_DIR}/src"
     "${workbench_moss_SOURCE_DIR}/third_party")
 target_compile_options(workbench_moss PRIVATE -O3)

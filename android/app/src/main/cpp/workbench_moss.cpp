@@ -6,6 +6,7 @@
 #include "ggml.h"
 #include "backend.hpp"
 #include "ggml-cpu.h"
+#include "moss_english.hpp"
 extern "C" void wb_moss_profile_reset();
 extern "C" void wb_moss_profile_get(uint64_t*);
 
@@ -25,6 +26,7 @@ Java_dev_opensourceglasses_even_1g2_1r1_1poc_MossNative_load(
     const char* name = env->GetStringUTFChars(path, nullptr);
     if (!name) return false;
     moss_transcribe_capi_free(model);
+    wb::reset_english_decoder_cache();
     model = moss_transcribe_capi_load(name);
     env->ReleaseStringUTFChars(path, name);
     return model != nullptr && (!ggml_backend_is_cpu(mt::backend())) == bool(use_gpu);
@@ -57,4 +59,9 @@ Java_dev_opensourceglasses_even_1g2_1r1_1poc_MossNative_profile(JNIEnv* env, job
     jlong converted[5]; for (int i = 0; i < 5; ++i) converted[i] = values[i];
     auto result = env->NewLongArray(5); env->SetLongArrayRegion(result, 0, 5, converted);
     return result;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_opensourceglasses_even_1g2_1r1_1poc_MossNative_languagePolicy(JNIEnv* env, jobject) {
+    return env->NewStringUTF(wb::kEnglishPolicy);
 }

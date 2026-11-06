@@ -898,12 +898,13 @@ final class AudioPipelineCoordinator {
   }) async {
     final id = result.segmentId;
     lastTranscriptPath = result.transcriptPath;
-    var displayedText = result.model.startsWith('moss-')
-        ? await File(result.transcriptPath).readAsString()
+    final transcript = result.model.startsWith('moss-')
+        ? stripMossAnnotations(result.text)
         : result.text;
-    var collectedText = result.text.trim();
+    var displayedText = transcript;
+    var collectedText = transcript.trim();
     String? actionText = segment == null || segment.isConversationFinal
-        ? result.text.trim()
+        ? transcript.trim()
         : null;
     final exportPaths = <String>[result.transcriptPath];
     final turnAssembler = _transcriptTurnAssembler;
@@ -911,7 +912,7 @@ final class AudioPipelineCoordinator {
       try {
         final assembly = await turnAssembler.append(
           conversationId: segment.conversationId,
-          text: result.text,
+          text: transcript,
           isConversationFinal: segment.isConversationFinal,
           deduplicateOverlap: segment.leadingOverlapMs > 0,
         );

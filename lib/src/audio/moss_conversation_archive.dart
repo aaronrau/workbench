@@ -170,7 +170,13 @@ final class MossConversationArchive {
     final raw = File('${source.path}/$id.raw.txt');
     // Raw is the final commit marker. Partial generation must not appear here.
     if (!await raw.exists() || !await wav.exists()) return;
-    if (await metadata.length() > 1024 * 1024 || await raw.length() > 65536) {
+    final annotated = File('${source.path}/$id.moss.txt');
+    // New raw transcripts contain only spoken words. Older builds stored the
+    // annotated output in raw, so retain that fallback for existing recordings.
+    final conversationSource = await annotated.exists() ? annotated : raw;
+    if (await metadata.length() > 1024 * 1024 ||
+        await raw.length() > 65536 ||
+        await conversationSource.length() > 65536) {
       throw const FormatException('MOSS source exceeds the record limit.');
     }
     final decoded = jsonDecode(await metadata.readAsString());
@@ -191,7 +197,7 @@ final class MossConversationArchive {
       throw const FormatException('Invalid MOSS audio duration.');
     }
     final turns = parseMossTranscript(
-      await raw.readAsString(),
+      await conversationSource.readAsString(),
       audioSeconds: audioMs / 1000,
     );
     final rows = decoded['utterances']! as List<dynamic>;
@@ -206,7 +212,7 @@ final class MossConversationArchive {
           row['text'] != turn.text ||
           row['start_seconds'] != turn.start ||
           row['end_seconds'] != turn.end) {
-        throw const FormatException('MOSS raw and metadata disagree.');
+        throw const FormatException('MOSS annotations and metadata disagree.');
       }
     }
     if (_disposed) return;
