@@ -104,36 +104,69 @@ void main() {
     expect(tracker.add(160), isFalse);
   });
 
-  test('MOSS emits bounded chunks within one continuing conversation', () {
+  test('MOSS waits past 20 seconds for a VAD pause instead of a hard cut', () {
     final tracker = VadSegmentDurationTracker(
       sampleRate: 16000,
       preferredDuration: mossPreferredSegmentDuration,
       maximumDuration: mossMaximumSegmentDuration,
     );
-    final boundary = VadWordBoundaryDetector(sampleRate: 16000);
-    expect(tracker.add(7 * 16000), isFalse);
-    expect(tracker.shouldPreferVadPause, isFalse);
-    tracker.add(16000);
-    boundary.observe(_pcm(samples: 1600, amplitude: 2000), seekBoundary: false);
-    boundary.observe(
-      _pcm(samples: 1280, amplitude: 50),
-      seekBoundary: tracker.shouldPreferVadPause,
-    );
-    expect(
-      boundary.observe(
-        _pcm(samples: 1600, amplitude: 2000),
-        seekBoundary: tracker.shouldPreferVadPause,
-      ),
-      isTrue,
-    );
-    tracker.reset();
-    // A speaker with no quiet gap must still yield a bounded inference chunk.
-    expect(tracker.add(12 * 16000), isTrue);
+    expect(tracker.add(20 * 16000), isFalse);
+    expect(tracker.shouldEndAtVadPause(detected: true), isFalse);
+    expect(tracker.add(5 * 16000), isFalse);
+    // Continuous speech and brief energy dips that remain VAD-positive cannot
+    // cut the chunk. A real VAD pause finishes it without a resumed frame.
+    expect(tracker.shouldEndAtVadPause(detected: true), isFalse);
+    expect(tracker.shouldEndAtVadPause(detected: false), isTrue);
+    expect(tracker.reachedHardLimit, isFalse);
+    expect(tracker.add(55 * 16000), isTrue);
+    expect(mossMaximumSegmentDuration, const Duration(seconds: 80));
     expect(
       mossEndpointDelay + vadDetectorSilenceDuration,
-      const Duration(milliseconds: 800),
+      const Duration(milliseconds: 3510),
     );
   });
+
+  test(
+    'MOSS short-pause endpoint is armed only after exceeding 20 seconds',
+    () {
+      final tracker = VadSegmentDurationTracker(
+        sampleRate: 16000,
+        preferredDuration: mossPreferredSegmentDuration,
+        maximumDuration: mossMaximumSegmentDuration,
+      );
+      tracker.add(15 * 16000);
+      expect(tracker.shouldEndAtVadPause(detected: false), isFalse);
+      tracker.add(5 * 16000);
+      expect(tracker.shouldEndAtVadPause(detected: false), isFalse);
+      tracker.add(160);
+      expect(tracker.shouldEndAtVadPause(detected: false), isTrue);
+      tracker.reset();
+      expect(tracker.shouldEndAtVadPause(detected: false), isFalse);
+    },
+  );
+
+  test(
+    'MOSS requires over three VAD-inactive seconds even on a short turn',
+    () {
+      final endpoint = VadEndpointBuffer(
+        sampleRate: 16000,
+        duration: mossEndpointDelay,
+      );
+      expect(endpoint.begin(16000), isFalse);
+      expect(endpoint.add(2 * 16000), isFalse);
+      expect(endpoint.capturedMilliseconds, 3000);
+      expect(endpoint.add(160), isTrue);
+      expect(endpoint.capturedMilliseconds, 3010);
+
+      endpoint.reset();
+      expect(endpoint.begin(2 * 16000), isFalse);
+      // Resumed speech cancels the previous quiet interval entirely.
+      endpoint.reset();
+      expect(endpoint.begin(16000), isFalse);
+      expect(endpoint.add(2 * 16000), isFalse);
+      expect(endpoint.add(160), isTrue);
+    },
+  );
 
   test('selects the first credible inter-word quiet gap after soft target', () {
     final detector = VadWordBoundaryDetector(sampleRate: 1000);

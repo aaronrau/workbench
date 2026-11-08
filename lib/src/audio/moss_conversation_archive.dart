@@ -201,6 +201,9 @@ final class MossConversationArchive {
       audioSeconds: audioMs / 1000,
     );
     final rows = decoded['utterances']! as List<dynamic>;
+    // MOSS recognized no words. The completed WAV/output stay durable, but
+    // there is no conversation turn to index or match to a voice profile.
+    if (turns.isEmpty && rows.isEmpty) return;
     if (turns.isEmpty || turns.length > 256 || rows.length != turns.length) {
       throw const FormatException('Invalid MOSS turns.');
     }

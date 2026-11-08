@@ -26,6 +26,7 @@ import 'audio/voice_memo_service.dart';
 import 'background/app_runtime_coordinator.dart';
 import 'background/background_service.dart';
 import 'ble/ble_models.dart';
+import 'ble/event_log_filter.dart';
 import 'ble/g2_connection.dart';
 import 'ble/glasses_status_queue.dart';
 import 'ble/r1_connection.dart';
@@ -765,6 +766,8 @@ base class WearableController extends ChangeNotifier
   bool get usesMoss => _audioPipeline.usesMoss;
   int get pendingMossWindows => _audioPipeline.pendingMossWindows;
   String get mossPerformance => _audioPipeline.mossPerformance;
+  String get transcriptionProgress => _audioPipeline.transcriptionProgress;
+  Future<void> retryHeldMossAudio() => _audioPipeline.retryHeldMossAudio();
   MossExecutionProvider get mossExecutionProvider =>
       _audioPipeline.mossExecutionProvider;
   MossQuantization get mossQuantization => _audioPipeline.mossQuantization;
@@ -1796,11 +1799,7 @@ base class WearableController extends ChangeNotifier
         ? '[WARN]'
         : '';
     debugPrint('[Even G2/R1][$source]$level $message');
-    // Audio is a continuous stream, not an event history. Keep only its
-    // latest summary so it cannot bury connection and gesture events.
-    if (source == 'Audio') {
-      logs.removeWhere((entry) => entry.source == source);
-    }
+    if (!isConnectionOrTranscriptionEvent(source, message)) return;
     logs.insert(
       0,
       PooledLog(

@@ -14,6 +14,7 @@ internal object MossNative {
     external fun transcribe(path: String): String?
     external fun profile(): LongArray
     external fun languagePolicy(): String
+    external fun adapterRevision(): String
 }
 
 /** One model and one serial worker, isolated from durable capture. */
@@ -63,6 +64,7 @@ class MossService : Service() {
                     loaded = MossNative.load(requested.path, desired == "opencl")
                     check(loaded)
                     check(MossNative.languagePolicy() == "english-latin-v2")
+                    check(MossNative.adapterRevision() == "strict-provider-f16-1")
                     Log.i("WorkBench", "[WorkBench][MOSS] state=ready model=$modelId provider=$provider language=en threads=4 load_ms=${SystemClock.elapsedRealtime() - began}")
                 }
                 2 -> {
@@ -80,6 +82,7 @@ class MossService : Service() {
                     response.putString("model", modelId)
                     response.putString("language", "en")
                     response.putString("languagePolicy", MossNative.languagePolicy())
+                    response.putString("nativeAdapter", MossNative.adapterRevision())
                     response.putInt("osApi", Build.VERSION.SDK_INT)
                     response.putString("osRelease", Build.VERSION.RELEASE)
                     response.putLong("appBuild", packageManager.getPackageInfo(packageName, 0).longVersionCode)

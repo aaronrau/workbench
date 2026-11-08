@@ -105,6 +105,9 @@ final class VadSegmentDurationTracker {
   bool get shouldPreferVadPause => _samples >= _preferredSamples;
   bool get reachedHardLimit => _samples >= _maximumSamples;
 
+  bool shouldEndAtVadPause({required bool detected}) =>
+      !detected && _samples > _preferredSamples;
+
   bool willPreferVadPause(int incomingSamples) =>
       _samples + incomingSamples >= _preferredSamples;
 
@@ -268,6 +271,7 @@ final class VadSupervisor {
     this.preferredSegmentDuration = preferredVadSegmentDuration,
     this.maximumSegmentDuration = maximumVadSegmentDuration,
     this.preRollDuration = vadPreRollDuration,
+    this.endAtVadPauseAfterTarget = false,
     this.endpointDelayOverride,
     VadEndpointMode endpointMode = VadEndpointMode.defaultFlow,
   }) : _endpointMode = endpointMode;
@@ -281,6 +285,7 @@ final class VadSupervisor {
   final Duration preferredSegmentDuration;
   final Duration maximumSegmentDuration;
   final Duration preRollDuration;
+  final bool endAtVadPauseAfterTarget;
   final Duration? endpointDelayOverride;
   VadEndpointMode _endpointMode;
 
@@ -407,6 +412,7 @@ final class VadSupervisor {
         'preferredSegmentMs': preferredSegmentDuration.inMilliseconds,
         'maximumSegmentMs': maximumSegmentDuration.inMilliseconds,
         'preRollMs': preRollDuration.inMilliseconds,
+        'endAtVadPauseAfterTarget': endAtVadPauseAfterTarget,
       },
       debugName: 'workbench-vad',
       errorsAreFatal: true,
@@ -666,6 +672,8 @@ void _vadWorker(Map<String, Object> bootstrap) {
     ),
   );
   final wordBoundary = VadWordBoundaryDetector(sampleRate: sampleRate);
+  final endAtVadPauseAfterTarget =
+      bootstrap['endAtVadPauseAfterTarget'] as bool? ?? false;
   RandomAccessFile? segmentFile;
   String? segmentId;
   String? conversationId;
@@ -961,6 +969,7 @@ void _vadWorker(Map<String, Object> bootstrap) {
           final detected = detector.isDetected();
           final chunkSamples = pcm.length ~/ 2;
           final splitAtVadResume =
+              !endAtVadPauseAfterTarget &&
               segmentFile != null &&
               segmentDuration.shouldSplitAtVadResume(
                 detected: detected,
@@ -968,6 +977,7 @@ void _vadWorker(Map<String, Object> bootstrap) {
                 incomingSamples: chunkSamples,
               );
           final splitAtWordBoundary =
+              !endAtVadPauseAfterTarget &&
               segmentFile != null &&
               wordBoundary.observe(
                 pcm,
@@ -1026,6 +1036,17 @@ void _vadWorker(Map<String, Object> bootstrap) {
                   endReason: VadSegmentEndReason.silence,
                 );
               }
+            }
+            // MOSS ends at the first actual VAD-low opportunity after its soft
+            // target, without waiting for speech to resume or an energy dip.
+            if (segmentFile != null &&
+                endAtVadPauseAfterTarget &&
+                segmentDuration.shouldEndAtVadPause(detected: detected)) {
+              finishSegment(
+                preserveEndpointPreRoll: true,
+                isConversationFinal: true,
+                endReason: VadSegmentEndReason.silence,
+              );
             }
             if (segmentFile != null &&
                 detected &&

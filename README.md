@@ -404,6 +404,12 @@ operations and has no CPU graph fallback. Completion requires GPU node counts,
 zero CPU nodes, and positive hardware-event timings. Silero VAD remains CPU;
 its provider is reported independently from MOSS.
 
+The OpenCL token table/output head uses F16 with bounded loading conversions.
+Build 180's matched Q5 checks reduced decode time by 6–9% and sampled peak
+process memory by about 297 MiB; short clips still take several seconds. See
+the [current native validation](docs/moss_english_validation.md#build-180-smaller-gpu-token-table)
+for timing, accuracy, device scope, and limitations.
+
 This path shares durable capture and LC3 decoding and uses Silero plus MOSS
 for primary transcription. Parakeet, separate speaker segmentation, automatic Gemma correction,
 and voice memo revision are bypassed. Existing speaker profiles and the optional
@@ -411,12 +417,20 @@ conversation queue remain preserved while their worker is suspended.
 
 The model is file-oriented, with a bidirectional Whisper encoder and a padded
 30-second front end; it does not expose an incremental streaming state. Work
-Bench approximates live transcription using speech chunks: about 800 ms of
-quiet closes an utterance; continuous speech splits at the first credible word
-boundary after eight seconds, with a twelve-second hard limit and one-second
-overlap only at that hard limit. Completed chunks update the live transcript;
+Bench approximates live transcription using speech chunks: MOSS waits for more
+than three seconds of VAD inactivity (about 3.5 seconds of acoustic quiet) to
+close a shorter utterance. Once a chunk exceeds twenty seconds, its first
+VAD-inactive frame ends it, without waiting for speech to resume. Energy dips
+alone do not split MOSS chunks. Uninterrupted speech has an eighty-second
+emergency limit to remain below the native worker's ninety-second input bound,
+with one-second overlap only at that emergency rollover. Completed chunks update the live transcript;
 only the final assembled conversation can trigger a command. One second of
 pre-roll protects opening words. Stop/disconnect durably flushes the tail.
+These timing overrides apply only to MOSS; the modular audio system retains
+its existing endpoints and chunk limits. All glasses-bound text is limited to
+ASCII letters, digits, spaces, and line breaks, capped at 2,000 bytes. Unsupported
+characters become spaces; an all-filtered result clears the previous display.
+Phone transcripts and conversation files retain their original text.
 Speaker labels restart in each chunk and do not establish cross-chunk identity.
 This is chunked live transcription, with several seconds of inference latency,
 not word-by-word streaming. Speech gating avoids decoding continuous ambient
@@ -444,11 +458,26 @@ Conversation persistence, indexing, and export run independently of primary
 transcription and delivery. Diagnostic derivatives stay app-private. The JSON
 records model/runtime revisions, Android/app versions, the actual provider,
 and aggregate native execution counts/timing. Restored jobs never route a
-command. Live input pauses recovery dispatch; saved jobs resume after 30 seconds
-of input inactivity. Malformed output is preserved without repeated identical
-decodes. Worker death and the three-minute native watchdog
+command. New speech takes priority at the next dispatch; the one active decode finishes
+without restarting MOSS. Saved jobs resume after 30 seconds without new speech,
+even while the glasses remain connected. A transcription backlog never invokes
+the capture-failure disconnect handler. Transient failures wait between at most
+three attempts, allowing other jobs to proceed. Worker startup outages back off
+without marking recordings defective. Malformed, non-Latin, or repeatedly failed
+output is held across app restarts with the original WAV preserved. **Retry held
+audio** explicitly requeues those recordings for local processing only. Speaker
+turns and primary text always come from the same MOSS inference result. Valid
+empty turns complete without an agent command or a phantom conversation. Worker death and the three-minute native watchdog
 leave the WAV available for bounded retries and recovery. Text logs are limited
 to the exact public Kokoro safety fixture; other MOSS transcripts remain private.
+
+The **Events** tab shows connection changes and transcription milestones. It
+keeps the active clip, elapsed processing/saving time, queued and held counts,
+and the most recent failure visible above the event list. A job exceeding
+30 seconds is marked as still waiting for a result; no estimated completion
+percentage is shown. PCM, capture, storage, and protocol summaries remain in
+Android diagnostics and do not fill the Events history. New held failures
+record a bounded reason code alongside the preserved WAV.
 
 A representative RedMagic / Adreno 840 phone on Android 16 completed the same
 11-second public reference WAV in 8.6 seconds with OpenCL versus 17.3 seconds

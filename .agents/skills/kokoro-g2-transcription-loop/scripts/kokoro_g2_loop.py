@@ -19,6 +19,7 @@ import tarfile
 import time
 import unicodedata
 import wave
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -819,6 +820,47 @@ def _wait_for_audio_or_log_pattern(
     return _audio_samples_after_marker(log_path, marker), False
 
 
+def connection_control_ready(xml: str, label: str) -> bool:
+    """A label under a disabled ancestor is not a tappable connection action."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return False
+
+    def visit(node: ET.Element, enabled: bool) -> bool:
+        enabled = enabled and node.get("enabled", "true") == "true"
+        labels = (node.get("text", ""), node.get("content-desc", ""))
+        return (enabled and label in labels) or any(
+            visit(child, enabled) for child in node
+        )
+
+    return visit(root, True)
+
+
+def wait_for_connection_control(
+    adb_prefix: list[str], label: str, timeout_seconds: float,
+) -> None:
+    remote = "/data/local/tmp/workbench-connection-preflight.xml"
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while time.monotonic() < deadline:
+            dumped = subprocess.run(
+                [*adb_prefix, "shell", "uiautomator", "dump", "--compressed", remote],
+                capture_output=True, timeout=15,
+            )
+            if dumped.returncode == 0:
+                xml = subprocess.run(
+                    [*adb_prefix, "exec-out", "cat", remote],
+                    capture_output=True, text=True, timeout=10,
+                ).stdout
+                if connection_control_ready(xml, label):
+                    return
+            time.sleep(0.5)
+        raise RuntimeError("Work Bench connection button remained unavailable")
+    finally:
+        subprocess.run([*adb_prefix, "shell", "rm", "-f", remote], capture_output=True)
+
+
 def run_connection_preflight(
     adb_prefix: list[str],
     log_path: Path,
@@ -973,7 +1015,8 @@ def run_connection_preflight(
             "connection_disconnect_ready",
             "preflight",
         )
-        time.sleep(0.5)
+        report["stage"] = "reconnect_button"
+        wait_for_connection_control(adb_prefix, "Connect devices", timeout_seconds)
         report["stage"] = "reconnect"
         _tap_connection_button(adb_prefix, button_point)
         audio_wait_marker = emit_android_test_marker(

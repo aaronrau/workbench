@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../audio/g2_audio_analysis_worker.dart';
 import '../protocol/g2_protocol.dart';
+import '../protocol/g2_display_text.dart';
 import '../util/hex.dart';
 import 'ble_models.dart';
 import 'g2_page_render_safety.dart';
@@ -639,6 +640,7 @@ final class G2Connection {
     int? maximumTextRows,
     String displayOwner = 'status',
   }) async {
+    content = sanitizeG2DisplayText(content);
     final nextFrame = G2PageRenderFrame.validate(
       content: content,
       showPageIndicator: showPageIndicator,

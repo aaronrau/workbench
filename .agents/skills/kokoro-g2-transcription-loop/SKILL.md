@@ -38,7 +38,10 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
    disabled during app startup, the runner waits for the current pipeline-ready
    marker and retries that same visible button. Late fresh audio also satisfies
    the wait immediately; it is never discarded merely because connection took
-   longer than the first probe. If initial connection work still owns the
+   longer than the first probe. After disconnect flush, the runner also waits
+   for an enabled **Connect devices** button before tapping reconnect; flush
+   readiness alone does not mean the UI action has finished cleanup.
+   If initial connection work still owns the
    button after audio begins, the runner retries the visible **Disconnect**
    control until the expected disconnect marker arrives. Never infer readiness
    from an old connection marker. With more than one Android device attached,

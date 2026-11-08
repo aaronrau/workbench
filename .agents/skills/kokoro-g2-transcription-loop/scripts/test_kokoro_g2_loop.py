@@ -46,6 +46,21 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(args.trailing_silence_seconds, 0.5)
         self.assertEqual(args.connection_timeout, 60.0)
 
+    def test_reconnect_waits_for_enabled_connection_control(self) -> None:
+        self.assertTrue(MODULE.connection_control_ready(
+            '<hierarchy><node text="Connect devices" enabled="true"/></hierarchy>',
+            "Connect devices",
+        ))
+        self.assertFalse(MODULE.connection_control_ready(
+            '<hierarchy><node enabled="false"><node text="Connect devices" '
+            'enabled="true"/></node></hierarchy>', "Connect devices",
+        ))
+        self.assertFalse(MODULE.connection_control_ready(
+            '<hierarchy><node text="Disconnect" enabled="true"/></hierarchy>',
+            "Connect devices",
+        ))
+        self.assertFalse(MODULE.connection_control_ready("incomplete", "Connect devices"))
+
     def test_preflight_command_requires_app_button_reconnect(self) -> None:
         args = MODULE.parser().parse_args(
             ["preflight", "--output-dir", "/tmp/test-preflight"]

@@ -150,6 +150,7 @@ final class HomeHistoryPanel extends StatefulWidget {
     this.agentMessageError,
     this.conversationError,
     this.onClearEvents,
+    this.transcriptionProgress,
     this.onChooseFolder,
     this.onRefreshMessages,
     this.onRefreshConversations,
@@ -164,6 +165,7 @@ final class HomeHistoryPanel extends StatefulWidget {
   });
 
   final List<PooledLog> events;
+  final String? transcriptionProgress;
   final List<KeywordHighlight> keywordHighlights;
   final List<SharedConversationTurn> conversations;
   final List<VoiceMemoRecord> voiceMemos;
@@ -449,13 +451,27 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
               );
             },
           );
-    if (widget.keywordHighlights.isEmpty) {
+    if (widget.keywordHighlights.isEmpty &&
+        widget.transcriptionProgress == null) {
       return list;
     }
     return Column(
       children: <Widget>[
-        WorkBenchKeywordHighlightRow(highlights: widget.keywordHighlights),
-        const SizedBox(height: 8),
+        if (widget.transcriptionProgress != null) ...[
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              widget.transcriptionProgress!,
+              key: const ValueKey<String>('transcription-progress'),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (widget.keywordHighlights.isNotEmpty) ...[
+          WorkBenchKeywordHighlightRow(highlights: widget.keywordHighlights),
+          const SizedBox(height: 8),
+        ],
         Expanded(child: list),
       ],
     );

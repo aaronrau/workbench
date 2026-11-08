@@ -23,6 +23,7 @@ import 'transcript_correction_config.dart';
 import 'transcript_correction_supervisor.dart';
 import 'transcript_turn_assembler.dart';
 import 'transcription_worker.dart';
+import 'transcription_progress.dart';
 import 'vad_worker.dart';
 
 typedef AudioPipelineLog =
@@ -220,8 +221,13 @@ final class AudioPipelineCoordinator {
   bool _decoderReady = false;
   int microphoneLevel = 0;
   DateTime? lastMicrophonePcmAt;
+  DateTime? _microphoneMeterNotifiedAt;
   VadSupervisor? _vad;
   MossPipeline? _moss;
+  late final _transcriptionProgress = TranscriptionProgress(
+    onChanged: onChanged,
+  );
+  String get transcriptionProgress => _transcriptionProgress.summary;
   AudioSystem audioSystem = AudioSystem.modular;
   MossExecutionProvider mossExecutionProvider = MossExecutionProvider.opencl;
   MossQuantization mossQuantization = MossQuantization.q5K;
@@ -233,7 +239,7 @@ final class AudioPipelineCoordinator {
         : 'CPU';
     final failed = _moss?.failedCount ?? 0;
     if (failed > 0) {
-      return '$processor · $failed failed · switch away and back to retry';
+      return '$processor · ${pendingMossWindows - failed} queued · $failed held for review';
     }
     final decode = _moss?.lastDecodeMs;
     final audio = _moss?.lastAudioMs;
@@ -501,7 +507,6 @@ final class AudioPipelineCoordinator {
       onTranscript: _onTranscript,
       onDiarizationReady: onMossDiarizationReady,
       onStatus: _transcriptionStatus,
-      onUnsafe: onCaptureUnsafe,
     );
     _moss = moss;
     await moss.start();
@@ -522,6 +527,7 @@ final class AudioPipelineCoordinator {
       endpointMode: _vadEndpointMode,
       preferredSegmentDuration: mossPreferredSegmentDuration,
       maximumSegmentDuration: mossMaximumSegmentDuration,
+      endAtVadPauseAfterTarget: true,
       preRollDuration: const Duration(seconds: 1),
       endpointDelayOverride: mossEndpointDelay,
     );
@@ -620,6 +626,11 @@ final class AudioPipelineCoordinator {
 
   void setMossInputActive(bool active) => _moss?.setInputActive(active);
 
+  Future<void> retryHeldMossAudio() async {
+    await _moss?.retryHeld();
+    onChanged();
+  }
+
   Future<void> startMicrophoneCapture() async {
     if (!canCapturePcm || _microphoneCapture != null) {
       throw StateError('Local audio is not ready for microphone capture.');
@@ -689,6 +700,7 @@ final class AudioPipelineCoordinator {
     _meterStartedAt = null;
     microphoneLevel = 0;
     lastMicrophonePcmAt = null;
+    _microphoneMeterNotifiedAt = null;
   }
 
   void _acceptDecodedPcm(Uint8List pcm) {
@@ -792,11 +804,14 @@ final class AudioPipelineCoordinator {
       );
       microphoneLevel = (rms / 32768 * 255).round().clamp(0, 255);
       final refresh =
-          lastMicrophonePcmAt == null ||
-          now.difference(lastMicrophonePcmAt!) >=
+          _microphoneMeterNotifiedAt == null ||
+          now.difference(_microphoneMeterNotifiedAt!) >=
               const Duration(milliseconds: 100);
       lastMicrophonePcmAt = now;
-      if (refresh) onChanged();
+      if (refresh) {
+        _microphoneMeterNotifiedAt = now;
+        onChanged();
+      }
     }
     _meterStartedAt ??= now;
     if (now.difference(_meterStartedAt!) < const Duration(seconds: 1) ||
@@ -1414,6 +1429,7 @@ final class AudioPipelineCoordinator {
   }
 
   void _transcriptionStatus(String message, {bool isError = false}) {
+    _transcriptionProgress.accept(message);
     log('Pipeline', message, isError: isError);
     if (usesMoss) onChanged();
     if (!_initialStartupComplete) {
@@ -2125,6 +2141,7 @@ final class AudioPipelineCoordinator {
   }
 
   Future<void> dispose() async {
+    _transcriptionProgress.dispose();
     _disposed = true;
     for (final completer in _previewCorrections.values) {
       if (!completer.isCompleted) {

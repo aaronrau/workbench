@@ -5,6 +5,28 @@ import 'package:even_g2_r1_poc/src/protocol/g2_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('all text packet paths sanitize and bound the firmware payload', () {
+    final protocol = G2Protocol();
+    final input = 'Hello\u0000\u202e 中文😀${'x' * 3000}';
+    final update = ProtoReader(protocol.updateText(input)).readFields();
+    final fields = ProtoReader(update[9]! as Uint8List).readFields();
+    final bytes = fields[5]! as Uint8List;
+    expect(fields[4], bytes.length);
+    expect(bytes.length, 2000);
+    expect(ascii.decode(bytes), startsWith('Hello    x'));
+    expect(RegExp(r'^[A-Za-z0-9 \n]*$').hasMatch(ascii.decode(bytes)), isTrue);
+    for (final entry in [
+      (protocol.createTextPage(input), 3),
+      (protocol.rebuildTextPage(input), 7),
+      (protocol.rebuildPageWithImage(content: input), 7),
+    ]) {
+      final outer = ProtoReader(entry.$1).readFields();
+      final page = ProtoReader(outer[entry.$2]! as Uint8List).readFields();
+      final text = ProtoReader(page[3]! as Uint8List).readFields();
+      expect(text[12], bytes);
+    }
+  });
+
   group('G2 GATT layout', () {
     test(
       'qualifies control and audio characteristics under firmware services',
@@ -136,7 +158,7 @@ void main() {
       expect(text[8], 4);
       expect(
         rebuild,
-        containsAllInOrder(utf8.encode('Agent - content flowing into row two')),
+        containsAllInOrder(utf8.encode('Agent   content flowing into row two')),
       );
     });
 
@@ -686,7 +708,7 @@ void main() {
       expect(gesture[2], G2Protocol.visualizerTextY);
       expect(gesture[3], G2Protocol.visualizerTextWidth);
       expect(gesture[4], G2Protocol.visualizerTextHeight);
-      expect(utf8.decode(gesture[12]! as Uint8List), isEmpty);
+      expect(utf8.decode(gesture[12]! as Uint8List), '\n');
       expect(image[1], G2Protocol.visualizerPulseX);
       expect(image[2], G2Protocol.visualizerPulseY);
       expect(image[3], G2Protocol.visualizerPulseWidth);

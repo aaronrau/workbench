@@ -10,6 +10,7 @@ final class AudioSystemSettings extends StatelessWidget {
     this.onProviderChanged,
     this.quantization = MossQuantization.q5K,
     this.onQuantizationChanged,
+    this.onRetryHeld,
     super.key,
   });
   final AudioSystem system;
@@ -19,6 +20,7 @@ final class AudioSystemSettings extends StatelessWidget {
   final ValueChanged<MossExecutionProvider>? onProviderChanged;
   final MossQuantization quantization;
   final ValueChanged<MossQuantization>? onQuantizationChanged;
+  final VoidCallback? onRetryHeld;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -88,7 +90,7 @@ final class AudioSystemSettings extends StatelessWidget {
       ],
       Text(
         system == AudioSystem.moss
-            ? 'MOSS transcribes English only. Voice detection closes chunks at pauses (about 0.8 s quiet), or after 8–12 s of continuous speech. MOSS transcribes each chunk and labels speakers; '
+            ? 'MOSS transcribes English only. After 20 s, the next VAD pause ends the chunk. Shorter chunks need more than 3 s without detected speech (about 3.5 s of quiet). Uninterrupted speech has an 80 s safety cap. MOSS transcribes each chunk and labels speakers; '
                   'saved voice profiles can refine labels afterwards. Unmatched labels restart in each chunk. '
                   'GPU execution never silently falls back to CPU. '
                   'Parakeet, speaker segmentation, and Gemma stay unloaded.'
@@ -96,6 +98,13 @@ final class AudioSystemSettings extends StatelessWidget {
         style: Theme.of(context).textTheme.bodySmall,
       ),
       const SizedBox(height: 8),
+      if (system == AudioSystem.moss && onRetryHeld != null) ...[
+        OutlinedButton(
+          onPressed: onRetryHeld,
+          child: const Text('Retry held audio'),
+        ),
+        const SizedBox(height: 8),
+      ],
       Text(
         'Disconnect devices and stop the microphone before switching. The choice is saved.',
         style: Theme.of(context).textTheme.bodySmall,

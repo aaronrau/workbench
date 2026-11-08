@@ -44,13 +44,15 @@ endfunction()
 
 function(wb_patch_moss_loader source destination)
     file(READ "${source}" contents)
-    # OpenCL GET_ROWS supports F32/F16, not Q5_K. Expand only the token table
-    # before uploading it, preserving exact dequantized values and the GGUF.
+    # OpenCL GET_ROWS supports F32/F16, not flattened K-quants. Use F16 for
+    # the tied token table/output head to halve its GPU bandwidth and memory.
+    # Convert in bounded blocks: never retain a complete expanded F32 table.
+    # Half rounding changes arithmetic, so each model needs device qualification.
     string(REPLACE "        tensor_names_.emplace_back(name);"
-        "        if (std::getenv(\"MTD_DEVICE\") && std::strcmp(std::getenv(\"MTD_DEVICE\"), \"opencl\") == 0 && std::strcmp(name, \"token_embd.weight\") == 0) {\n            t->type = GGML_TYPE_F32; t->nb[0] = sizeof(float);\n            for (int d = 1; d < GGML_MAX_DIMS; ++d) t->nb[d] = t->nb[d-1] * t->ne[d-1];\n        }\n        tensor_names_.emplace_back(name);"
+        "        if (std::getenv(\"MTD_DEVICE\") && std::strcmp(std::getenv(\"MTD_DEVICE\"), \"opencl\") == 0 && std::strcmp(name, \"token_embd.weight\") == 0) {\n            t->type = GGML_TYPE_F16; t->nb[0] = sizeof(ggml_fp16_t);\n            for (int d = 1; d < GGML_MAX_DIMS; ++d) t->nb[d] = t->nb[d-1] * t->ne[d-1];\n        }\n        tensor_names_.emplace_back(name);"
         contents "${contents}")
     string(REPLACE "        ggml_backend_tensor_set(t, stage.data(), 0, sz);"
-        "        if (t->type == GGML_TYPE_F32 && gguf_get_tensor_type(gguf_, i) != GGML_TYPE_F32) {\n            const auto* traits = ggml_get_type_traits(gguf_get_tensor_type(gguf_, i));\n            if (!traits->to_float) { std::fclose(fp); return false; }\n            std::vector<float> expanded(ggml_nelements(t));\n            traits->to_float(stage.data(), expanded.data(), expanded.size());\n            ggml_backend_tensor_set(t, expanded.data(), 0, expanded.size() * sizeof(float));\n        } else { ggml_backend_tensor_set(t, stage.data(), 0, sz); }"
+        "        if (t->type == GGML_TYPE_F16 && gguf_get_tensor_type(gguf_, i) != GGML_TYPE_F16) {\n            const auto* traits = ggml_get_type_traits(gguf_get_tensor_type(gguf_, i));\n            if (!traits->to_float) { std::fclose(fp); return false; }\n            const size_t total = ggml_nelements(t);\n            const size_t chunk = 1u << 20;\n            std::vector<float> expanded(chunk);\n            std::vector<ggml_fp16_t> half(chunk);\n            for (size_t at = 0; at < total; at += chunk) {\n                const size_t count = std::min(chunk, total - at);\n                traits->to_float(stage.data() + ggml_row_size(gguf_get_tensor_type(gguf_, i), at), expanded.data(), count);\n                for (size_t j = 0; j < count; ++j) half[j] = ggml_fp32_to_fp16(expanded[j]);\n                ggml_backend_tensor_set(t, half.data(), at * sizeof(ggml_fp16_t), count * sizeof(ggml_fp16_t));\n            }\n        } else { ggml_backend_tensor_set(t, stage.data(), 0, sz); }"
         contents "${contents}")
-    file(WRITE "${destination}" "#include <cstdlib>\n${contents}")
+    file(WRITE "${destination}" "#include <algorithm>\n#include <cstdlib>\n${contents}")
 endfunction()
