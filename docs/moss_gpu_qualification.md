@@ -1,5 +1,10 @@
 # MOSS Android OpenCL development qualification
 
+This report records the original F32-table runtime through build 168. For the
+current F16-table adapter and its separate device checks, see
+[build 180 validation](moss_english_validation.md#build-180-smaller-gpu-token-table).
+Current queue behavior is described in the repository README.
+
 The tested target is a representative RedMagic phone with an Adreno 840 GPU,
 Android 16 / API 36. This qualifies only this device family, model, and runtime
 combination. Repeat the gate after changing device family, OS, model, runtime,

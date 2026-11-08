@@ -11,15 +11,19 @@ enum MossExecutionProvider { cpu, opencl }
 
 const mossTranscriptionLanguage = 'en';
 const mossLanguagePolicy = 'english-latin-v2';
+const mossNativeAdapter = 'strict-provider-f16-1';
 
 const mossModelSha256 =
     '6fe985fd9a9cd043728f7be49659d10de6901872dad73b49e3c30e1340582e79';
 const mossModelBytes = 648174592;
 const mossGgmlRevision = 'eced84c86f8b012c752c016f7fe789adea168e1e';
 const mossRuntimeRevision = '190a569c13b4b247450f2fb3b2a431244e84833e';
-const mossPreferredSegmentDuration = Duration(seconds: 8);
-const mossMaximumSegmentDuration = Duration(seconds: 12);
-const mossEndpointDelay = Duration(milliseconds: 300);
+const mossPreferredSegmentDuration = Duration(seconds: 20);
+// Leave room for pre-roll and the endpoint tail under the native 90 s limit.
+const mossMaximumSegmentDuration = Duration(seconds: 80);
+// Require more than three seconds of VAD-inactive PCM before ending a turn.
+// Silero's separate 500 ms silence qualification precedes this retained tail.
+const mossEndpointDelay = Duration(milliseconds: 3010);
 
 enum MossQuantization {
   q5K('q5_k', 'Q5_K', mossModelBytes, mossModelSha256, 'moss-0.9b'),
@@ -142,6 +146,50 @@ String stripMossAnnotations(String value) {
       .trim();
 }
 
+/// Defense at the app boundary, even if a worker reports the expected policy.
+/// This checks script and framing characters, not semantic language identity.
+void validateMossEnglishOutput(String text) {
+  if (text.trim().isEmpty || text.length > 65536) {
+    throw const FormatException('Empty or oversized MOSS output.');
+  }
+  var brackets = 0;
+  for (final rune in text.runes) {
+    final allowed =
+        rune == 9 ||
+        rune == 10 ||
+        rune == 13 ||
+        (rune >= 0x20 && rune <= 0x7e) ||
+        const [
+          0xa0,
+          0xa3,
+          0xa9,
+          0xae,
+          0xb0,
+          0xb7,
+          0x2026,
+          0x202f,
+          0x20ac,
+          0x2122,
+        ].contains(rune) ||
+        (rune >= 0xc0 && rune <= 0xd6) ||
+        (rune >= 0xd8 && rune <= 0xf6) ||
+        (rune >= 0xf8 && rune <= 0x24f) ||
+        (rune >= 0x300 && rune <= 0x36f) ||
+        (rune >= 0x1e00 && rune <= 0x1eff) ||
+        (rune >= 0x2010 && rune <= 0x2015) ||
+        (rune >= 0x2018 && rune <= 0x201f) ||
+        (rune >= 0x2032 && rune <= 0x2033);
+    if (!allowed) {
+      throw const FormatException('Unsupported MOSS script or control.');
+    }
+    if (rune == 0x5b) brackets++;
+    if (rune == 0x5d && --brackets < 0) {
+      throw const FormatException('Unbalanced MOSS annotations.');
+    }
+  }
+  if (brackets != 0) throw const FormatException('Truncated MOSS annotations.');
+}
+
 /// Reject malformed/truncated generation instead of routing an unfinished command.
 List<MossUtterance> parseMossTranscript(
   String value, {
@@ -152,15 +200,22 @@ List<MossUtterance> parseMossTranscript(
     r'\[(\d+(?:\.\d+)?)\]\[(S\d{2,})\]([\s\S]*?)\[(\d+(?:\.\d+)?)\]',
   );
   final result = <MossUtterance>[];
+  var framedTurns = 0;
   var end = 0;
   var lastStart = 0.0;
   for (final match in pattern.allMatches(value)) {
+    framedTurns++;
     if (value.substring(end, match.start).trim().isNotEmpty) {
       throw const FormatException('Invalid MOSS transcript framing.');
     }
     final start = double.parse(match[1]!);
     final finish = double.parse(match[4]!);
-    if (finish < start || start < lastStart || finish > audioSeconds + 1) {
+    if (!start.isFinite ||
+        !finish.isFinite ||
+        !audioSeconds.isFinite ||
+        finish < start ||
+        start < lastStart ||
+        finish > audioSeconds + 1) {
       throw const FormatException('Invalid MOSS timestamps.');
     }
     final text = match[3]!.trim();
@@ -170,7 +225,7 @@ List<MossUtterance> parseMossTranscript(
     lastStart = start;
     end = match.end;
   }
-  if (value.substring(end).trim().isNotEmpty || result.isEmpty) {
+  if (value.substring(end).trim().isNotEmpty || framedTurns == 0) {
     throw const FormatException('Incomplete MOSS transcript.');
   }
   return result;

@@ -1,5 +1,9 @@
 # MOSS Q4_0 comparison on Android
 
+These are historical build-169 measurements. The newer native adapter has
+separate [build-180 results](moss_english_validation.md#build-180-smaller-gpu-token-table);
+do not assume the speed difference below applies to every runtime or workload.
+
 Q4_0 is an optional trial setting. Q5_K remains the default because the smaller
 model made a repeated word error in the longer fixture that Q5_K decoded
 correctly. New installations and missing/unknown weight preferences retain

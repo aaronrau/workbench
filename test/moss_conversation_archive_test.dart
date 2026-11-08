@@ -74,6 +74,41 @@ final class _Signatures implements MossSpeakerSignatureExtractor {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'empty MOSS turns finish without a phantom conversation or archive error',
+    () async {
+      final support = await Directory.systemTemp.createTemp(
+        'workbench-moss-empty-conversation.',
+      );
+      final shared = SharedAudioExportStore(isAndroid: false);
+      final archive = MossConversationArchive(
+        sharedStore: shared,
+        onChanged: () {},
+        onStatus: (_, {bool isError = false}) {},
+        supportDirectory: () async => support,
+      );
+      addTearDown(() async {
+        await archive.dispose();
+        shared.dispose();
+        await support.delete(recursive: true);
+      });
+      archive.accept(
+        (await _source(
+          support,
+          'empty',
+          annotated: '[0][S01][1]',
+          plainTranscript: true,
+        )).path,
+      );
+      await archive.drainImports();
+      expect(shared.conversations, isEmpty);
+      expect(archive.error, isNull);
+      expect(
+        File('${support.path}/workbench/audio/moss/empty.raw.txt').existsSync(),
+        isTrue,
+      );
+    },
+  );
 
   for (final model in MossQuantization.values) {
     test(

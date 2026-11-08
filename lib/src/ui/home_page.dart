@@ -481,6 +481,7 @@ final class _HomePageState extends State<HomePage> {
     return Expanded(
       child: HomeHistoryPanel(
         events: controller.eventLogs,
+        transcriptionProgress: controller.transcriptionProgress,
         keywordHighlights: controller.activeKeywordHighlights,
         conversations: controller.conversations,
         voiceMemos: controller.voiceMemos,
@@ -631,6 +632,7 @@ final class _HomePageState extends State<HomePage> {
             Text('Audio processing', style: theme.textTheme.titleMedium),
             const SizedBox(height: 12),
             AudioSystemSettings(
+              onRetryHeld: () => _run(controller.retryHeldMossAudio),
               system: controller.audioSystem,
               provider: controller.mossExecutionProvider,
               quantization: controller.mossQuantization,
@@ -1052,6 +1054,13 @@ final class _HomePageState extends State<HomePage> {
               states: <VoiceWebSocketEndpointState>[],
             ),
             const SizedBox(height: 16),
+            Text('Transcription progress', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            Text(
+              'Transcribing sample-clip · 12s elapsed\n2 queued · 1 unable to transcribe · 3 completed',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
             Text('Event severity', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
             const IgnorePointer(

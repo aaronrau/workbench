@@ -15,22 +15,30 @@ class _Client extends MossClient {
     super.quantization = MossQuantization.q5K,
   });
   int loads = 0;
+  int failuresToPrepare = 0;
   int calls = 0;
+  final paths = <String>[];
   final outputs = <Completer<Map<String, dynamic>>>[];
   @override
   Future<void> prepare(String path) async {
     loads++;
+    if (failuresToPrepare > 0) {
+      failuresToPrepare--;
+      throw StateError('synthetic unavailable worker');
+    }
   }
 
   @override
   Future<Map<String, dynamic>> transcribe(String path) {
     calls++;
+    paths.add(path);
     final result = Completer<Map<String, dynamic>>();
     outputs.add(result);
     return result.future.then(
       (reply) => {
         'language': mossTranscriptionLanguage,
         'languagePolicy': mossLanguagePolicy,
+        'nativeAdapter': mossNativeAdapter,
         ...reply,
       },
     );
@@ -73,6 +81,344 @@ Future<void> _enqueue(
 }
 
 void main() {
+  test(
+    'recovery prioritizes recent WAVs and keeps older jobs queued',
+    () async {
+      final dir = await Directory.systemTemp.createTemp(
+        'workbench-moss-order.',
+      );
+      for (final id in ['100-old', '200-new', 'moss_050_1']) {
+        await File(
+          '${dir.path}/$id.wav',
+        ).writeAsBytes(mossWav(Uint8List(32000)));
+      }
+      final client = _Client();
+      final results = <TranscriptionResult>[];
+      final pipeline = MossPipeline(
+        speechPath: dir.path,
+        modelPath: 'synthetic',
+        client: client,
+        recoveryIdleDelay: Duration.zero,
+        onTranscript: results.add,
+        onStatus: (_, {bool isError = false}) {},
+      );
+      addTearDown(() async {
+        await pipeline.dispose();
+        await dir.delete(recursive: true);
+      });
+      await pipeline.start();
+      await _until(() => client.calls == 1);
+      expect(client.paths.single, endsWith('/200-new.wav'));
+      expect(pipeline.pendingCount, 3);
+      client.outputs[0].complete({'text': '[0][S01]New.[0.5]', 'decodeMs': 1});
+      await _until(() => client.calls == 2);
+      expect(client.paths.last, endsWith('/100-old.wav'));
+      client.outputs[1].complete({'text': '[0][S01]Old.[0.5]', 'decodeMs': 1});
+      await _until(() => client.calls == 3);
+      expect(client.paths.last, endsWith('/moss_050_1.wav'));
+      client.outputs[2].complete({
+        'text': '[0][S01]Legacy.[0.5]',
+        'decodeMs': 1,
+      });
+      await _until(() => results.length == 3);
+      expect(pipeline.pendingCount, 0);
+      expect(results.every((result) => !result.routeEligible), isTrue);
+    },
+  );
+
+  test('old bridge rejection retries locally after upgrade', () async {
+    final dir = await Directory.systemTemp.createTemp(
+      'workbench-moss-upgrade.',
+    );
+    final wav = File('${dir.path}/held.wav');
+    final original = mossWav(Uint8List(32000));
+    await wav.writeAsBytes(original, flush: true);
+    final stat = await wav.stat();
+    await File('${dir.path}/held.moss-failure.json').writeAsString(
+      jsonEncode({
+        'policy':
+            'moss-0.9b-q5_k:cpu:$mossRuntimeRevision:'
+            '$mossLanguagePolicy:$mossNativeAdapter:queue-v2',
+        'bytes': stat.size,
+        'modified': stat.modified.microsecondsSinceEpoch,
+      }),
+    );
+    final client = _Client();
+    final results = <TranscriptionResult>[];
+    final pipeline = MossPipeline(
+      speechPath: dir.path,
+      modelPath: 'synthetic',
+      client: client,
+      recoveryIdleDelay: Duration.zero,
+      onTranscript: results.add,
+      onStatus: (_, {bool isError = false}) {},
+    );
+    addTearDown(() async {
+      await pipeline.dispose();
+      await dir.delete(recursive: true);
+    });
+    await pipeline.start();
+    expect(pipeline.failedCount, 0);
+    await _until(() => client.calls == 1);
+    client.outputs.single.complete({
+      'text': '[0][S01]Synthetic short phrase.[0.5]',
+      'decodeMs': 1,
+    });
+    await _until(() => results.length == 1);
+    expect(results.single.routeEligible, isFalse);
+    expect(await wav.readAsBytes(), original);
+    expect(
+      await File('${dir.path}/held.raw.txt').readAsString(),
+      'Synthetic short phrase.',
+    );
+    expect(File('${dir.path}/held.moss.json').existsSync(), isTrue);
+  });
+
+  test('valid empty turns complete once without inventing speech', () async {
+    final dir = await Directory.systemTemp.createTemp('workbench-moss-empty.');
+    final client = _Client();
+    final results = <TranscriptionResult>[];
+    final pipeline = MossPipeline(
+      speechPath: dir.path,
+      modelPath: 'synthetic',
+      client: client,
+      onTranscript: results.add,
+      onStatus: (_, {bool isError = false}) {},
+    );
+    addTearDown(() async {
+      await pipeline.dispose();
+      await dir.delete(recursive: true);
+    });
+    await pipeline.start();
+    await _enqueue(pipeline, dir, 'empty');
+    await _until(() => client.calls == 1);
+    client.outputs[0].complete({'text': '[0][S01][0.5]', 'decodeMs': 1});
+    await _until(() => results.length == 1);
+    expect(results.single.text, isEmpty);
+    expect(await File(results.single.transcriptPath).readAsString(), isEmpty);
+    expect(pipeline.pendingCount, 0);
+    expect(pipeline.failedCount, 0);
+    expect(client.calls, 1);
+    expect(File('${dir.path}/empty.wav').existsSync(), isTrue);
+  });
+
+  test(
+    'non-English and malformed output is refused without silent partial commands',
+    () {
+      for (final value in [
+        '[0][S01]Hello 中文[1]',
+        '[0][S01]Hi 😀[1]',
+        '[0][S01]Hi\u202e[1]',
+        '[0][S01]Hey agent [unfinished[1]',
+        '',
+        'x' * 65537,
+      ]) {
+        expect(() => validateMossEnglishOutput(value), throwsFormatException);
+      }
+      validateMossEnglishOutput('[0][S01]The café’s open.[1]');
+    },
+  );
+
+  test(
+    'held output survives restart; explicit retry stays local and preserves WAV',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('workbench-moss-held.');
+      final results = <TranscriptionResult>[];
+      var client = _Client();
+      MossPipeline create() => MossPipeline(
+        speechPath: dir.path,
+        modelPath: 'synthetic',
+        client: client,
+        recoveryIdleDelay: Duration.zero,
+        onTranscript: results.add,
+        onStatus: (_, {bool isError = false}) {},
+      );
+      var pipeline = create();
+      addTearDown(() async {
+        await pipeline.dispose();
+        await dir.delete(recursive: true);
+      });
+      await pipeline.start();
+      await _enqueue(pipeline, dir, 'held');
+      await _until(() => client.calls == 1);
+      client.outputs[0].complete({
+        'text': '[0][S01]Hello 中文[0.5]',
+        'decodeMs': 1,
+      });
+      await _until(
+        () =>
+            pipeline.failedCount == 1 &&
+            File('${dir.path}/held.moss-failure.json').existsSync(),
+      );
+      expect(results, isEmpty);
+      final original = await File('${dir.path}/held.wav').readAsBytes();
+      await pipeline.dispose();
+      client = _Client();
+      pipeline = create();
+      await pipeline.start();
+      expect(pipeline.failedCount, 1);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(client.calls, 0);
+      await pipeline.retryHeld();
+      await _until(() => client.calls == 1);
+      client.outputs[0].complete({'text': '[0][S01]Hello[0.5]', 'decodeMs': 1});
+      await _until(() => results.length == 1);
+      expect(results.single.routeEligible, isFalse);
+      expect(await File('${dir.path}/held.wav').readAsBytes(), original);
+    },
+  );
+
+  test(
+    'a transient failure yields to later jobs before retrying on the same serial worker',
+    () async {
+      final dir = await Directory.systemTemp.createTemp(
+        'workbench-moss-retry.',
+      );
+      final client = _Client();
+      final results = <TranscriptionResult>[];
+      final pipeline = MossPipeline(
+        speechPath: dir.path,
+        modelPath: 'synthetic',
+        workerRetryDelay: const Duration(milliseconds: 20),
+        client: client,
+        onTranscript: results.add,
+        onStatus: (_, {bool isError = false}) {},
+      );
+      addTearDown(() async {
+        await pipeline.dispose();
+        await dir.delete(recursive: true);
+      });
+      await pipeline.start();
+      await _enqueue(pipeline, dir, 'first');
+      await _enqueue(pipeline, dir, 'second');
+      await _until(() => client.calls == 1);
+      client.failuresToPrepare = 2;
+      client.outputs[0].completeError(StateError('synthetic worker failure'));
+      await _until(() => client.calls == 2);
+      expect(client.paths[1], endsWith('/second.wav'));
+      expect(client.loads, 4);
+      expect(pipeline.failedCount, 0);
+      client.outputs[1].complete({
+        'text': '[0][S01]Second[0.5]',
+        'decodeMs': 1,
+      });
+      await _until(() => client.calls == 3);
+      expect(client.paths[2], endsWith('/first.wav'));
+      client.outputs[2].complete({'text': '[0][S01]First[0.5]', 'decodeMs': 1});
+      await _until(() => results.length == 2);
+      expect(results.map((r) => r.segmentId), ['second', 'first']);
+      expect(pipeline.pendingCount, 0);
+    },
+  );
+
+  test(
+    'worker backoff does not spin while restored jobs wait for quiet input',
+    () async {
+      final dir = await Directory.systemTemp.createTemp(
+        'workbench-moss-pause.',
+      );
+      final client = _Client();
+      var immediateTimers = 0;
+      final logs = <String>[];
+      late MossPipeline pipeline;
+      for (final id in ['first', 'second']) {
+        await File(
+          '${dir.path}/$id.wav',
+        ).writeAsBytes(mossWav(Uint8List(32000)));
+      }
+      pipeline = MossPipeline(
+        speechPath: dir.path,
+        modelPath: 'synthetic',
+        recoveryIdleDelay: const Duration(milliseconds: 250),
+        workerRetryDelay: const Duration(milliseconds: 20),
+        client: client,
+        onTranscript: (_) {},
+        onStatus: (message, {bool isError = false}) {
+          logs.add(message);
+          if (message.contains('state=worker_wait')) {
+            pipeline.setInputActive(true);
+          }
+        },
+      );
+      addTearDown(() async {
+        await pipeline.dispose();
+        await dir.delete(recursive: true);
+      });
+      await runZoned(
+        () async {
+          await pipeline.start();
+          await _until(() => client.calls == 1);
+          expect(client.paths[0], endsWith('/second.wav'));
+          client.failuresToPrepare = 1;
+          client.outputs[0].completeError(StateError('synthetic failure'));
+          await _until(
+            () => logs.any((line) => line.contains('state=worker_wait')),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          expect(client.calls, 1);
+          expect(immediateTimers, lessThan(5));
+          await _until(() => client.calls == 2);
+          expect(client.paths[1], endsWith('/first.wav'));
+          expect(pipeline.failedCount, 0);
+        },
+        zoneSpecification: ZoneSpecification(
+          createTimer: (self, parent, zone, duration, callback) {
+            if (duration == Duration.zero) immediateTimers++;
+            return parent.createTimer(zone, duration, callback);
+          },
+        ),
+      );
+    },
+  );
+
+  test(
+    'a disk backlog above 128 never disconnects capture or delays live dispatch',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'workbench-moss-backlog.',
+      );
+      final client = _Client();
+      final results = <TranscriptionResult>[];
+      final logs = <String>[];
+      for (var i = 0; i < 129; i++) {
+        await File(
+          '${directory.path}/old-$i.wav',
+        ).writeAsBytes(mossWav(Uint8List(32000)));
+      }
+      final pipeline = MossPipeline(
+        speechPath: directory.path,
+        modelPath: 'synthetic-model',
+        client: client,
+        onTranscript: results.add,
+        onStatus: (message, {bool isError = false}) => logs.add(message),
+      );
+      addTearDown(() async {
+        await pipeline.dispose();
+        await directory.delete(recursive: true);
+      });
+      await pipeline.start();
+      pipeline.setInputActive(true);
+      await _enqueue(pipeline, directory, 'live');
+      await _until(() => client.calls == 1);
+      client.outputs.single.complete({
+        'text': '[0][S01]Live words[0.5]',
+        'decodeMs': 5,
+      });
+      await _until(() => results.length == 1);
+      expect(results.single.segmentId, 'live');
+      expect(pipeline.pendingCount, 129);
+      expect(client.calls, 1);
+      expect(
+        logs.where((line) => line.contains('state=backlog')),
+        hasLength(1),
+      );
+      expect(
+        directory.listSync().where((file) => file.path.endsWith('.wav')),
+        hasLength(130),
+      );
+    },
+  );
+
   test('removes every bracketed MOSS annotation from downstream text', () {
     const cases = {
       '[0.00][S01]Hello[0.75][0.50][S02]Hi[0.90]': 'Hello Hi',
@@ -105,7 +451,7 @@ void main() {
           client: client,
           onTranscript: results.add,
           onDiarizationReady: handoffs.add,
-          onUnsafe: () => fail('unsafe'),
+
           onStatus: (_, {bool isError = false}) {},
         );
         addTearDown(() async {
@@ -143,9 +489,10 @@ void main() {
   for (final wrong in [
     {'language': 'zh'},
     {'languagePolicy': 'legacy-auto'},
+    {'nativeAdapter': 'strict-provider-1'},
   ]) {
     test(
-      'refuses unverified English mode before saving or delivering STT: $wrong',
+      'refuses unverified native policy before saving or delivering STT: $wrong',
       () async {
         final directory = await Directory.systemTemp.createTemp(
           'workbench-moss-language.',
@@ -157,7 +504,7 @@ void main() {
           modelPath: 'synthetic-model',
           client: client,
           onTranscript: results.add,
-          onUnsafe: () => fail('unsafe'),
+
           onStatus: (_, {bool isError = false}) {},
         );
         addTearDown(() async {
@@ -200,7 +547,7 @@ void main() {
           modelPath: 'synthetic-model',
           client: client,
           onTranscript: primary.add,
-          onUnsafe: () => fail('unsafe'),
+
           onStatus: (_, {bool isError = false}) {},
           onDiarizationReady: (path) {
             final id = File(
@@ -312,7 +659,7 @@ void main() {
         speechPath: directory.path,
         modelPath: 'synthetic-model',
         onTranscript: results.add,
-        onUnsafe: () => fail('unsafe'),
+
         onStatus: (message, {bool isError = false}) => logs.add(message),
         client: client,
       );
@@ -363,7 +710,7 @@ void main() {
         speechPath: directory.path,
         modelPath: 'synthetic-model',
         onTranscript: result.complete,
-        onUnsafe: () => fail('unsafe'),
+
         onStatus: (_, {bool isError = false}) {},
         client: client,
         recoveryIdleDelay: Duration.zero,
@@ -396,7 +743,7 @@ void main() {
         speechPath: directory.path,
         modelPath: 'synthetic-model',
         onTranscript: (_) => fail('must not route a stopped job'),
-        onUnsafe: () => fail('unsafe'),
+
         onStatus: (_, {bool isError = false}) {},
         client: client,
       );
@@ -410,6 +757,13 @@ void main() {
       );
       expect(
         directory.listSync().where((file) => file.path.endsWith('.raw.txt')),
+        isEmpty,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(
+        directory.listSync().where(
+          (file) => file.path.endsWith('.moss-failure.json'),
+        ),
         isEmpty,
       );
       await directory.delete(recursive: true);
@@ -427,7 +781,6 @@ void main() {
       client: client,
       onTranscript: results.add,
       onStatus: (_, {bool isError = false}) {},
-      onUnsafe: () => fail('unsafe'),
     );
     addTearDown(() async {
       await pipeline.dispose();
@@ -463,7 +816,7 @@ void main() {
     expect(pipeline.pendingCount, 1);
   });
   test(
-    'live input pauses recovered jobs and malformed output is not retried',
+    'quiet connected input drains backlog and malformed output is not retried',
     () async {
       final directory = await Directory.systemTemp.createTemp(
         'workbench-moss-priority.',
@@ -477,10 +830,9 @@ void main() {
         speechPath: directory.path,
         modelPath: 'synthetic-model',
         client: client,
-        recoveryIdleDelay: Duration.zero,
+        recoveryIdleDelay: const Duration(milliseconds: 200),
         onTranscript: results.add,
         onStatus: (_, {bool isError = false}) {},
-        onUnsafe: () => fail('unsafe'),
       );
       addTearDown(() async {
         await pipeline.dispose();
@@ -496,8 +848,6 @@ void main() {
       });
       await _until(() => results.length == 1);
       expect(results.single.segmentId, 'live');
-      expect(client.calls, 1);
-      pipeline.setInputActive(false);
       await _until(() => client.calls == 2);
       client.outputs[1].complete({'text': 'Incomplete output', 'decodeMs': 5});
       await _until(() => pipeline.failedCount == 1);
@@ -528,7 +878,6 @@ void main() {
         recoveryIdleDelay: Duration.zero,
         onTranscript: results.add,
         onStatus: (_, {bool isError = false}) {},
-        onUnsafe: () => fail('unsafe'),
       );
       addTearDown(() async {
         await pipeline.dispose();
@@ -556,7 +905,7 @@ void main() {
     },
   );
   test(
-    'starting input preempts only restored decoding and preserves its WAV',
+    'new input finishes the one running decode without killing or reloading MOSS',
     () async {
       final directory = await Directory.systemTemp.createTemp(
         'workbench-moss-preempt.',
@@ -573,7 +922,6 @@ void main() {
         recoveryIdleDelay: Duration.zero,
         onTranscript: results.add,
         onStatus: (_, {bool isError = false}) {},
-        onUnsafe: () => fail('unsafe'),
       );
       addTearDown(() async {
         await pipeline.dispose();
@@ -583,18 +931,25 @@ void main() {
       await _until(() => client.calls == 1);
       pipeline.setInputActive(true);
       await _enqueue(pipeline, directory, 'live-preempt');
+      expect(client.calls, 1);
+      client.outputs[0].complete({
+        'text': '[0][S01]Saved words[0.5]',
+        'decodeMs': 5,
+      });
       await _until(() => client.calls == 2);
       client.outputs[1].complete({
         'text': '[0][S01]Live words[0.5]',
         'decodeMs': 5,
       });
-      await _until(() => results.length == 1);
-      expect(results.single.segmentId, 'live-preempt');
-      expect(client.loads, 2);
-      expect(pipeline.pendingCount, 1);
+      await _until(() => results.length == 2);
+      expect(results.last.segmentId, 'live-preempt');
+      expect(results.first.routeEligible, isFalse);
+      expect(results.last.routeEligible, isTrue);
+      expect(client.loads, 1);
+      expect(pipeline.pendingCount, 0);
       expect(pipeline.failedCount, 0);
       expect(File('${directory.path}/old.wav').existsSync(), isTrue);
-      expect(File('${directory.path}/old.raw.txt').existsSync(), isFalse);
+      expect(File('${directory.path}/old.raw.txt').existsSync(), isTrue);
     },
   );
   test(
@@ -615,7 +970,6 @@ void main() {
         client: client,
         onTranscript: results.add,
         onStatus: (message, {bool isError = false}) => logs.add(message),
-        onUnsafe: () => fail('unsafe'),
       );
       addTearDown(() async {
         await pipeline.dispose();
@@ -642,6 +996,7 @@ void main() {
       expect(metadata['model_sha256'], MossQuantization.q4Zero.sha256);
       expect(metadata['language'], mossTranscriptionLanguage);
       expect(metadata['language_policy'], mossLanguagePolicy);
+      expect(metadata['native_adapter'], mossNativeAdapter);
       expect(
         logs.where((line) => line.contains('state=completed')).single,
         contains('model=moss-0.9b-q4_0'),

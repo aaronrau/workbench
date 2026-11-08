@@ -13,58 +13,64 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   _eventRowTests();
-  testWidgets(
-    'shows MOSS profile labels alongside existing conversation turns',
-    (tester) async {
-      await tester.binding.setSurfaceSize(const Size(390, 844));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpWidget(
-        _app(
-          HomeHistoryPanel(
-            events: const [],
-            conversations: [
-              SharedConversationTurn(
-                id: 'moss-sample-1',
-                conversationId: 'moss-sample',
-                speakerId: 'primary-user',
-                speakerLabel: 'You',
-                text: 'Synthetic MOSS phrase.',
-                startMs: 0,
-                endMs: 2000,
-                confidence: .9,
-                updatedAt: DateTime(2026),
-                isPrimary: true,
-                isOverlap: false,
-              ),
-              _turn(
-                id: 'existing',
-                label: 'Speaker 2',
-                text: 'Synthetic conversation phrase.',
-                updatedAt: DateTime(2026),
-              ),
-            ],
-            mossConversationMode: true,
-            analysisEnabled: true,
-            needsEnrollment: false,
-            analysisState: 'paused',
-            knownSpeakerCount: 2,
-            pendingConversationCount: 0,
-            isLoadingConversations: false,
-            isStorageBusy: false,
-          ),
+  testWidgets('shows MOSS profile labels alongside existing conversation turns', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _app(
+        HomeHistoryPanel(
+          events: const [],
+          transcriptionProgress:
+              'Transcribing sample · 31s elapsed\n2 queued · 1 unable to transcribe · 3 completed\nLast issue: sample-bad · incomplete speaker timestamps · audio saved',
+          conversations: [
+            SharedConversationTurn(
+              id: 'moss-sample-1',
+              conversationId: 'moss-sample',
+              speakerId: 'primary-user',
+              speakerLabel: 'You',
+              text: 'Synthetic MOSS phrase.',
+              startMs: 0,
+              endMs: 2000,
+              confidence: .9,
+              updatedAt: DateTime(2026),
+              isPrimary: true,
+              isOverlap: false,
+            ),
+            _turn(
+              id: 'existing',
+              label: 'Speaker 2',
+              text: 'Synthetic conversation phrase.',
+              updatedAt: DateTime(2026),
+            ),
+          ],
+          mossConversationMode: true,
+          analysisEnabled: true,
+          needsEnrollment: false,
+          analysisState: 'paused',
+          knownSpeakerCount: 2,
+          pendingConversationCount: 0,
+          isLoadingConversations: false,
+          isStorageBusy: false,
         ),
-      );
-      await tester.tap(find.text('Conversation'));
-      await tester.pumpAndSettle();
-      expect(find.text('You'), findsOneWidget);
-      expect(find.text('Speaker 2'), findsOneWidget);
-      expect(find.text('Synthetic MOSS phrase.'), findsOneWidget);
-      expect(find.text('Synthetic conversation phrase.'), findsOneWidget);
-      expect(find.textContaining('MOSS · '), findsWidgets);
-      expect(find.textContaining('Conversation · '), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    },
-  );
+      ),
+    );
+    expect(
+      find.byKey(const ValueKey<String>('transcription-progress')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('Conversation'));
+    await tester.pumpAndSettle();
+    expect(find.text('You'), findsOneWidget);
+    expect(find.text('Speaker 2'), findsOneWidget);
+    expect(find.text('Synthetic MOSS phrase.'), findsOneWidget);
+    expect(find.text('Synthetic conversation phrase.'), findsOneWidget);
+    expect(find.textContaining('MOSS · '), findsWidgets);
+    expect(find.textContaining('Conversation · '), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
   for (final hasTurns in [false, true]) {
     testWidgets(
       'MOSS conversation history hasTurns=$hasTurns bypasses legacy enrollment',

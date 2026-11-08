@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'g2_display_text.dart';
+
 /// Even Realities G2 BLE identifiers recovered in MentraOS.
 abstract final class G2Ids {
   /// UUID advertised by the G2. It is not the parent GATT service for the
@@ -1048,6 +1050,7 @@ final class G2Protocol {
     required int borderColor,
     required int paddingLength,
   }) {
+    content = sanitizeG2DisplayText(content);
     final renderPageIndicator = showPageIndicator && pageCount > 1;
     final resolvedBorderWidth = borderWidth.clamp(0, 32);
     final resolvedBorderColor = borderColor.clamp(0, 15);
@@ -1297,6 +1300,7 @@ final class G2Protocol {
   }
 
   Uint8List updateText(String content) {
+    content = sanitizeG2DisplayText(content);
     final update = ProtoWriter()
       ..writeInt32(1, 1)
       ..writeInt32(3, 0)
@@ -1328,6 +1332,7 @@ final class G2Protocol {
     int textWidth = 576,
     int textHeight = 190,
   }) {
+    content = sanitizeG2DisplayText(content);
     final eventCapture = ProtoWriter()
       ..writeInt32(1, 0)
       ..writeInt32(2, 0)

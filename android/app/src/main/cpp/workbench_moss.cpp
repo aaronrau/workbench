@@ -65,3 +65,8 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_dev_opensourceglasses_even_1g2_1r1_1poc_MossNative_languagePolicy(JNIEnv* env, jobject) {
     return env->NewStringUTF(wb::kEnglishPolicy);
 }
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_opensourceglasses_even_1g2_1r1_1poc_MossNative_adapterRevision(JNIEnv* env, jobject) {
+    return env->NewStringUTF("strict-provider-f16-1");
+}

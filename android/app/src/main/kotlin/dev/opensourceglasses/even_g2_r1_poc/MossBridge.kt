@@ -22,7 +22,19 @@ internal class MossBridge(private val context: Context, private val requestExitR
             if (message.data.getBoolean("failed")) {
                 result?.error("moss_failed", "MOSS could not process the request. Audio remains saved.", null)
             } else {
-                result?.success(mapOf("text" to message.data.getString("text"), "decodeMs" to message.data.getLong("decodeMs"), "provider" to message.data.getString("provider"), "model" to message.data.getString("model"), "profile" to message.data.getLongArray("profile")?.toList(), "osApi" to message.data.getInt("osApi"), "osRelease" to message.data.getString("osRelease"), "appBuild" to message.data.getLong("appBuild"), "language" to message.data.getString("language"), "languagePolicy" to message.data.getString("languagePolicy")))
+                result?.success(mapOf(
+                    "text" to message.data.getString("text"),
+                    "decodeMs" to message.data.getLong("decodeMs"),
+                    "provider" to message.data.getString("provider"),
+                    "model" to message.data.getString("model"),
+                    "profile" to message.data.getLongArray("profile")?.toList(),
+                    "osApi" to message.data.getInt("osApi"),
+                    "osRelease" to message.data.getString("osRelease"),
+                    "appBuild" to message.data.getLong("appBuild"),
+                    "language" to message.data.getString("language"),
+                    "languagePolicy" to message.data.getString("languagePolicy"),
+                    "nativeAdapter" to message.data.getString("nativeAdapter"),
+                ))
             }
         }
         true
