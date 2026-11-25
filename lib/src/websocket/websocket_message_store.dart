@@ -1,8 +1,24 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../audio/shared_audio_export_store.dart';
+
+String transcriptDeliveryKey(String id) {
+  // Continuous history and individual VAD files can describe the same turn.
+  final turnId = _transcriptTurnAlias.firstMatch(id)?.group(1) ?? id;
+  return sha256.convert(utf8.encode(turnId)).toString();
+}
+
+final _transcriptTurnAlias = RegExp(r'^(\d+-\d{6})(?:-part-\d+|\.continuous)$');
+final _sentTranscriptKey = RegExp(
+  r'-transcript-([a-f0-9]{64})\.sent\.message\.txt$',
+);
+
+String? sentTranscriptKey(String fileName) =>
+    _sentTranscriptKey.firstMatch(fileName)?.group(1);
 
 /// Prefer authoritative local records when their exported copies also exist.
 List<SharedWebSocketMessage> mergeMessageHistory(
@@ -58,6 +74,11 @@ final class WebSocketMessageStore {
   int _cacheRevision = 0;
   int _refreshGeneration = 0;
   List<SharedWebSocketMessage> _recent = const [];
+  final Set<String> _acknowledgedTranscriptKeys = <String>{};
+  bool hasAcknowledgedTranscript(String key) =>
+      _acknowledgedTranscriptKeys.contains(key);
+  void markTranscriptAcknowledged(String key) =>
+      _acknowledgedTranscriptKeys.add(key);
   List<SharedWebSocketMessage> get recentMessages => List.unmodifiable(_recent);
 
   Future<void> initialize() async {
@@ -72,6 +93,9 @@ final class WebSocketMessageStore {
     final generation = ++_refreshGeneration;
     final revision = _cacheRevision;
     final paths = await savedPaths();
+    _acknowledgedTranscriptKeys.addAll(
+      paths.map(sentTranscriptKey).whereType<String>(),
+    );
     final loaded = <SharedWebSocketMessage>[];
     for (final path in paths.reversed.take(
       SharedAudioExportStore.maximumVisibleMessages,
@@ -119,6 +143,7 @@ final class WebSocketMessageStore {
   Future<SavedWebSocketMessage> save({
     required WebSocketMessageDirection direction,
     required String message,
+    String? transcriptId,
   }) async {
     final directory = _directory;
     if (directory == null) {
@@ -129,6 +154,10 @@ final class WebSocketMessageStore {
       throw const FormatException('WebSocket message cannot be empty.');
     }
     final receivedAt = _now().toUtc();
+    final source =
+        direction == WebSocketMessageDirection.sent && transcriptId != null
+        ? '-transcript-${transcriptDeliveryKey(transcriptId)}'
+        : '';
     late File target;
     late File partial;
     while (true) {
@@ -139,7 +168,7 @@ final class WebSocketMessageStore {
       );
       final base =
           'workbench-websocket-$stamp-'
-          '${_sequence.toString().padLeft(4, '0')}';
+          '${_sequence.toString().padLeft(4, '0')}$source';
       target = File(
         '${directory.path}/$base.${direction.serializedName}$fileSuffix',
       );
@@ -150,6 +179,10 @@ final class WebSocketMessageStore {
     }
     await partial.writeAsString('$normalized\n', flush: true);
     await partial.rename(target.path);
+    final transcriptKey = sentTranscriptKey(target.path);
+    if (transcriptKey != null) {
+      _acknowledgedTranscriptKeys.add(transcriptKey);
+    }
     _cacheRevision++;
     _recent = mergeMessageHistory(_recent, [
       SharedWebSocketMessage(

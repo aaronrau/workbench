@@ -117,6 +117,45 @@ void main() {
     expect(supervisor.pendingCount, 0);
   });
 
+  test(
+    'explicit history correction works with automatic correction off',
+    () async {
+      await configStore.setEnabled(false);
+      final completed = Completer<CorrectedTranscriptResult>();
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: client,
+        onCorrected: completed.complete,
+        onUncorrected: (_, _, reason) =>
+            completed.completeError(StateError(reason)),
+        onStatus: (_, {isError = false}) {},
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+      final rawFile = File('${speech.path}/history.raw.txt');
+      await rawFile.writeAsString('Please run the checks.');
+      await supervisor.queue(
+        TranscriptCorrectionJob(
+          segmentId: 'history',
+          rawPath: rawFile.path,
+          sttModel: 'synthetic',
+          sttProvider: 'cpu',
+          audioMs: 0,
+          sttDecodeMs: 0,
+          sttTotalMs: 0,
+          queuedAt: DateTime.now(),
+          explicitlyRequested: true,
+        ),
+      );
+      final result = await completed.future.timeout(const Duration(seconds: 5));
+      expect(result.routeWhenCorrected, isFalse);
+      expect(await rawFile.readAsString(), 'Please run the checks.');
+      expect(configStore.config.enabled, isFalse);
+    },
+  );
+
   test('explicit agent selection makes a non-Hey transcript correctable', () {
     expect(
       isLiveTranscriptCorrectionEligible(
@@ -631,10 +670,11 @@ void main() {
     const command = 'Hey Flux, pull the latest changes.';
     expect(
       promptFitsContextBudget(
-        instructions: TranscriptCorrectionSupervisor.buildCorrectionInstructions(
-          'W' * 3000,
-          terms,
-        ),
+        instructions:
+            TranscriptCorrectionSupervisor.buildCorrectionInstructions(
+              'W' * 3000,
+              terms,
+            ),
         transcript: command,
       ),
       isTrue,
@@ -644,10 +684,11 @@ void main() {
     // Gemma process from nativeCreateConversation.
     expect(
       promptFitsContextBudget(
-        instructions: TranscriptCorrectionSupervisor.buildCorrectionInstructions(
-          'W' * TranscriptCorrectionConfig.maximumInstructionCharacters,
-          terms,
-        ),
+        instructions:
+            TranscriptCorrectionSupervisor.buildCorrectionInstructions(
+              'W' * TranscriptCorrectionConfig.maximumInstructionCharacters,
+              terms,
+            ),
         transcript: command,
       ),
       isFalse,

@@ -12,6 +12,8 @@ final class SharedAudioFolder {
   final String displayName;
 }
 
+enum SavedTranscriptDeliveryState { unsent, correcting, sending, sent }
+
 final class SharedTranscript {
   const SharedTranscript({
     required this.id,
@@ -30,6 +32,14 @@ final class SharedTranscript {
   bool get hasAudio => audioFileName != null;
   bool get hasCorrection => correctedText != null;
   String get text => correctedText ?? originalText;
+
+  SharedTranscript withCorrection(String corrected) => SharedTranscript(
+    id: id,
+    originalText: originalText,
+    correctedText: corrected,
+    updatedAt: updatedAt,
+    audioFileName: audioFileName,
+  );
 }
 
 enum SharedWebSocketMessageDirection {

@@ -60,6 +60,7 @@ final class TranscriptCorrectionJob {
     required this.queuedAt,
     this.correctionTerms = const <String>[],
     this.routeWhenCorrected = false,
+    this.explicitlyRequested = false,
     this.liveTranscript,
     this.attempts = 0,
     this.nextAttemptAt,
@@ -75,6 +76,8 @@ final class TranscriptCorrectionJob {
   final DateTime queuedAt;
   final List<String> correctionTerms;
   final bool routeWhenCorrected;
+  // An explicit request can run with automatic correction disabled.
+  final bool explicitlyRequested;
 
   /// Optional live-process input after rollover overlap removal. It is never
   /// written to the pending ledger; restored jobs remain read-only and do not
@@ -97,6 +100,7 @@ final class TranscriptCorrectionJob {
     queuedAt: queuedAt,
     correctionTerms: correctionTerms,
     routeWhenCorrected: routeWhenCorrected,
+    explicitlyRequested: explicitlyRequested,
     liveTranscript: liveTranscript,
     attempts: attempts + (incrementAttempt ? 1 : 0),
     nextAttemptAt: DateTime.now().toUtc().add(delay),
@@ -412,7 +416,19 @@ final class TranscriptCorrectionSupervisor {
           _schedulePump(earliest.difference(now));
           break;
         }
-        await _process(ready);
+        try {
+          await _process(ready);
+        } on Object {
+          if (!ready.explicitlyRequested) rethrow;
+          _pending.remove(ready.segmentId);
+          _transientFailureCounts.remove(ready.segmentId);
+          _transientFailureSince.remove(ready.segmentId);
+          onUncorrected(
+            ready,
+            ready.liveTranscript ?? '',
+            'correction_unavailable',
+          );
+        }
       }
     } finally {
       _pumping = false;
@@ -483,7 +499,7 @@ final class TranscriptCorrectionSupervisor {
       'stage=model_check config_fallback='
       '${configStore.validationError != null}',
     );
-    if (!config.enabled) {
+    if (!config.enabled && !job.explicitlyRequested) {
       await _finishWithoutCorrection(
         job,
         rawText: rawText,
@@ -844,7 +860,8 @@ final class TranscriptCorrectionSupervisor {
 
   Future<void> _persistPending() {
     final value = <String, Object>{
-      for (final entry in _pending.entries) entry.key: entry.value.toJson(),
+      for (final entry in _pending.entries)
+        if (!entry.value.explicitlyRequested) entry.key: entry.value.toJson(),
     };
     final encoded = jsonEncode(value);
     final operation = _ledgerWriteTail.then((_) async {

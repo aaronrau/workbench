@@ -250,6 +250,7 @@ final class AudioPipelineCoordinator {
 
   TranscriptionSupervisor? _transcription;
   TranscriptCorrectionSupervisor? _correction;
+  TranscriptCorrectionSupervisor? _mossHistoryCorrection;
   TranscriptTurnAssembler? _transcriptTurnAssembler;
   Future<void>? _decodePump;
   Future<void> _transcriptHandlingTail = Future<void>.value();
@@ -422,14 +423,7 @@ final class AudioPipelineCoordinator {
       activeModelName = paths.transcription.definition.displayName;
       activeProvider = await _transcription!.start();
       _selectedModel = requestedModel;
-      final correction = TranscriptCorrectionSupervisor(
-        speechPath: _speechPath!,
-        configStore: _correctionConfigStore,
-        modelStore: _gemmaModelStore,
-        onCorrected: _onCorrectedTranscript,
-        onUncorrected: _onUncorrectedTranscript,
-        onStatus: _correctionStatus,
-      );
+      final correction = _createCorrectionSupervisor(_speechPath!);
       try {
         await correction.start();
         _correction = correction;
@@ -1505,8 +1499,18 @@ final class AudioPipelineCoordinator {
   }
 
   Future<void> handleMemoryPressure() async {
-    await _correction?.releaseIdleEngine();
+    await (_correction ?? _mossHistoryCorrection)?.releaseIdleEngine();
   }
+
+  TranscriptCorrectionSupervisor _createCorrectionSupervisor(String path) =>
+      TranscriptCorrectionSupervisor(
+        speechPath: path,
+        configStore: _correctionConfigStore,
+        modelStore: _gemmaModelStore,
+        onCorrected: _onCorrectedTranscript,
+        onUncorrected: _onUncorrectedTranscript,
+        onStatus: _correctionStatus,
+      );
 
   void _setStartup(StartupPhase phase, String message, {String? provider}) {
     startup = StartupSnapshot(
@@ -1652,10 +1656,35 @@ final class AudioPipelineCoordinator {
   Future<TranscriptCorrectionPreviewResult> correctCollectedTranscriptPreview({
     required String segmentId,
     required String transcript,
+    bool explicitlyRequested = false,
   }) async {
     final normalized = transcript.replaceAll(RegExp(r'\s+'), ' ').trim();
     final speechPath = _speechPath;
-    if (_disposed || normalized.isEmpty || speechPath == null) {
+    var correction = _correction;
+    if (explicitlyRequested &&
+        usesMoss &&
+        !_disposed &&
+        !_systemSwitching &&
+        speechPath != null &&
+        normalized.isNotEmpty) {
+      if (_mossHistoryCorrection == null) {
+        await _correctionConfigStore.initialize();
+        if (!_disposed &&
+            !_systemSwitching &&
+            _speechPath == speechPath &&
+            usesMoss) {
+          // Manual previews use the serial Gemma worker only on demand.
+          _mossHistoryCorrection ??= _createCorrectionSupervisor(
+            '$speechPath/.preview',
+          );
+        }
+      }
+      correction = _mossHistoryCorrection;
+    }
+    if (_disposed ||
+        normalized.isEmpty ||
+        speechPath == null ||
+        correction == null) {
       return TranscriptCorrectionPreviewResult(
         segmentId: segmentId,
         rawTranscript: normalized,
@@ -1693,14 +1722,12 @@ final class AudioPipelineCoordinator {
           correctionTermsProvider?.call().toList(growable: false) ??
           const <String>[],
       routeWhenCorrected: false,
+      explicitlyRequested: explicitlyRequested,
       liveTranscript: normalized,
     );
-    final correction = _correction;
-    if (correction == null) {
-      await TranscriptCorrectionSupervisor.persistSkipped(
-        job,
-        reason: 'correction_unavailable',
-      );
+    if (_disposed ||
+        _systemSwitching ||
+        !identical(correction, _correction ?? _mossHistoryCorrection)) {
       await _deleteCorrectionPreviewArtifacts(rawPath);
       return TranscriptCorrectionPreviewResult(
         segmentId: segmentId,
@@ -1717,7 +1744,7 @@ final class AudioPipelineCoordinator {
       '[WorkBench][VoiceRoute] state=preview_queued segment=$segmentId',
     );
     try {
-      await correction.queue(job, prioritize: true);
+      await correction.queue(job, prioritize: !explicitlyRequested);
     } on Object {
       _previewCorrections.remove(segmentId);
       await _deleteCorrectionPreviewArtifacts(rawPath);
@@ -2103,7 +2130,13 @@ final class AudioPipelineCoordinator {
     await _vad?.dispose();
     await _transcription?.dispose();
     await _transcriptHandlingTail;
-    await _correction?.dispose();
+    final correction = _correction;
+    final mossHistoryCorrection = _mossHistoryCorrection;
+    _correction = null;
+    _mossHistoryCorrection = null;
+    await correction?.dispose();
+    await mossHistoryCorrection?.dispose();
+    _cancelCorrectionPreviews();
     final previewDirectory = _speechPath == null
         ? null
         : Directory('${_speechPath!}/.preview');
@@ -2140,15 +2173,27 @@ final class AudioPipelineCoordinator {
     await initialize(transcriptionModel: transcriptionModel);
   }
 
-  Future<void> dispose() async {
-    _transcriptionProgress.dispose();
-    _disposed = true;
-    for (final completer in _previewCorrections.values) {
-      if (!completer.isCompleted) {
-        completer.completeError(StateError('The audio pipeline was disposed.'));
+  void _cancelCorrectionPreviews() {
+    for (final entry in _previewCorrections.entries) {
+      if (!entry.value.isCompleted) {
+        entry.value.complete(
+          TranscriptCorrectionPreviewResult(
+            segmentId: entry.key,
+            rawTranscript: '',
+            transcript: '',
+            isCorrected: false,
+            failureReason: 'correction_unavailable',
+          ),
+        );
       }
     }
     _previewCorrections.clear();
+  }
+
+  Future<void> dispose() async {
+    _transcriptionProgress.dispose();
+    _disposed = true;
+    _cancelCorrectionPreviews();
     await _microphoneCapture?.dispose();
     _microphoneCapture = null;
     await _capture?.dispose();
@@ -2159,6 +2204,7 @@ final class AudioPipelineCoordinator {
     await _transcription?.dispose();
     await _transcriptHandlingTail;
     await _correction?.dispose();
+    await _mossHistoryCorrection?.dispose();
     final previewDirectory = _speechPath == null
         ? null
         : Directory('${_speechPath!}/.preview');

@@ -13,6 +13,7 @@ import 'audio/moss_conversation_archive.dart';
 import 'audio/android_microphone_source.dart';
 import 'audio/keyword_highlights.dart';
 import 'audio/phone_microphone_session.dart';
+import 'audio/saved_transcript_store.dart';
 import 'audio/transcript_turn_state.dart';
 import 'audio/conversation_analysis_service.dart';
 import 'audio/shared_audio_export_store.dart';
@@ -673,6 +674,9 @@ base class WearableController extends ChangeNotifier
   _selectedAgentPreviewResults = <String, TranscriptCorrectionPreviewResult>{};
   final Map<String, Future<void>> _selectedAgentSubmissions =
       <String, Future<void>>{};
+  final _savedTranscriptStore = SavedTranscriptStore();
+  final Set<String> _transcriptDeliveries = <String>{};
+  final Set<String> _manualTranscriptCorrections = <String>{};
   SelectedAgentTranscriptSession? _selectedAgentListenSession;
   int _selectedAgentListenSessionRevision = 0;
   Timer? _selectedAgentTranscriptionBlinkTimer;
@@ -728,7 +732,7 @@ base class WearableController extends ChangeNotifier
   String? get sharedAudioExportError => _audioPipeline.sharedExportError;
   int get sharedExportedFiles => _audioPipeline.sharedExportedFiles;
   List<SharedTranscript> get sharedTranscripts =>
-      _sharedAudioExportStore.transcripts;
+      _savedTranscriptStore.history(_sharedAudioExportStore.transcripts);
   List<SharedWebSocketMessage> get sharedWebSocketMessages =>
       mergeMessageHistory(
         _sharedAudioExportStore.messages,
@@ -1566,6 +1570,12 @@ base class WearableController extends ChangeNotifier
     } on Object catch (error) {
       failure ??= error;
     }
+    try {
+      await _savedTranscriptStore.refresh(_sharedAudioExportStore.transcripts);
+      _safeNotify();
+    } on Object {
+      // Keep the available shared or previously loaded transcript rows.
+    }
     await _refreshAgentMessages();
     addLog(
       'Storage',
@@ -1598,6 +1608,148 @@ base class WearableController extends ChangeNotifier
   bool isPlayingTranscript(SharedTranscript transcript) =>
       transcript.audioFileName != null &&
       transcript.audioFileName == _sharedAudioExportStore.playingAudioFileName;
+
+  SavedTranscriptDeliveryState savedTranscriptDeliveryState(
+    SharedTranscript transcript,
+  ) => _transcriptDeliveryState(transcriptDeliveryKey(transcript.id));
+
+  SavedTranscriptDeliveryState _transcriptDeliveryState(String key) {
+    if (_webSocketMessageStore.hasAcknowledgedTranscript(key) ||
+        _sharedAudioExportStore.messages.any(
+          (message) => sentTranscriptKey(message.id) == key,
+        )) {
+      return SavedTranscriptDeliveryState.sent;
+    }
+    if (_transcriptDeliveries.contains(key)) {
+      return SavedTranscriptDeliveryState.sending;
+    }
+    return _manualTranscriptCorrections.contains(key)
+        ? SavedTranscriptDeliveryState.correcting
+        : SavedTranscriptDeliveryState.unsent;
+  }
+
+  SharedTranscript? _currentSavedTranscript(SharedTranscript transcript) =>
+      sharedTranscripts
+          .where(
+            (current) =>
+                current.id == transcript.id &&
+                current.originalText == transcript.originalText,
+          )
+          .firstOrNull;
+
+  Future<String?> sendSavedTranscript(
+    SharedTranscript transcript,
+    VoiceWebSocketAgentTarget target,
+  ) async {
+    final key = transcriptDeliveryKey(transcript.id);
+    final current = _currentSavedTranscript(transcript);
+    if (_disposed || current == null) {
+      return 'This transcript is no longer available.';
+    }
+    if (_transcriptDeliveryState(key) != SavedTranscriptDeliveryState.unsent) {
+      return null;
+    }
+    final endpoint = _voiceWebSocket.config.endpointById(target.endpointId);
+    if (endpoint == null ||
+        _voiceWebSocket.config.targetForAgent(target.agentName) != target) {
+      return 'This agent is no longer available.';
+    }
+    if (!current.hasCorrection) {
+      _manualTranscriptCorrections.add(key);
+      _safeNotify();
+      try {
+        final error = await _correctSavedTranscript(current, key);
+        if (error != null) return error;
+      } finally {
+        _manualTranscriptCorrections.remove(key);
+        _safeNotify();
+      }
+    }
+    if (_transcriptDeliveryState(key) != SavedTranscriptDeliveryState.unsent) {
+      return null;
+    }
+    final corrected = _currentSavedTranscript(transcript)?.correctedText;
+    if (_disposed || corrected == null) {
+      return 'This transcript is no longer available.';
+    }
+    if (_voiceWebSocket.config.endpointById(target.endpointId) != endpoint) {
+      return 'The agent connection changed. Tap send again.';
+    }
+    final route = _voiceWebSocket.routeTranscriptToSelectedAgent(
+      endpointId: target.endpointId,
+      selectedAgent: target.agentName,
+      transcript: corrected,
+    );
+    if (route == null) return 'This agent is no longer available.';
+    if (!_reserveTranscriptDelivery(key)) return null;
+    try {
+      final result = await _voiceWebSocket.sendAgentMessageWithResult(
+        endpointId: route.endpointId!,
+        agent: route.agent,
+        message: route.message,
+      );
+      if (!result.sent) {
+        return 'Could not send to ${target.agentName}. Try again.';
+      }
+      _webSocketMessageStore.markTranscriptAcknowledged(key);
+      _safeNotify();
+      await _persistAcknowledgedAgentMessage(
+        result,
+        transcriptId: transcript.id,
+      );
+      return null;
+    } finally {
+      _releaseTranscriptDelivery(key);
+    }
+  }
+
+  Future<String?> _correctSavedTranscript(
+    SharedTranscript transcript,
+    String key,
+  ) async {
+    try {
+      final result = await _audioPipeline.correctCollectedTranscriptPreview(
+        segmentId: 'history-${DateTime.now().microsecondsSinceEpoch}-$key',
+        transcript: transcript.originalText,
+        explicitlyRequested: true,
+      );
+      if (_disposed || _currentSavedTranscript(transcript) == null) {
+        return 'This transcript changed while correction was running.';
+      }
+      if (_transcriptDeliveryState(key) !=
+          SavedTranscriptDeliveryState.correcting) {
+        return null;
+      }
+      if (!result.isCorrected) {
+        return switch (result.failureReason) {
+          'model_missing' => 'Install the Gemma model to run correction.',
+          'input_too_long' ||
+          'prompt_too_long' => 'This transcript is too long to correct.',
+          _ => 'Gemma correction is unavailable. Try again later.',
+        };
+      }
+      await _savedTranscriptStore.saveCorrection(transcript, result.transcript);
+      return null;
+    } on Object {
+      return 'Could not correct and save this transcript.';
+    }
+  }
+
+  bool _reserveTranscriptDelivery(String key) {
+    final state = _transcriptDeliveryState(key);
+    if (state == SavedTranscriptDeliveryState.sent ||
+        state == SavedTranscriptDeliveryState.sending) {
+      return false;
+    }
+    _transcriptDeliveries.add(key);
+    _safeNotify();
+    return true;
+  }
+
+  void _releaseTranscriptDelivery(String key) {
+    _transcriptDeliveries.remove(key);
+    _safeNotify();
+  }
 
   Future<bool> sendDirectAgentMessage({
     required String endpointId,
@@ -3074,39 +3226,61 @@ base class WearableController extends ChangeNotifier
       );
       return;
     }
-    if (selectedRoute == null) {
-      await _glassesStatusQueue.markTranscriptSending(segmentId: segmentId);
-    }
-    _audioPipeline.updateTranscriptDelivery(
-      segmentId,
-      transcript,
-      TranscriptPreviewStatus.sending,
-    );
-    final sendResult = await _voiceWebSocket.sendAgentMessageWithResult(
-      endpointId: route.endpointId!,
-      agent: route.agent,
-      message: route.message,
-      deliveryMode: deliveryModeForAgentRoute(
-        explicitlySelected: selectedRoute != null,
-      ),
-    );
-    final sent = sendResult.sent;
-    await completeAgentRouteConsumers(
-      updateDisplay: () => _completeTranscriptProjection(
+    final deliveryKey = transcriptDeliveryKey(segmentId);
+    if (!_reserveTranscriptDelivery(deliveryKey)) {
+      await _completeTranscriptProjection(
         segmentId: segmentId,
         transcript: transcript,
-        sent: sent,
-      ),
-      persistAcknowledgedMessage: sent
-          ? () => _persistAcknowledgedAgentMessage(sendResult)
-          : null,
-    );
-    addLog(
-      'WebSocket',
-      '[WorkBench][VoiceWebSocket] '
-          'state=${sent ? 'sent' : 'saved'} routed=true '
-          'source=${selectedRoute?.source ?? 'spoken_invocation'}',
-    );
+        sent:
+            _transcriptDeliveryState(deliveryKey) ==
+            SavedTranscriptDeliveryState.sent,
+      );
+      return;
+    }
+    try {
+      if (selectedRoute == null) {
+        await _glassesStatusQueue.markTranscriptSending(segmentId: segmentId);
+      }
+      _audioPipeline.updateTranscriptDelivery(
+        segmentId,
+        transcript,
+        TranscriptPreviewStatus.sending,
+      );
+      final sendResult = await _voiceWebSocket.sendAgentMessageWithResult(
+        endpointId: route.endpointId!,
+        agent: route.agent,
+        message: route.message,
+        deliveryMode: deliveryModeForAgentRoute(
+          explicitlySelected: selectedRoute != null,
+        ),
+      );
+      final sent = sendResult.sent;
+      if (sent) {
+        _webSocketMessageStore.markTranscriptAcknowledged(deliveryKey);
+        _safeNotify();
+      }
+      await completeAgentRouteConsumers(
+        updateDisplay: () => _completeTranscriptProjection(
+          segmentId: segmentId,
+          transcript: transcript,
+          sent: sent,
+        ),
+        persistAcknowledgedMessage: sent
+            ? () => _persistAcknowledgedAgentMessage(
+                sendResult,
+                transcriptId: segmentId,
+              )
+            : null,
+      );
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] '
+            'state=${sent ? 'sent' : 'saved'} routed=true '
+            'source=${selectedRoute?.source ?? 'spoken_invocation'}',
+      );
+    } finally {
+      _releaseTranscriptDelivery(deliveryKey);
+    }
   }
 
   Future<void> _completeTranscriptProjection({
@@ -3276,11 +3450,13 @@ base class WearableController extends ChangeNotifier
     required WebSocketMessageDirection direction,
     required String message,
     required String failureState,
+    String? transcriptId,
   }) async {
     try {
       final saved = await _webSocketMessageStore.save(
         direction: direction,
         message: message,
+        transcriptId: transcriptId,
       );
       _safeNotify();
       _scheduleWebSocketMessageExport(
@@ -3342,12 +3518,14 @@ base class WearableController extends ChangeNotifier
   }
 
   Future<void> _persistAcknowledgedAgentMessage(
-    VoiceWebSocketSendResult result,
-  ) async {
+    VoiceWebSocketSendResult result, {
+    String? transcriptId,
+  }) async {
     final saved = await _archiveWebSocketMessage(
       direction: WebSocketMessageDirection.sent,
       message: '${result.agent}: ${result.message}',
       failureState: 'sent_save_failed',
+      transcriptId: transcriptId,
     );
     if (saved == null || !_agentExchangeStoreReady) {
       return;
