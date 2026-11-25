@@ -119,6 +119,52 @@ typedef DirectAgentMessageSender =
 typedef QueuedAgentMessageDeleter =
     void Function({required String endpointId, required String queueId});
 
+final class SavedTranscriptSendButton extends StatelessWidget {
+  const SavedTranscriptSendButton({
+    required this.targets,
+    this.onSelected,
+    super.key,
+  });
+
+  final List<VoiceWebSocketAgentTarget> targets;
+  final ValueChanged<VoiceWebSocketAgentTarget>? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    const icon = Stack(
+      alignment: Alignment(0, -0.36),
+      children: [
+        Icon(Icons.chat_bubble_outline, size: 24),
+        Icon(Icons.arrow_forward, size: 13),
+      ],
+    );
+    return SizedBox.square(
+      dimension: 48,
+      child: targets.length > 1
+          ? PopupMenuButton<VoiceWebSocketAgentTarget>(
+              enabled: onSelected != null,
+              tooltip: 'Forward to agent',
+              icon: icon,
+              position: PopupMenuPosition.under,
+              onSelected: onSelected,
+              itemBuilder: (_) => [
+                for (final target in targets)
+                  PopupMenuItem(value: target, child: Text(target.agentName)),
+              ],
+            )
+          : IconButton(
+              tooltip: targets.isEmpty
+                  ? 'Configure an agent in Tools'
+                  : 'Forward to ${targets.single.agentName}',
+              onPressed: targets.isEmpty || onSelected == null
+                  ? null
+                  : () => onSelected!(targets.single),
+              icon: icon,
+            ),
+    );
+  }
+}
+
 final class HomeHistoryPanel extends StatefulWidget {
   const HomeHistoryPanel({
     required this.events,
@@ -157,6 +203,8 @@ final class HomeHistoryPanel extends StatefulWidget {
     this.onLoadMessages,
     this.onLoadConversations,
     this.onSendAgentMessage,
+    this.savedTranscriptDeliveryState,
+    this.onSendSavedTranscript,
     this.onDeleteQueuedAgentMessage,
     this.onTabChanged,
     this.onToggleTranscriptAudio,
@@ -200,6 +248,10 @@ final class HomeHistoryPanel extends StatefulWidget {
   final Future<void> Function()? onLoadMessages;
   final Future<void> Function()? onLoadConversations;
   final DirectAgentMessageSender? onSendAgentMessage;
+  final SavedTranscriptDeliveryState Function(SharedTranscript)?
+  savedTranscriptDeliveryState;
+  final Future<String?> Function(SharedTranscript, VoiceWebSocketAgentTarget)?
+  onSendSavedTranscript;
   final QueuedAgentMessageDeleter? onDeleteQueuedAgentMessage;
   final ValueChanged<HomeHistoryTab>? onTabChanged;
   final ValueChanged<SharedTranscript>? onToggleTranscriptAudio;
@@ -628,77 +680,115 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                 if (message != null) {
                   return _buildWebSocketMessage(context, message);
                 }
-                final transcript = entry.transcript!;
-                final isPlaying =
-                    widget.isPlayingTranscript?.call(transcript) ?? false;
-                return Padding(
-                  key: ValueKey<String>('transcript-${transcript.id}'),
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text('Original', style: theme.textTheme.titleSmall),
-                            const SizedBox(height: 4),
-                            Text(
-                              transcript.originalText,
-                              style: theme.textTheme.bodyMedium,
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Corrected',
-                              style: theme.textTheme.titleSmall,
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              transcript.correctedText ??
-                                  'Correction pending or unavailable',
-                              style: transcript.hasCorrection
-                                  ? theme.textTheme.bodyMedium
-                                  : theme.textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${transcript.hasAudio ? 'WAV + transcript' : 'Transcript only'}'
-                              ' · ${transcript.hasCorrection ? 'corrected' : 'original only'}'
-                              ' · ${_savedLabel(context, transcript.updatedAt)}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodySmall,
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        tooltip: transcript.hasAudio
-                            ? isPlaying
-                                  ? 'Stop audio'
-                                  : 'Play audio'
-                            : 'Audio unavailable',
-                        onPressed: !transcript.hasAudio || widget.isStorageBusy
-                            ? null
-                            : () => widget.onToggleTranscriptAudio?.call(
-                                transcript,
-                              ),
-                        icon: Icon(isPlaying ? Icons.stop : Icons.play_arrow),
-                        constraints: const BoxConstraints.tightFor(
-                          width: 48,
-                          height: 48,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
+                return _buildSavedTranscript(context, entry.transcript!);
               },
             ),
           ),
         ),
       ],
     );
+  }
+
+  Widget _buildSavedTranscript(
+    BuildContext context,
+    SharedTranscript transcript,
+  ) {
+    final theme = Theme.of(context);
+    final delivery = widget.savedTranscriptDeliveryState?.call(transcript);
+    final isPlaying = widget.isPlayingTranscript?.call(transcript) ?? false;
+    final send = widget.onSendSavedTranscript;
+    final showSend =
+        delivery != null &&
+        delivery != SavedTranscriptDeliveryState.sent &&
+        send != null;
+    final deliveryLabel = switch (delivery) {
+      SavedTranscriptDeliveryState.sent => 'Sent to agent',
+      SavedTranscriptDeliveryState.sending => 'Awaiting agent acknowledgement',
+      SavedTranscriptDeliveryState.correcting => 'Running correction…',
+      SavedTranscriptDeliveryState.unsent => 'Saved',
+      null => null,
+    };
+    return Padding(
+      key: ValueKey<String>('transcript-${transcript.id}'),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text('Original', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 4),
+                Text(
+                  transcript.originalText,
+                  style: theme.textTheme.bodyMedium,
+                ),
+                if (transcript.correctedText case final String corrected) ...[
+                  const SizedBox(height: 8),
+                  Text('Corrected', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 4),
+                  Text(corrected, style: theme.textTheme.bodyMedium),
+                ],
+                const SizedBox(height: 4),
+                Semantics(
+                  liveRegion: true,
+                  child: Text(
+                    [
+                      ?deliveryLabel,
+                      _savedLabel(context, transcript.updatedAt),
+                    ].join(' · '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (showSend || transcript.hasAudio) ...<Widget>[
+            const SizedBox(width: 8),
+            if (showSend)
+              SavedTranscriptSendButton(
+                targets: _configuredAgentTargets(),
+                onSelected: delivery == SavedTranscriptDeliveryState.unsent
+                    ? (target) => _sendSavedTranscript(send, transcript, target)
+                    : null,
+              )
+            else
+              IconButton(
+                tooltip: isPlaying ? 'Stop audio' : 'Play audio',
+                onPressed: widget.isStorageBusy
+                    ? null
+                    : () => widget.onToggleTranscriptAudio?.call(transcript),
+                icon: Icon(isPlaying ? Icons.stop : Icons.play_arrow),
+                constraints: const BoxConstraints.tightFor(
+                  width: 48,
+                  height: 48,
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _sendSavedTranscript(
+    Future<String?> Function(SharedTranscript, VoiceWebSocketAgentTarget) send,
+    SharedTranscript transcript,
+    VoiceWebSocketAgentTarget target,
+  ) async {
+    String? error;
+    try {
+      error = await send(transcript, target);
+    } on Object {
+      error = 'Could not send this transcript. Try again.';
+    }
+    if (mounted && error != null) {
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text(error)));
+    }
   }
 
   Widget _buildAgentMessages(

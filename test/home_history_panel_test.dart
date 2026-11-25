@@ -387,6 +387,111 @@ void main() {
     expect(find.textContaining('separate Messages tab'), findsOneWidget);
   });
 
+  for (final multipleAgents in [false, true]) {
+    testWidgets(
+      'the right-side send icon handles multipleAgents=$multipleAgents',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        var transcript = SharedTranscript(
+          id: 'saved-speech',
+          originalText: 'Please check the bild.',
+          updatedAt: DateTime(2026, 1, 1),
+          audioFileName: 'saved-speech.wav',
+        );
+        const primary = VoiceWebSocketAgentTarget(
+          agentName: 'Agent One',
+          endpointId: 'endpoint-one',
+        );
+        const secondary = VoiceWebSocketAgentTarget(
+          agentName: 'Agent Two',
+          endpointId: 'endpoint-two',
+        );
+        final correction = Completer<void>();
+        final acknowledgement = Completer<void>();
+        var delivery = SavedTranscriptDeliveryState.unsent;
+        VoiceWebSocketAgentTarget? sentTo;
+
+        await tester.pumpWidget(
+          _app(
+            StatefulBuilder(
+              builder: (context, update) => HomeHistoryPanel(
+                events: const [],
+                conversations: const [],
+                transcriptions: [transcript],
+                agentTargets: [primary, if (multipleAgents) secondary],
+                analysisEnabled: false,
+                needsEnrollment: false,
+                analysisState: 'disabled',
+                knownSpeakerCount: 0,
+                pendingConversationCount: 0,
+                isLoadingConversations: false,
+                isStorageBusy: false,
+                savedTranscriptDeliveryState: (_) => delivery,
+                onSendSavedTranscript: (source, agent) async {
+                  expect(source.originalText, 'Please check the bild.');
+                  sentTo = agent;
+                  update(
+                    () => delivery = SavedTranscriptDeliveryState.correcting,
+                  );
+                  await correction.future;
+                  update(() {
+                    transcript = source.withCorrection(
+                      'Please check the build.',
+                    );
+                    delivery = SavedTranscriptDeliveryState.sending;
+                  });
+                  await acknowledgement.future;
+                  update(() => delivery = SavedTranscriptDeliveryState.sent);
+                  return null;
+                },
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('Messages'));
+        await tester.pumpAndSettle();
+        final send = find.byIcon(Icons.chat_bubble_outline);
+        expect(send, findsOneWidget);
+        expect(find.byIcon(Icons.arrow_forward), findsOneWidget);
+        expect(find.byIcon(Icons.play_arrow), findsNothing);
+        expect(find.text('Review for agent'), findsNothing);
+        final button = find.byType(SavedTranscriptSendButton);
+        expect(tester.getSize(button), const Size(48, 48));
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+        if (multipleAgents) {
+          expect(sentTo, isNull);
+          final choice = find.widgetWithText(
+            PopupMenuItem<VoiceWebSocketAgentTarget>,
+            secondary.agentName,
+          );
+          await tester.tap(choice);
+          await tester.pumpAndSettle();
+        }
+
+        expect(sentTo, multipleAgents ? secondary : primary);
+        expect(find.textContaining('Running correction…'), findsOneWidget);
+        correction.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Please check the bild.'), findsOneWidget);
+        expect(find.text('Please check the build.'), findsOneWidget);
+        expect(
+          find.textContaining('Awaiting agent acknowledgement'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Sent to agent'), findsNothing);
+
+        acknowledgement.complete();
+        await tester.pumpAndSettle();
+        expect(find.textContaining('Sent to agent'), findsOneWidget);
+        expect(send, findsNothing);
+        expect(find.byIcon(Icons.play_arrow), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets('retains the original Messages folder picker', (tester) async {
     var chooseCount = 0;
     await tester.pumpWidget(

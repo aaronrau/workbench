@@ -103,6 +103,34 @@ void main() {
   });
 
   test(
+    'restores acknowledgement for a transcript and its turn aliases',
+    () async {
+      final store = WebSocketMessageStore(supportDirectory: () async => temp);
+      await store.initialize();
+      const segment = '123456789-123456-part-2';
+      final saved = await store.save(
+        direction: WebSocketMessageDirection.sent,
+        message: 'Agent One: Review the build.',
+        transcriptId: segment,
+      );
+
+      final restored = WebSocketMessageStore(
+        supportDirectory: () async => temp,
+      );
+      await restored.initialize();
+      final transcriptKey = transcriptDeliveryKey(
+        '123456789-123456.continuous',
+      );
+      expect(sentTranscriptKey(saved.fileName), transcriptKey);
+      expect(restored.hasAcknowledgedTranscript(transcriptKey), isTrue);
+      expect(
+        restored.hasAcknowledgedTranscript(transcriptDeliveryKey('other')),
+        isFalse,
+      );
+    },
+  );
+
+  test(
     'local messages remain visible and deduplicate their exported copies',
     () async {
       final store = WebSocketMessageStore(supportDirectory: () async => temp);

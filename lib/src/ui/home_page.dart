@@ -8,6 +8,7 @@ import '../ble/ble_models.dart';
 import '../startup/startup_state.dart';
 import '../util/hex.dart';
 import '../wearable_controller.dart';
+import '../websocket/voice_websocket_config.dart';
 import '../websocket/voice_websocket_connections.dart';
 import 'app_version_label.dart';
 import 'audio_system_settings.dart';
@@ -521,6 +522,8 @@ final class _HomePageState extends State<HomePage> {
         onLoadMessages: controller.refreshSharedMessages,
         onLoadConversations: controller.refreshConversations,
         onSendAgentMessage: controller.sendDirectAgentMessage,
+        savedTranscriptDeliveryState: controller.savedTranscriptDeliveryState,
+        onSendSavedTranscript: controller.sendSavedTranscript,
         onDeleteQueuedAgentMessage: controller.deleteQueuedAgentMessage,
         onTabChanged: (tab) {
           final messagesSelected = tab == HomeHistoryTab.messages;
@@ -1147,6 +1150,31 @@ final class _HomePageState extends State<HomePage> {
                   const TextField(
                     textInputAction: TextInputAction.send,
                     decoration: InputDecoration(labelText: 'Message Flux'),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          'Saved transcript',
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SavedTranscriptSendButton(
+                        targets: const [
+                          VoiceWebSocketAgentTarget(
+                            endpointId: 'example',
+                            agentName: 'Flux',
+                          ),
+                          VoiceWebSocketAgentTarget(
+                            endpointId: 'example',
+                            agentName: 'Pike',
+                          ),
+                        ],
+                        onSelected: (_) {},
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 12),
                   Row(
